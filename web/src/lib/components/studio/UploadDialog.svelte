@@ -97,7 +97,7 @@
     <div class="mt-3.5">
       <span
         id="upload-file-label"
-        class="mb-1.5 block font-mono text-[8.5px] uppercase tracking-[0.16em] text-text-faint"
+        class="mb-1.5 block font-semibold text-[10.5px] uppercase tracking-[0.16em] text-text-faint"
         >File</span
       >
       <label
@@ -113,7 +113,7 @@
         />
         <span class="truncate">{file ? file.name : 'Choose MP4, MOV or MXF…'}</span>
       </label>
-      <p class="mt-1.5 font-mono text-[8px] tracking-[0.06em] text-text-faint">
+      <p class="mt-1.5 font-mono text-[10.5px] tracking-[0.06em] text-text-faint">
         MP4 · MOV · MXF — UP TO 40 GB
       </p>
     </div>
@@ -121,7 +121,7 @@
     <div class="mt-3">
       <label
         for="upload-title"
-        class="mb-1.5 block font-mono text-[8.5px] uppercase tracking-[0.16em] text-text-faint"
+        class="mb-1.5 block font-semibold text-[10.5px] uppercase tracking-[0.16em] text-text-faint"
         >Title</label
       >
       <input
@@ -136,7 +136,7 @@
 
     {#if busy}
       <div class="mt-3.5" aria-live="polite">
-        <div class="mb-1.5 flex justify-between font-mono text-[8.5px] tracking-[0.1em] text-text-muted">
+        <div class="mb-1.5 flex justify-between font-mono text-[10.5px] tracking-[0.1em] text-text-muted">
           <span>{phaseLabel}</span>
         </div>
         <div class="h-[3px] overflow-hidden rounded-1 bg-bg-5">

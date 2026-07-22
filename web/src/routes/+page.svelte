@@ -83,7 +83,7 @@
         bind:value={query}
         placeholder="Search episodes, guests, topics…"
         aria-label="Search episodes"
-        class="w-full bg-transparent font-mono text-[10px] text-text-primary outline-none placeholder:text-text-faint"
+        class="w-full bg-transparent font-mono text-[11px] text-text-primary outline-none placeholder:text-text-faint"
       />
     </div>
 
@@ -92,7 +92,7 @@
     <div class="flex-1"></div>
 
     <div
-      class="hidden items-center gap-1.5 font-mono text-[8.5px] tracking-[0.1em] text-text-muted md:flex"
+      class="hidden items-center gap-1.5 font-mono text-[10.5px] tracking-[0.1em] text-text-muted md:flex"
       aria-hidden="true"
     >
       <kbd class="rounded-2 border border-border-strong px-1.5 py-[2px]">U</kbd>
@@ -104,7 +104,7 @@
     <button
       type="button"
       onclick={() => (uploadOpen = true)}
-      class="rounded-3 bg-accent px-4.5 py-2 text-[10.5px] font-semibold tracking-[0.1em] text-text-on-accent outline-none transition-colors duration-hover ease-out hover:bg-accent-bright focus-visible:bg-accent-bright"
+      class="rounded-3 bg-accent px-4.5 py-2 text-[11.5px] font-semibold tracking-[0.1em] text-text-on-accent outline-none transition-colors duration-hover ease-out hover:bg-accent-bright focus-visible:bg-accent-bright"
     >
       UPLOAD MASTER
     </button>

@@ -60,7 +60,7 @@
         <video src={url} controls autoplay class="h-full w-full" data-testid="proxy-video"></video>
       {:else}
         <div
-          class="flex h-full w-full items-center justify-center font-mono text-[10px] tracking-[0.2em] text-text-faint"
+          class="flex h-full w-full items-center justify-center font-semibold text-[11px] tracking-[0.2em] text-text-faint"
         >
           {#if loading}
             LOADING…

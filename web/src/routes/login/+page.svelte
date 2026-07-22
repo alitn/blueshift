@@ -28,14 +28,14 @@
 
 <main class="flex h-screen items-center justify-center bg-bg-2 p-6">
   <div class="w-[340px] max-w-full rounded-4 border border-border-default bg-bg-4 p-6">
-    <!-- Wordmark: accent tick + BLUE SHIFT 13.5/700 + STUDIO 9/500 @0.26em -->
+    <!-- Wordmark: accent tick + BLUE SHIFT 13.5/700 + STUDIO 10.5/500 @0.26em -->
     <div class="mb-5 flex items-center gap-2.5">
       <div class="h-[15px] w-[2px] flex-none bg-accent"></div>
       <div class="flex items-baseline gap-1.5">
         <span class="text-[13.5px] font-bold leading-none tracking-[-0.01em] text-text-primary"
           >BLUE SHIFT</span
         >
-        <span class="text-[9px] font-medium leading-none tracking-[0.26em] text-text-muted"
+        <span class="text-[10.5px] font-medium leading-none tracking-[0.26em] text-text-muted"
           >STUDIO</span
         >
       </div>
@@ -44,7 +44,7 @@
     <form onsubmit={submit} novalidate>
       <label
         for="email"
-        class="mb-1.5 block font-mono text-[8.5px] uppercase tracking-[0.16em] text-text-faint"
+        class="mb-1.5 block font-semibold text-[10.5px] uppercase tracking-[0.16em] text-text-faint"
         >Email</label
       >
       <input
@@ -58,7 +58,7 @@
 
       <label
         for="password"
-        class="mb-1.5 block font-mono text-[8.5px] uppercase tracking-[0.16em] text-text-faint"
+        class="mb-1.5 block font-semibold text-[10.5px] uppercase tracking-[0.16em] text-text-faint"
         >Password</label
       >
       <input

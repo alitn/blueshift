@@ -29,7 +29,7 @@
       </div>
       <button
         type="button"
-        class="flex-none font-mono text-[9px] uppercase tracking-wider text-text-faint transition-colors duration-hover ease-out hover:text-text-primary"
+        class="flex-none font-mono text-[10.5px] uppercase tracking-wider text-text-faint transition-colors duration-hover ease-out hover:text-text-primary"
         aria-label="Dismiss notification"
         onclick={() => toast.dismiss(t.id)}
       >

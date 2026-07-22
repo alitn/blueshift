@@ -29,7 +29,7 @@
 <div class="flex h-full min-h-0 flex-col">
   <!-- Column header -->
   <div
-    class="flex flex-none items-center border-b border-border-subtle px-6 py-2 font-mono text-[8.5px] tracking-[0.14em] text-text-faint"
+    class="flex flex-none items-center border-b border-border-subtle px-6 py-2 font-semibold text-[10.5px] tracking-[0.14em] text-text-faint"
   >
     <div class="min-w-0 flex-1">EPISODE</div>
     <div class="w-[80px] flex-none">UPLOADED</div>
@@ -79,13 +79,13 @@
     >
       <bdi>{ep.title}</bdi>
     </div>
-    <div class="mt-[2px] font-mono text-[8.5px] text-text-faint">{ep.sourceFilename}</div>
+    <div class="mt-[2px] font-mono text-[10.5px] text-text-faint">{ep.sourceFilename}</div>
   </div>
-  <div class="w-[80px] flex-none font-mono text-[9.5px] text-text-muted">
+  <div class="w-[80px] flex-none font-mono text-[11px] text-text-muted">
     {formatUploaded(ep.uploadedAt)}
   </div>
   <div
-    class="w-[90px] flex-none font-mono text-[9.5px] tabular-nums text-text-muted"
+    class="w-[90px] flex-none font-mono text-[11px] tabular-nums text-text-muted"
     title={ep.sizeBytes ? formatSize(ep.sizeBytes) : undefined}
   >
     {formatDuration(ep.durationMs)}
@@ -93,8 +93,8 @@
   <div class="w-[250px] flex-none">
     <PipelineSteps status={ep.status} />
   </div>
-  <div class="w-[60px] flex-none text-right font-mono text-[10px] text-text-primary">—</div>
-  <div class="w-[80px] flex-none text-right font-mono text-[10px] tabular-nums text-text-muted">—</div>
+  <div class="w-[60px] flex-none text-right font-mono text-[11px] text-text-primary">—</div>
+  <div class="w-[80px] flex-none text-right font-mono text-[11px] tabular-nums text-text-muted">—</div>
   <div class="flex w-[100px] flex-none justify-end">
     {#if ep.status === 'ready'}
       <button
@@ -103,7 +103,7 @@
           e.stopPropagation();
           onOpen(ep);
         }}
-        class="rounded-3 border border-border-control px-3.5 py-1 text-[9px] font-semibold tracking-[0.12em] text-text-primary outline-none transition-colors duration-hover ease-out hover:border-border-hover-control focus-visible:border-accent-border"
+        class="rounded-3 border border-border-control px-3.5 py-1 text-[10.5px] font-semibold tracking-[0.12em] text-text-primary outline-none transition-colors duration-hover ease-out hover:border-border-hover-control focus-visible:border-accent-border"
       >
         OPEN
       </button>
@@ -111,7 +111,7 @@
       <button
         type="button"
         onclick={() => onRetry(ep)}
-        class="rounded-3 border border-danger-border px-3.5 py-1 text-[9px] font-semibold tracking-[0.12em] text-danger outline-none transition-colors duration-hover ease-out hover:border-danger-border-hover focus-visible:border-danger-border-hover"
+        class="rounded-3 border border-danger-border px-3.5 py-1 text-[10.5px] font-semibold tracking-[0.12em] text-danger outline-none transition-colors duration-hover ease-out hover:border-danger-border-hover focus-visible:border-danger-border-hover"
       >
         RETRY
       </button>

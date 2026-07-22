@@ -18,11 +18,11 @@
     <button
       type="button"
       onclick={onUpload}
-      class="inline-block rounded-3 bg-accent px-5 py-2 text-[10.5px] font-semibold tracking-[0.1em] text-text-on-accent outline-none transition-colors duration-hover ease-out hover:bg-accent-bright focus-visible:bg-accent-bright"
+      class="inline-block rounded-3 bg-accent px-5 py-2 text-[11.5px] font-semibold tracking-[0.1em] text-text-on-accent outline-none transition-colors duration-hover ease-out hover:bg-accent-bright focus-visible:bg-accent-bright"
     >
       UPLOAD MASTER
     </button>
-    <p class="mt-3 font-mono text-[8.5px] tracking-[0.06em] text-text-faint">
+    <p class="mt-3 font-mono text-[10.5px] tracking-[0.06em] text-text-faint">
       MP4 · MOV · MXF — UP TO 40 GB
     </p>
   </div>
