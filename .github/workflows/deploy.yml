@@ -1,21 +1,32 @@
-# Deploy pipeline (§7): main -> build ONE image (app+worker) -> staging ->
+# Deploy pipeline (§7): main -> build ONE image (app+worker) -> STAGING project ->
 # e2e against staging -> tag release-candidate. Manual promote (workflow_dispatch)
-# -> same image to prod --no-traffic -> migrations -> 10% traffic ->
+# -> COPY the staging-tested image BY DIGEST into the PROD project's registry
+# (never rebuild) -> deploy prod --no-traffic -> migrations -> 10% traffic ->
 # scripted 10-min watch -> 100%. Rollback = re-point traffic to prior revision.
 #
-# Auth is Workload Identity Federation (no JSON keys). Required configuration:
-#   vars.GCP_PROJECT              e.g. blueshift-pilot
-#   vars.GCP_REGION               us-central1
-#   vars.STAGING_URL             https://staging.<domain>
-#   secrets.GCP_WIF_PROVIDER     projects/N/locations/global/workloadIdentityPools/github/providers/github
-#   secrets.GCP_DEPLOY_SA        deployer@<project>.iam.gserviceaccount.com
-# Jobs no-op until vars.GCP_PROJECT is set, so this file is safe to land now.
+# Staging and prod are SEPARATE GCP projects (see docs/ENVIRONMENTS.md); the
+# project boundary provides IAM/quota/billing/data isolation. Because the project
+# scopes them, the Cloud Run service + worker Job are named IDENTICALLY in both
+# projects (blueshift-app / blueshift-worker — no -staging suffix).
+#
+# Auth is Workload Identity Federation (no JSON keys), ONE pool per project both
+# trusting this repo. Required configuration (per project):
+#   vars.GCP_PROJECT_STAGING            e.g. blueshift-staging
+#   vars.GCP_PROJECT_PROD               e.g. blueshift-prod
+#   vars.GCP_REGION                     us-central1
+#   vars.STAGING_URL                    https://staging.<domain>
+#   secrets.GCP_WIF_PROVIDER_STAGING    projects/N/locations/global/workloadIdentityPools/github/providers/github
+#   secrets.GCP_WIF_PROVIDER_PROD       (same shape, in the prod project)
+#   secrets.GCP_DEPLOY_SA_STAGING       deployer@<staging-project>.iam.gserviceaccount.com
+#   secrets.GCP_DEPLOY_SA_PROD          deployer@<prod-project>.iam.gserviceaccount.com
+# The staging job no-ops until vars.GCP_PROJECT_STAGING is set; promote no-ops
+# until BOTH project vars are set. Safe to land before provisioning.
 #
 # Env/secret matrix per service is documented in deploy/README.md; the names
 # below must stay in lockstep with deploy/gcloud.sh (SA, SQL instance, bucket,
-# secret ids). Migrations run from this workflow through the Cloud SQL Auth
-# Proxy against the checked-out migrations/ tree — the single migration source
-# shared with `make demo` and the DB-backed tests (no separate migrate binary).
+# secret ids) for BOTH projects. Migrations run from this workflow through the
+# Cloud SQL Auth Proxy against the checked-out migrations/ tree — the single
+# migration source shared with `make demo` and the DB-backed tests.
 name: deploy
 
 on:
@@ -24,38 +35,39 @@ on:
   workflow_dispatch:
     inputs:
       promote:
-        description: "Image tag (git SHA) to promote to prod"
+        description: "Image tag (git SHA) to promote from staging to prod"
         required: true
 
 permissions:
   contents: write
   id-token: write # WIF
 
-env:
-  REGION: ${{ vars.GCP_REGION || 'us-central1' }}
-  PROJECT: ${{ vars.GCP_PROJECT }}
-  IMAGE: ${{ vars.GCP_REGION || 'us-central1' }}-docker.pkg.dev/${{ vars.GCP_PROJECT }}/blueshift/app
-  RUNTIME_SA: app-runtime@${{ vars.GCP_PROJECT }}.iam.gserviceaccount.com
-  SQL_INSTANCE: ${{ vars.GCP_PROJECT }}:${{ vars.GCP_REGION || 'us-central1' }}:blueshift-pg
-  BUCKET: ${{ vars.GCP_PROJECT }}-media
-
 jobs:
   # ---------------------------------------------------------------- staging --
+  # Build once, push to the STAGING project's Artifact Registry, deploy the
+  # staging project's services, migrate staging Cloud SQL, smoke, rc-tag.
   staging:
-    if: github.event_name == 'push' && vars.GCP_PROJECT != ''
+    if: github.event_name == 'push' && vars.GCP_PROJECT_STAGING != ''
     runs-on: ubuntu-latest
     timeout-minutes: 45
+    env:
+      REGION: ${{ vars.GCP_REGION || 'us-central1' }}
+      PROJECT: ${{ vars.GCP_PROJECT_STAGING }}
+      IMAGE: ${{ vars.GCP_REGION || 'us-central1' }}-docker.pkg.dev/${{ vars.GCP_PROJECT_STAGING }}/blueshift/app
+      RUNTIME_SA: app-runtime@${{ vars.GCP_PROJECT_STAGING }}.iam.gserviceaccount.com
+      SQL_INSTANCE: ${{ vars.GCP_PROJECT_STAGING }}:${{ vars.GCP_REGION || 'us-central1' }}:blueshift-pg
+      BUCKET: ${{ vars.GCP_PROJECT_STAGING }}-media
     steps:
       - uses: actions/checkout@v4
 
       - uses: google-github-actions/auth@v2
         with:
-          workload_identity_provider: ${{ secrets.GCP_WIF_PROVIDER }}
-          service_account: ${{ secrets.GCP_DEPLOY_SA }}
+          workload_identity_provider: ${{ secrets.GCP_WIF_PROVIDER_STAGING }}
+          service_account: ${{ secrets.GCP_DEPLOY_SA_STAGING }}
 
       - uses: google-github-actions/setup-gcloud@v2
 
-      - name: Build & push image (app + worker in one image)
+      - name: Build & push image (app + worker in one image) to staging registry
         run: |
           gcloud auth configure-docker "$REGION-docker.pkg.dev" -q
           docker build -t "$IMAGE:${{ github.sha }}" .
@@ -63,17 +75,17 @@ jobs:
 
       - name: Deploy staging service + worker job
         run: |
-          gcloud run deploy blueshift-app-staging \
+          gcloud run deploy blueshift-app \
             --image "$IMAGE:${{ github.sha }}" --region "$REGION" \
             --service-account "$RUNTIME_SA" \
             --add-cloudsql-instances "$SQL_INSTANCE" \
-            --set-env-vars "ENV=staging,AUTH_MODE=identity,BLOB_MODE=gcs,GCS_BUCKET=$BUCKET,WORKER_TRIGGER=cloudrun,WORKER_JOB_NAME=blueshift-worker-staging,WORKER_JOB_REGION=$REGION,WORKER_JOB_PROJECT=$PROJECT" \
+            --set-env-vars "ENV=staging,AUTH_MODE=identity,BLOB_MODE=gcs,GCS_BUCKET=$BUCKET,WORKER_TRIGGER=cloudrun,WORKER_JOB_NAME=blueshift-worker,WORKER_JOB_REGION=$REGION,WORKER_JOB_PROJECT=$PROJECT" \
             --set-secrets "DATABASE_URL=database-url:latest,SESSION_SECRET=session-signing-key:latest,IDP_API_KEY=identity-platform-config:latest" \
             --quiet
           # Same image; ENTRYPOINT overridden to the worker. It never
           # authenticates, but config.Load() validates the auth env in a
           # prod-like ENV, so it carries the same secrets as the service.
-          gcloud run jobs deploy blueshift-worker-staging \
+          gcloud run jobs deploy blueshift-worker \
             --image "$IMAGE:${{ github.sha }}" --region "$REGION" \
             --command /app/worker \
             --service-account "$RUNTIME_SA" \
@@ -133,24 +145,71 @@ jobs:
           git push -f origin "rc-${{ github.sha }}"
 
   # ---------------------------------------------------------------- promote --
+  # Copy the staging-tested image BY DIGEST from the staging registry into the
+  # prod registry (no rebuild — what you tested is what you ship), then run the
+  # §7 prod rollout. The copy uses two project-scoped WIF auths (read as the
+  # staging deployer, write as the prod deployer): docker pull under staging
+  # creds, retag, docker push under prod creds. Content-addressed manifests mean
+  # the pushed digest equals the pulled digest; a hard check enforces it, and
+  # the deploy references the image BY DIGEST so no tag race can substitute it.
   promote:
-    if: github.event_name == 'workflow_dispatch' && vars.GCP_PROJECT != ''
+    if: github.event_name == 'workflow_dispatch' && vars.GCP_PROJECT_STAGING != '' && vars.GCP_PROJECT_PROD != ''
     runs-on: ubuntu-latest
     timeout-minutes: 45
+    env:
+      REGION: ${{ vars.GCP_REGION || 'us-central1' }}
+      PROJECT: ${{ vars.GCP_PROJECT_PROD }}
+      IMAGE: ${{ vars.GCP_REGION || 'us-central1' }}-docker.pkg.dev/${{ vars.GCP_PROJECT_PROD }}/blueshift/app
+      STAGING_IMAGE: ${{ vars.GCP_REGION || 'us-central1' }}-docker.pkg.dev/${{ vars.GCP_PROJECT_STAGING }}/blueshift/app
+      RUNTIME_SA: app-runtime@${{ vars.GCP_PROJECT_PROD }}.iam.gserviceaccount.com
+      SQL_INSTANCE: ${{ vars.GCP_PROJECT_PROD }}:${{ vars.GCP_REGION || 'us-central1' }}:blueshift-pg
+      BUCKET: ${{ vars.GCP_PROJECT_PROD }}-media
     steps:
       - uses: actions/checkout@v4
 
+      # --- read side: authenticate as the STAGING deployer to pull the source --
       - uses: google-github-actions/auth@v2
         with:
-          workload_identity_provider: ${{ secrets.GCP_WIF_PROVIDER }}
-          service_account: ${{ secrets.GCP_DEPLOY_SA }}
+          workload_identity_provider: ${{ secrets.GCP_WIF_PROVIDER_STAGING }}
+          service_account: ${{ secrets.GCP_DEPLOY_SA_STAGING }}
 
       - uses: google-github-actions/setup-gcloud@v2
 
-      - name: Deploy prod --no-traffic
+      - name: Pull staging-tested image (records the tested digest)
+        run: |
+          set -euo pipefail
+          gcloud auth configure-docker "$REGION-docker.pkg.dev" -q
+          docker pull "$STAGING_IMAGE:${{ inputs.promote }}"
+          # Resolve the immutable digest of exactly what staging tested.
+          DIGEST=$(docker inspect --format='{{range .RepoDigests}}{{println .}}{{end}}' \
+            "$STAGING_IMAGE:${{ inputs.promote }}" | grep "^$STAGING_IMAGE@" | sed 's/.*@//' | head -n1)
+          [ -n "$DIGEST" ] || { echo "::error::could not resolve staging image digest"; exit 1; }
+          echo "PROMOTE_DIGEST=$DIGEST" >> "$GITHUB_ENV"
+          echo "Promoting staging-tested digest: $DIGEST"
+
+      # --- write side: re-authenticate as the PROD deployer to push + deploy ---
+      - uses: google-github-actions/auth@v2
+        with:
+          workload_identity_provider: ${{ secrets.GCP_WIF_PROVIDER_PROD }}
+          service_account: ${{ secrets.GCP_DEPLOY_SA_PROD }}
+
+      - name: Copy tested image into prod registry (same digest, no rebuild)
+        run: |
+          set -euo pipefail
+          gcloud auth configure-docker "$REGION-docker.pkg.dev" -q
+          docker tag "$STAGING_IMAGE:${{ inputs.promote }}" "$IMAGE:${{ inputs.promote }}"
+          docker push "$IMAGE:${{ inputs.promote }}"
+          # Content-addressed: the prod digest MUST equal the staging digest.
+          PUSHED=$(docker inspect --format='{{range .RepoDigests}}{{println .}}{{end}}' \
+            "$IMAGE:${{ inputs.promote }}" | grep "^$IMAGE@" | sed 's/.*@//' | head -n1)
+          echo "prod registry digest: $PUSHED"
+          [ "$PUSHED" = "$PROMOTE_DIGEST" ] || { \
+            echo "::error::digest mismatch — staging=$PROMOTE_DIGEST prod=$PUSHED (not the tested image)"; exit 1; }
+
+      - name: Deploy prod --no-traffic (by digest)
         run: |
           gcloud run deploy blueshift-app \
-            --image "$IMAGE:${{ inputs.promote }}" --region "$REGION" \
+            --image "$IMAGE@$PROMOTE_DIGEST" --region "$REGION" \
             --no-traffic --tag candidate \
             --service-account "$RUNTIME_SA" \
             --add-cloudsql-instances "$SQL_INSTANCE" \
@@ -158,7 +217,7 @@ jobs:
             --set-secrets "DATABASE_URL=database-url:latest,SESSION_SECRET=session-signing-key:latest,IDP_API_KEY=identity-platform-config:latest" \
             --quiet
           gcloud run jobs deploy blueshift-worker \
-            --image "$IMAGE:${{ inputs.promote }}" --region "$REGION" \
+            --image "$IMAGE@$PROMOTE_DIGEST" --region "$REGION" \
             --command /app/worker \
             --service-account "$RUNTIME_SA" \
             --add-cloudsql-instances "$SQL_INSTANCE" \
@@ -216,5 +275,5 @@ jobs:
         run: |
           gcloud run services update-traffic blueshift-app \
             --region "$REGION" --to-tags candidate=100 --quiet
-          echo "Promoted ${{ inputs.promote }} to 100%."
+          echo "Promoted ${{ inputs.promote }} (digest $PROMOTE_DIGEST) to 100%."
           echo "Rollback = gcloud run services update-traffic blueshift-app --region $REGION --to-revisions <previous>=100"

@@ -5,16 +5,43 @@
 # for existence before creating. No Terraform by design (see CLAUDE.md /
 # "Occam with teeth"); this script IS the infrastructure record.
 #
+# Staging and prod are SEPARATE GCP projects (see docs/ENVIRONMENTS.md): the
+# project boundary is Google's isolation unit for data, IAM, quotas, and
+# billing. This script is per-PROJECT; run it ONCE PER PROJECT. Because the
+# project scopes them, both projects host IDENTICALLY-named services
+# (blueshift-app / blueshift-worker — no -staging suffix).
+#
 # Prereqs: gcloud CLI authenticated as an owner of $PROJECT; billing enabled.
-# Usage:   PROJECT=blueshift-pilot GITHUB_REPO=you/blueshift ./deploy/gcloud.sh
+# Usage (run twice, once per project):
+#   ENV_TIER=staging PROJECT=blueshift-staging GITHUB_REPO=you/blueshift ./deploy/gcloud.sh
+#   ENV_TIER=prod    PROJECT=blueshift-prod    GITHUB_REPO=you/blueshift ./deploy/gcloud.sh
+# Optional (cost guardrails, see "Cost & quota guardrails" below):
+#   BILLING_ACCOUNT=XXXXXX-XXXXXX-XXXXXX BUDGET_AMOUNT=50
 # ==============================================================================
 set -euo pipefail
 
 PROJECT="${PROJECT:?set PROJECT=<gcp-project-id>}"
 REGION="${REGION:-us-central1}"
 GITHUB_REPO="${GITHUB_REPO:?set GITHUB_REPO=<owner>/<repo> for WIF}"
+ENV_TIER="${ENV_TIER:?set ENV_TIER=staging|prod}"   # required: picks the GitHub var/secret suffix
+BILLING_ACCOUNT="${BILLING_ACCOUNT:-}"  # optional: enables scripted budget-alert creation
+BUDGET_AMOUNT="${BUDGET_AMOUNT:-50}"    # monthly budget alert threshold, USD (keep staging tight)
 BUCKET="gs://${PROJECT}-media"
 SQL_INSTANCE="blueshift-pg"
+
+# ENV_TIER must be exactly 'staging' or 'prod' — it selects the GitHub
+# var/secret suffix printed at the end, so a wrong value would wire the repo to
+# the wrong project. Fail fast rather than print a misleading suffix.
+case "$ENV_TIER" in
+  staging) SUF="STAGING" ;;
+  prod)    SUF="PROD" ;;
+  *)
+    echo "ERROR: ENV_TIER must be 'staging' or 'prod' (got '${ENV_TIER}')." >&2
+    echo "Usage (run once per project):" >&2
+    echo "  ENV_TIER=staging PROJECT=blueshift-staging GITHUB_REPO=<owner>/<repo> ./deploy/gcloud.sh" >&2
+    echo "  ENV_TIER=prod    PROJECT=blueshift-prod    GITHUB_REPO=<owner>/<repo> ./deploy/gcloud.sh" >&2
+    exit 2 ;;
+esac
 
 gcloud config set project "$PROJECT" >/dev/null
 
@@ -143,16 +170,56 @@ gcloud secrets add-iam-policy-binding database-url \
 # console step (no clean CLI). Roles live in Postgres (memberships), not IdP.
 echo "MANUAL STEP: enable Email/Password sign-in in Identity Platform console."
 
+# ---- Cost & quota guardrails -------------------------------------------------
+# Both projects run LIVE ASR/LLM (Speech-to-Text, Vertex AI), so both need a
+# budget alert and explicit quota caps. Staging's caps stay tight — it only ever
+# processes fixtures and demo episodes (docs/ENVIRONMENTS.md). See CLAUDE.md.
+#
+# Budget alert: created idempotently by displayName IF a billing account is
+# supplied; the Budgets API has no create-if-absent, so we list-then-create.
+if [ -n "$BILLING_ACCOUNT" ] && gcloud billing budgets list \
+     --billing-account "$BILLING_ACCOUNT" >/dev/null 2>&1; then
+  BUDGET_NAME="blueshift-$PROJECT"
+  if gcloud billing budgets list --billing-account "$BILLING_ACCOUNT" \
+       --format 'value(displayName)' 2>/dev/null | grep -qx "$BUDGET_NAME"; then
+    echo "budget alert '$BUDGET_NAME' already exists — skipping."
+  else
+    gcloud billing budgets create \
+      --billing-account "$BILLING_ACCOUNT" \
+      --display-name "$BUDGET_NAME" \
+      --filter-projects "projects/$PROJECT" \
+      --budget-amount "${BUDGET_AMOUNT}USD" \
+      --threshold-rule=percent=0.5 --threshold-rule=percent=0.9 --threshold-rule=percent=1.0
+  fi
+else
+  echo "MANUAL STEP: create a monthly budget alert for $PROJECT (no BILLING_ACCOUNT given,"
+  echo "  or the billing CLI is unavailable). Console: Billing > Budgets & alerts >"
+  echo "  Create budget, scope to project '$PROJECT', amount ~\$${BUDGET_AMOUNT} (staging: tight),"
+  echo "  thresholds 50/90/100%. Or re-run with BILLING_ACCOUNT=<id> BUDGET_AMOUNT=<usd>."
+fi
+# Quota caps: Service Usage consumer quota overrides for Speech-to-Text and
+# Vertex AI. These are per-metric QuotaPreferences with no stable idempotent
+# gcloud verb across versions, so they are a documented manual step (tighten
+# hard for staging — it only runs fixtures/demos):
+echo "MANUAL STEP: cap live-AI quotas for $PROJECT (Console: IAM & Admin > Quotas,"
+echo "  or 'gcloud alpha services quota update'):"
+echo "  - Speech-to-Text: cap per-minute / per-day request quota (staging: minimal)."
+echo "  - Vertex AI (aiplatform): cap online-prediction / generate-content request quota."
+echo "  Staging caps should be as low as fixture recording + demos allow; prod sized to pilot."
+
 # ---- Cloud Run service + jobs (created by CI, not here) ----------------------
 # There is no image until the first deploy, so the service and job are created
-# and kept in sync by .github/workflows/deploy.yml (create-or-update semantics):
-#   prod:    blueshift-app        (service)  +  blueshift-worker         (job)
-#   staging: blueshift-app-staging (service) +  blueshift-worker-staging (job)
+# and kept in sync by .github/workflows/deploy.yml (create-or-update semantics).
+# Both projects host the SAME service+job names (the project scopes them):
+#   blueshift-app     (Cloud Run service)
+#   blueshift-worker  (Cloud Run Job)
 # Both run the SAME image; the worker Job overrides ENTRYPOINT with
 #   --command /app/worker  (+ <episode> <stage> args supplied per execution).
-# Env/secret wiring per service is in deploy/README.md and must match the
-# secret ids created above (database-url / session-signing-key /
-# identity-platform-config) and $RUNTIME as the service account.
+# On promote, deploy.yml COPIES the staging-tested image BY DIGEST into this
+# project's registry (no rebuild) before deploying prod. Env/secret wiring per
+# service is in deploy/README.md and must match the secret ids created above
+# (database-url / session-signing-key / identity-platform-config) and $RUNTIME
+# as the service account.
 #
 # Migrations: there is NO separate migrate binary or migrate Job. deploy.yml
 # runs `migrate up` from the CI runner against Cloud SQL through the Cloud SQL
@@ -160,10 +227,13 @@ echo "MANUAL STEP: enable Email/Password sign-in in Identity Platform console."
 # also used by `make demo` and the DB-backed tests.
 
 echo "----------------------------------------------------------------------"
-echo "Provisioning complete for $PROJECT ($REGION)."
-echo "GitHub repo settings needed:"
-echo "  vars.GCP_PROJECT=$PROJECT  vars.GCP_REGION=$REGION  vars.STAGING_URL=<url>"
-echo "  secrets.GCP_WIF_PROVIDER=$POOL/providers/github"
-echo "  secrets.GCP_DEPLOY_SA=$DEPLOYER"
+echo "Provisioning complete for $PROJECT ($REGION) [tier: $ENV_TIER]."
+echo "GitHub repo settings needed for THIS project (run again with the other"
+echo "project + ENV_TIER for its half):"
+echo "  vars.GCP_PROJECT_$SUF=$PROJECT"
+echo "  vars.GCP_REGION=$REGION  (shared)"
+echo "  vars.STAGING_URL=<url>   (staging tier only)"
+echo "  secrets.GCP_WIF_PROVIDER_$SUF=$POOL/providers/github"
+echo "  secrets.GCP_DEPLOY_SA_$SUF=$DEPLOYER"
 echo "Remaining manual steps: Identity Platform provider, secret values,"
-echo "  domain mapping for blueshift-app."
+echo "  budget alert + AI quota caps (above), domain mapping for blueshift-app."
