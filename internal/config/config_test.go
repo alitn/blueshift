@@ -31,9 +31,10 @@ func TestLoadDefaults(t *testing.T) {
 
 func TestLoadOverrides(t *testing.T) {
 	cfg, err := load(env(map[string]string{
-		"PORT":      "9090",
-		"ENV":       "prod",
-		"LOG_LEVEL": "warning",
+		"PORT":         "9090",
+		"ENV":          "prod",
+		"LOG_LEVEL":    "warning",
+		"DATABASE_URL": "postgres://u:p@h:5432/db",
 	}))
 	if err != nil {
 		t.Fatalf("load: unexpected error: %v", err)
@@ -46,6 +47,19 @@ func TestLoadOverrides(t *testing.T) {
 	}
 	if cfg.LogLevel != slog.LevelWarn {
 		t.Errorf("LogLevel = %v, want Warn", cfg.LogLevel)
+	}
+	if cfg.DatabaseURL != "postgres://u:p@h:5432/db" {
+		t.Errorf("DatabaseURL = %q", cfg.DatabaseURL)
+	}
+}
+
+func TestDatabaseURLOptional(t *testing.T) {
+	cfg, err := load(env(nil))
+	if err != nil {
+		t.Fatalf("load: unexpected error: %v", err)
+	}
+	if cfg.DatabaseURL != "" {
+		t.Errorf("DatabaseURL = %q, want empty when unset", cfg.DatabaseURL)
 	}
 }
 

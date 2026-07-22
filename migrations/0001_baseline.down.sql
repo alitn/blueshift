@@ -1,0 +1,6 @@
+-- 0001_baseline (down): intentionally a no-op.
+--
+-- Migrations are additive-only from the baseline onward (task
+-- m0-db-baseline). We never destructively roll the baseline back; a real
+-- "undo" would be a new additive migration. This file exists only to satisfy
+-- golang-migrate's up/down pairing.

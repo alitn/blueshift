@@ -1,0 +1,3 @@
+-- 0002_seed (down): intentionally a no-op. Seed data is additive and idempotent;
+-- we do not delete it on rollback. This file exists to satisfy golang-migrate's
+-- up/down pairing.

@@ -12,6 +12,7 @@ import (
 	"blueshift/internal/config"
 	"blueshift/internal/logx"
 	"blueshift/internal/server"
+	"blueshift/internal/store"
 	"blueshift/internal/webembed"
 )
 
@@ -37,6 +38,22 @@ func run() error {
 	}
 
 	ready := server.NewReadiness()
+
+	// The database is optional in this milestone: only when DATABASE_URL is set
+	// do we open a pool and register the "db" readiness check. Without it the
+	// app still boots and serves /healthz and the UI.
+	if cfg.DatabaseURL != "" {
+		st, err := store.Open(context.Background(), cfg.DatabaseURL)
+		if err != nil {
+			return fmt.Errorf("store: %w", err)
+		}
+		defer st.Close()
+		ready.Register("db", st.Ping)
+		logger.Info("database configured", "readyz_check", "db")
+	} else {
+		logger.Info("no DATABASE_URL set; database readiness check disabled")
+	}
+
 	srv := server.New(cfg, logger, ui, ready)
 
 	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)

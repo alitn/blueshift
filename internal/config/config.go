@@ -31,6 +31,9 @@ type Config struct {
 	Env Env
 	// LogLevel is the minimum slog level emitted to stdout.
 	LogLevel slog.Level
+	// DatabaseURL is the Postgres DSN. Empty means no database is configured:
+	// the app still boots, and the /readyz "db" check is not registered.
+	DatabaseURL string
 }
 
 // Addr returns the listen address (":<port>") for http.Server.
@@ -81,6 +84,10 @@ func load(getenv func(string) string) (Config, error) {
 		}
 		cfg.LogLevel = lvl
 	}
+
+	// DATABASE_URL is optional in this milestone: unset is a valid state where
+	// the database readiness check is simply not wired up.
+	cfg.DatabaseURL = strings.TrimSpace(getenv("DATABASE_URL"))
 
 	return cfg, nil
 }

@@ -1,5 +1,5 @@
 SHELL := /bin/bash
-.PHONY: setup check e2e eval demo dev build vendor-gate hex-gate
+.PHONY: setup check e2e eval demo dev build vendor-gate hex-gate migrate-up sqlc
 
 # ------------------------------------------------------------------------------
 # make check — the single truth. Nothing red can ever be committed.
@@ -71,6 +71,7 @@ setup:
 	chmod +x .githooks/* .claude/hooks/*.sh
 	@command -v golangci-lint >/dev/null || echo "TODO: install golangci-lint (brew install golangci-lint)"
 	@command -v migrate >/dev/null || echo "TODO: install golang-migrate (brew install golang-migrate)"
+	@command -v sqlc >/dev/null || echo "TODO: install sqlc (brew install sqlc) — codegen only, not a runtime dep"
 	@command -v ffmpeg >/dev/null || echo "TODO: install ffmpeg (brew install ffmpeg)"
 	@if [ -f web/package.json ]; then cd web && npm install; fi
 	@echo "setup: done (git hooks -> .githooks)"
@@ -102,3 +103,18 @@ demo:
 dev:
 	@echo "TODO(M0): make dev — go run ./cmd/app + cd web && npm run dev"
 	@exit 1
+
+# ------------------------------------------------------------------------------
+# Database: apply additive-only migrations (used by demo/CI). Requires the
+# golang-migrate CLI (make setup notes it) and DATABASE_URL.
+# ------------------------------------------------------------------------------
+migrate-up:
+	@if [ -z "$$DATABASE_URL" ]; then echo "migrate-up: DATABASE_URL is not set"; exit 1; fi
+	@command -v migrate >/dev/null || { echo "migrate-up: golang-migrate CLI not installed (make setup)"; exit 1; }
+	migrate -path migrations -database "$$DATABASE_URL" up
+
+# Regenerate the sqlc query layer (internal/store/db). sqlc is a dev-only
+# codegen tool; the generated code is committed and `make check` never needs it.
+sqlc:
+	@command -v sqlc >/dev/null || { echo "sqlc: not installed (brew install sqlc)"; exit 1; }
+	sqlc generate
