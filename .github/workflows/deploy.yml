@@ -1,15 +1,21 @@
 # Deploy pipeline (§7): main -> build ONE image (app+worker) -> staging ->
 # e2e against staging -> tag release-candidate. Manual promote (workflow_dispatch)
-# -> same image to prod --no-traffic -> migrations Job -> 10% traffic ->
+# -> same image to prod --no-traffic -> migrations -> 10% traffic ->
 # scripted 10-min watch -> 100%. Rollback = re-point traffic to prior revision.
 #
 # Auth is Workload Identity Federation (no JSON keys). Required configuration:
 #   vars.GCP_PROJECT              e.g. blueshift-pilot
 #   vars.GCP_REGION               us-central1
-#   vars.STAGING_URL              https://staging.<domain>
-#   secrets.GCP_WIF_PROVIDER      projects/N/locations/global/workloadIdentityPools/github/providers/github
-#   secrets.GCP_DEPLOY_SA         deployer@<project>.iam.gserviceaccount.com
+#   vars.STAGING_URL             https://staging.<domain>
+#   secrets.GCP_WIF_PROVIDER     projects/N/locations/global/workloadIdentityPools/github/providers/github
+#   secrets.GCP_DEPLOY_SA        deployer@<project>.iam.gserviceaccount.com
 # Jobs no-op until vars.GCP_PROJECT is set, so this file is safe to land now.
+#
+# Env/secret matrix per service is documented in deploy/README.md; the names
+# below must stay in lockstep with deploy/gcloud.sh (SA, SQL instance, bucket,
+# secret ids). Migrations run from this workflow through the Cloud SQL Auth
+# Proxy against the checked-out migrations/ tree — the single migration source
+# shared with `make demo` and the DB-backed tests (no separate migrate binary).
 name: deploy
 
 on:
@@ -27,7 +33,11 @@ permissions:
 
 env:
   REGION: ${{ vars.GCP_REGION || 'us-central1' }}
+  PROJECT: ${{ vars.GCP_PROJECT }}
   IMAGE: ${{ vars.GCP_REGION || 'us-central1' }}-docker.pkg.dev/${{ vars.GCP_PROJECT }}/blueshift/app
+  RUNTIME_SA: app-runtime@${{ vars.GCP_PROJECT }}.iam.gserviceaccount.com
+  SQL_INSTANCE: ${{ vars.GCP_PROJECT }}:${{ vars.GCP_REGION || 'us-central1' }}:blueshift-pg
+  BUCKET: ${{ vars.GCP_PROJECT }}-media
 
 jobs:
   # ---------------------------------------------------------------- staging --
@@ -55,26 +65,67 @@ jobs:
         run: |
           gcloud run deploy blueshift-app-staging \
             --image "$IMAGE:${{ github.sha }}" --region "$REGION" \
-            --set-env-vars ENV=staging --quiet
-          gcloud run jobs update blueshift-worker-staging \
-            --image "$IMAGE:${{ github.sha }}" --region "$REGION" --quiet
+            --service-account "$RUNTIME_SA" \
+            --add-cloudsql-instances "$SQL_INSTANCE" \
+            --set-env-vars "ENV=staging,AUTH_MODE=identity,BLOB_MODE=gcs,GCS_BUCKET=$BUCKET,WORKER_TRIGGER=cloudrun,WORKER_JOB_NAME=blueshift-worker-staging,WORKER_JOB_REGION=$REGION,WORKER_JOB_PROJECT=$PROJECT" \
+            --set-secrets "DATABASE_URL=database-url:latest,SESSION_SECRET=session-signing-key:latest,IDP_API_KEY=identity-platform-config:latest" \
+            --quiet
+          # Same image; ENTRYPOINT overridden to the worker. It never
+          # authenticates, but config.Load() validates the auth env in a
+          # prod-like ENV, so it carries the same secrets as the service.
+          gcloud run jobs deploy blueshift-worker-staging \
+            --image "$IMAGE:${{ github.sha }}" --region "$REGION" \
+            --command /app/worker \
+            --service-account "$RUNTIME_SA" \
+            --add-cloudsql-instances "$SQL_INSTANCE" \
+            --set-env-vars "ENV=staging,AUTH_MODE=identity,BLOB_MODE=gcs,GCS_BUCKET=$BUCKET" \
+            --set-secrets "DATABASE_URL=database-url:latest,SESSION_SECRET=session-signing-key:latest,IDP_API_KEY=identity-platform-config:latest" \
+            --max-retries 2 --task-timeout 3600 --quiet
 
-      - name: Run migrations (staging)
+      - name: Run migrations (staging, additive-only) via Cloud SQL Auth Proxy
         run: |
-          gcloud run jobs execute blueshift-migrate-staging --region "$REGION" --wait
+          set -euo pipefail
+          curl -sSfL -o cloud-sql-proxy \
+            https://storage.googleapis.com/cloud-sql-connectors/cloud-sql-proxy/v2.14.1/cloud-sql-proxy.linux.amd64
+          chmod +x cloud-sql-proxy
+          sudo mkdir -p /cloudsql && sudo chown "$USER" /cloudsql
+          ./cloud-sql-proxy --unix-socket /cloudsql "$SQL_INSTANCE" &
+          PROXY_PID=$!
+          for i in $(seq 1 30); do [ -S "/cloudsql/$SQL_INSTANCE/.s.PGSQL.5432" ] && break; sleep 1; done
+          # database-url secret is a unix-socket DSN whose host matches the proxy
+          # socket dir (postgres://app:...@/blueshift?host=/cloudsql/<instance>).
+          DATABASE_URL="$(gcloud secrets versions access latest --secret=database-url --project="$PROJECT")"
+          curl -sSfL https://github.com/golang-migrate/migrate/releases/download/v4.19.1/migrate.linux-amd64.tar.gz \
+            | tar -xz migrate
+          ./migrate -path migrations -database "$DATABASE_URL" up
+          kill "$PROXY_PID" 2>/dev/null || true
 
-      - uses: actions/setup-node@v4
-        with:
-          node-version: "22"
-
-      - name: E2E against staging
+      - name: Smoke against staging
+        # Remote smoke against the just-deployed staging service: liveness,
+        # readiness (DB check wired), and that the SPA shell is actually served.
+        # NOTE: this is a smoke, not the full functional/visual suite. The
+        # Playwright harness (playwright.config.ts, from m0-demo-seed) always
+        # boots `make demo` as its webServer and diffs baselines generated on
+        # that seeded stack; running the whole suite against a deployed URL is
+        # an M1 harness task, not wired here. rc tag gates on this smoke.
         run: |
-          if [ -f web/package.json ] && [ -d web/tests ]; then
-            cd web && npm ci && npx playwright install --with-deps chromium
-            E2E_BASE_URL="${{ vars.STAGING_URL }}" npx playwright test
-          else
-            echo "skip: e2e scaffold not present yet"
-          fi
+          set -euo pipefail
+          BASE="${{ vars.STAGING_URL }}"
+          code() { curl -s -o /dev/null -w '%{http_code}' "$1"; }
+
+          for path in /healthz /readyz; do
+            c=$(code "$BASE$path")
+            echo "$path -> $c"
+            [ "$c" = "200" ] || { echo "::error::$path returned $c (want 200)"; exit 1; }
+          done
+
+          root_code=$(code "$BASE/")
+          root_ct=$(curl -s -o /dev/null -w '%{content_type}' "$BASE/")
+          root_len=$(curl -s "$BASE/" | wc -c | tr -d ' ')
+          echo "/ -> $root_code, content-type=$root_ct, bytes=$root_len"
+          [ "$root_code" = "200" ] || { echo "::error::/ returned $root_code (want 200)"; exit 1; }
+          case "$root_ct" in text/html*) ;; *) echo "::error::/ content-type $root_ct (want text/html)"; exit 1;; esac
+          [ "$root_len" -gt 0 ] || { echo "::error::/ body was empty"; exit 1; }
 
       - name: Tag release-candidate
         run: |
@@ -100,13 +151,36 @@ jobs:
         run: |
           gcloud run deploy blueshift-app \
             --image "$IMAGE:${{ inputs.promote }}" --region "$REGION" \
-            --no-traffic --tag candidate --set-env-vars ENV=prod --quiet
-          gcloud run jobs update blueshift-worker \
-            --image "$IMAGE:${{ inputs.promote }}" --region "$REGION" --quiet
+            --no-traffic --tag candidate \
+            --service-account "$RUNTIME_SA" \
+            --add-cloudsql-instances "$SQL_INSTANCE" \
+            --set-env-vars "ENV=prod,AUTH_MODE=identity,BLOB_MODE=gcs,GCS_BUCKET=$BUCKET,WORKER_TRIGGER=cloudrun,WORKER_JOB_NAME=blueshift-worker,WORKER_JOB_REGION=$REGION,WORKER_JOB_PROJECT=$PROJECT" \
+            --set-secrets "DATABASE_URL=database-url:latest,SESSION_SECRET=session-signing-key:latest,IDP_API_KEY=identity-platform-config:latest" \
+            --quiet
+          gcloud run jobs deploy blueshift-worker \
+            --image "$IMAGE:${{ inputs.promote }}" --region "$REGION" \
+            --command /app/worker \
+            --service-account "$RUNTIME_SA" \
+            --add-cloudsql-instances "$SQL_INSTANCE" \
+            --set-env-vars "ENV=prod,AUTH_MODE=identity,BLOB_MODE=gcs,GCS_BUCKET=$BUCKET" \
+            --set-secrets "DATABASE_URL=database-url:latest,SESSION_SECRET=session-signing-key:latest,IDP_API_KEY=identity-platform-config:latest" \
+            --max-retries 2 --task-timeout 3600 --quiet
 
-      - name: Run migrations (prod, additive-only)
+      - name: Run migrations (prod, additive-only) via Cloud SQL Auth Proxy
         run: |
-          gcloud run jobs execute blueshift-migrate --region "$REGION" --wait
+          set -euo pipefail
+          curl -sSfL -o cloud-sql-proxy \
+            https://storage.googleapis.com/cloud-sql-connectors/cloud-sql-proxy/v2.14.1/cloud-sql-proxy.linux.amd64
+          chmod +x cloud-sql-proxy
+          sudo mkdir -p /cloudsql && sudo chown "$USER" /cloudsql
+          ./cloud-sql-proxy --unix-socket /cloudsql "$SQL_INSTANCE" &
+          PROXY_PID=$!
+          for i in $(seq 1 30); do [ -S "/cloudsql/$SQL_INSTANCE/.s.PGSQL.5432" ] && break; sleep 1; done
+          DATABASE_URL="$(gcloud secrets versions access latest --secret=database-url --project="$PROJECT")"
+          curl -sSfL https://github.com/golang-migrate/migrate/releases/download/v4.19.1/migrate.linux-amd64.tar.gz \
+            | tar -xz migrate
+          ./migrate -path migrations -database "$DATABASE_URL" up
+          kill "$PROXY_PID" 2>/dev/null || true
 
       - name: Shift 10% traffic
         run: |
@@ -115,15 +189,26 @@ jobs:
 
       - name: Watch 10 minutes (healthz + Error Reporting)
         run: |
-          URL=$(gcloud run services describe blueshift-app --region "$REGION" --format 'value(status.url)')
+          set -euo pipefail
+          # Probe the candidate's TAGGED url, not the service base: at 10% traffic
+          # ~90% of base-url probes would hit the stable revision and let a broken
+          # candidate pass. The tag url always routes to the candidate revision.
+          URL=$(gcloud run services describe blueshift-app --region "$REGION" --format=json \
+            | jq -r '.status.traffic[] | select(.tag=="candidate") | .url' | head -n1)
+          [ -n "$URL" ] || { echo "::error::could not resolve candidate tag url"; exit 1; }
+          echo "watching candidate: $URL"
           for i in $(seq 1 20); do
             code=$(curl -s -o /dev/null -w '%{http_code}' "$URL/healthz")
             echo "[$i/20] healthz=$code"
             [ "$code" = "200" ] || { echo "healthz failed — leaving traffic at 10%, rollback:"; \
               echo "  gcloud run services update-traffic blueshift-app --region $REGION --to-tags candidate=0"; exit 1; }
-            errs=$(gcloud beta error-reporting events list --limit 5 \
-              --format 'value(eventTime)' 2>/dev/null | wc -l)
-            echo "  recent error events: $errs"
+            # Honest reporting: on query failure, say so — never silently print 0.
+            if out=$(gcloud beta error-reporting events list --limit 5 \
+              --format 'value(eventTime)' 2>&1); then
+              echo "  recent error events (last 5 window): $(printf '%s' "$out" | grep -c .)"
+            else
+              echo "  WARN: Error Reporting query failed:"; printf '%s\n' "$out" | sed 's/^/    /'
+            fi
             sleep 30
           done
 

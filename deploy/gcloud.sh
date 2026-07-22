@@ -89,10 +89,20 @@ grant "$RUNTIME" roles/speech.client
 grant "$RUNTIME" roles/secretmanager.secretAccessor
 grant "$RUNTIME" roles/logging.logWriter
 grant "$RUNTIME" roles/errorreporting.writer
-# Deployer: push images, deploy Cloud Run, execute jobs.
+# The app executes the worker Cloud Run Job (POST jobs/{job}:run, see
+# internal/pipeline/trigger.go), which needs run.jobs.run. roles/run.invoker
+# grants it. A job-scoped binding would be tighter but the worker Jobs do not
+# exist until deploy.yml's first run, so this project-level grant is the
+# idempotent choice runnable before any image/job exists.
+grant "$RUNTIME" roles/run.invoker
+# Deployer: push images, deploy Cloud Run service+jobs, act as the runtime SA,
+# run additive migrations from CI through the Cloud SQL Auth Proxy, and read
+# Error Reporting during the promote watch.
 grant "$DEPLOYER" roles/run.admin
 grant "$DEPLOYER" roles/artifactregistry.writer
 grant "$DEPLOYER" roles/iam.serviceAccountUser
+grant "$DEPLOYER" roles/cloudsql.client        # auth-proxy connection for `migrate up`
+grant "$DEPLOYER" roles/errorreporting.viewer  # promote-watch error-event query
 
 # ---- Workload Identity Federation for GitHub Actions ------------------------
 if ! gcloud iam workload-identity-pools describe github --location global >/dev/null 2>&1; then
@@ -117,24 +127,37 @@ ensure_secret() {
   gcloud secrets describe "$1" >/dev/null 2>&1 || \
     gcloud secrets create "$1" --replication-policy automatic
 }
-ensure_secret database-url        # postgres://app:...@/blueshift?host=/cloudsql/...
-ensure_secret session-signing-key
-ensure_secret identity-platform-config
+ensure_secret database-url        # postgres://app:...@/blueshift?host=/cloudsql/<instance>
+ensure_secret session-signing-key # -> SESSION_SECRET
+ensure_secret identity-platform-config # -> IDP_API_KEY (Identity Platform web API key)
+
+# The CI deployer reads the database-url DSN to run migrations via the auth
+# proxy (deploy.yml). Runtime already has project-level secretAccessor; grant
+# the deployer read on just this one secret.
+gcloud secrets add-iam-policy-binding database-url \
+  --member "serviceAccount:$DEPLOYER" \
+  --role roles/secretmanager.secretAccessor >/dev/null
 
 # ---- Identity Platform -------------------------------------------------------
 # Enabled via API above; email/password provider + tenant config is a one-time
 # console step (no clean CLI). Roles live in Postgres (memberships), not IdP.
 echo "MANUAL STEP: enable Email/Password sign-in in Identity Platform console."
 
-# ---- Cloud Run service + jobs (placeholders until first image exists) --------
-# First real deploy comes from .github/workflows/deploy.yml. Create the worker
-# and migrate jobs here once an image has been pushed:
-#   gcloud run jobs create blueshift-worker --image <img> --region $REGION \
-#     --service-account $RUNTIME --max-retries 2 --task-timeout 3600
-#   gcloud run jobs create blueshift-migrate --image <img> --region $REGION \
-#     --service-account $RUNTIME --command /app/migrate
-# Staging variants: blueshift-app-staging / blueshift-worker-staging /
-# blueshift-migrate-staging (same image, ENV=staging).
+# ---- Cloud Run service + jobs (created by CI, not here) ----------------------
+# There is no image until the first deploy, so the service and job are created
+# and kept in sync by .github/workflows/deploy.yml (create-or-update semantics):
+#   prod:    blueshift-app        (service)  +  blueshift-worker         (job)
+#   staging: blueshift-app-staging (service) +  blueshift-worker-staging (job)
+# Both run the SAME image; the worker Job overrides ENTRYPOINT with
+#   --command /app/worker  (+ <episode> <stage> args supplied per execution).
+# Env/secret wiring per service is in deploy/README.md and must match the
+# secret ids created above (database-url / session-signing-key /
+# identity-platform-config) and $RUNTIME as the service account.
+#
+# Migrations: there is NO separate migrate binary or migrate Job. deploy.yml
+# runs `migrate up` from the CI runner against Cloud SQL through the Cloud SQL
+# Auth Proxy, using the migrations/ tree in the repo — the one migration source
+# also used by `make demo` and the DB-backed tests.
 
 echo "----------------------------------------------------------------------"
 echo "Provisioning complete for $PROJECT ($REGION)."

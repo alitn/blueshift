@@ -1,0 +1,17 @@
+# Keep the build context lean and deterministic. The web build is produced
+# inside stage 1, and the embed dir is overlaid in stage 2 — never shipped from
+# the host. Migrations, Go source, and web source are all included by default.
+.git
+.github
+.githooks
+.claude
+.demo
+.artifacts
+**/node_modules
+web/build
+web/.svelte-kit
+web/test-results
+web/playwright-report
+internal/webembed/dist
+*.md
+!README.md
