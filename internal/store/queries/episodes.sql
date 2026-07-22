@@ -38,6 +38,22 @@ WHERE public_id = $1
   AND deleted_at IS NULL
 RETURNING *;
 
+-- name: RetryFailedEpisode :one
+-- State-guarded retry: atomically move a single 'failed' episode back to
+-- 'uploaded' so the ingest trigger can re-run it, clearing the prior error_id.
+-- Org-scoped and gated on status = 'failed', so a caller can only retry their
+-- own org's failed episode and a row in any other state is left untouched
+-- (pgx.ErrNoRows, which the handler maps to 409).
+UPDATE episodes
+SET status = 'uploaded',
+    error_id = NULL,
+    updated_at = now()
+WHERE public_id = $1
+  AND org_id = $2
+  AND status = 'failed'
+  AND deleted_at IS NULL
+RETURNING *;
+
 -- name: ClaimEpisodeForIngest :one
 -- Compare-and-set claim: atomically move a single 'uploaded' episode to
 -- 'processing'. The status predicate is the concurrency guard — a second

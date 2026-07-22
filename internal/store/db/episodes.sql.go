@@ -279,6 +279,52 @@ func (q *Queries) MarkEpisodeReady(ctx context.Context, arg MarkEpisodeReadyPara
 	return i, err
 }
 
+const retryFailedEpisode = `-- name: RetryFailedEpisode :one
+UPDATE episodes
+SET status = 'uploaded',
+    error_id = NULL,
+    updated_at = now()
+WHERE public_id = $1
+  AND org_id = $2
+  AND status = 'failed'
+  AND deleted_at IS NULL
+RETURNING id, public_id, org_id, show_id, title, source_filename, language, status, duration_ms, master_object_key, proxy_object_key, error_id, created_at, updated_at, deleted_at, master_size_bytes
+`
+
+type RetryFailedEpisodeParams struct {
+	PublicID pgtype.UUID
+	OrgID    int64
+}
+
+// State-guarded retry: atomically move a single 'failed' episode back to
+// 'uploaded' so the ingest trigger can re-run it, clearing the prior error_id.
+// Org-scoped and gated on status = 'failed', so a caller can only retry their
+// own org's failed episode and a row in any other state is left untouched
+// (pgx.ErrNoRows, which the handler maps to 409).
+func (q *Queries) RetryFailedEpisode(ctx context.Context, arg RetryFailedEpisodeParams) (Episode, error) {
+	row := q.db.QueryRow(ctx, retryFailedEpisode, arg.PublicID, arg.OrgID)
+	var i Episode
+	err := row.Scan(
+		&i.ID,
+		&i.PublicID,
+		&i.OrgID,
+		&i.ShowID,
+		&i.Title,
+		&i.SourceFilename,
+		&i.Language,
+		&i.Status,
+		&i.DurationMs,
+		&i.MasterObjectKey,
+		&i.ProxyObjectKey,
+		&i.ErrorID,
+		&i.CreatedAt,
+		&i.UpdatedAt,
+		&i.DeletedAt,
+		&i.MasterSizeBytes,
+	)
+	return i, err
+}
+
 const setEpisodeMasterKey = `-- name: SetEpisodeMasterKey :one
 UPDATE episodes
 SET master_object_key = $3,

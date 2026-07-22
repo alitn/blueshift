@@ -48,6 +48,8 @@ export default {
       warn: "var(--warn)",
       danger: "var(--danger)",
       "warn-underline": "var(--warn-underline)",
+      "danger-border": "var(--danger-border)",
+      "danger-border-hover": "var(--danger-border-hover)",
       "danger-wash": "var(--danger-wash)",
 
       "border-hairline": "var(--border-hairline)",

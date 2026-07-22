@@ -114,6 +114,51 @@ func (s *Store) resolveOrg(ctx context.Context, orgPublicID string) (db.Org, err
 	return org, nil
 }
 
+// ListEpisodes returns the org's episodes newest-first (soft-deleted excluded),
+// scoped by the resolved org id — never by client input, so a caller can only
+// ever see their own org's rows.
+func (s *Store) ListEpisodes(ctx context.Context, orgPublicID string) ([]api.EpisodeRow, error) {
+	org, err := s.resolveOrg(ctx, orgPublicID)
+	if err != nil {
+		return nil, err
+	}
+	eps, err := s.ListEpisodesByOrg(ctx, org.ID)
+	if err != nil {
+		return nil, fmt.Errorf("store: list episodes: %w", err)
+	}
+	out := make([]api.EpisodeRow, 0, len(eps))
+	for _, ep := range eps {
+		out = append(out, episodeRow(org.PublicID, ep))
+	}
+	return out, nil
+}
+
+// RetryEpisode compare-and-sets a 'failed' episode back to 'uploaded'. It is
+// org-scoped and gated on status = 'failed'; when no such row matches (wrong
+// org, missing, or not failed) it reports retried=false so the handler returns
+// a 409, never touching another org's data.
+func (s *Store) RetryEpisode(ctx context.Context, orgPublicID, episodePublicID string) (api.EpisodeRow, bool, error) {
+	org, err := s.resolveOrg(ctx, orgPublicID)
+	if err != nil {
+		return api.EpisodeRow{}, false, err
+	}
+	epUUID, err := ids.Decode(ids.Episode, episodePublicID)
+	if err != nil {
+		return api.EpisodeRow{}, false, nil
+	}
+	ep, err := s.RetryFailedEpisode(ctx, db.RetryFailedEpisodeParams{
+		PublicID: pgUUID(epUUID),
+		OrgID:    org.ID,
+	})
+	if errors.Is(err, pgx.ErrNoRows) {
+		return api.EpisodeRow{}, false, nil
+	}
+	if err != nil {
+		return api.EpisodeRow{}, false, fmt.Errorf("store: retry episode: %w", err)
+	}
+	return episodeRow(org.PublicID, ep), true, nil
+}
+
 func episodeRow(orgPub pgtype.UUID, ep db.Episode) api.EpisodeRow {
 	return api.EpisodeRow{
 		OrgPublicID:    orgPub.Bytes,
@@ -123,7 +168,9 @@ func episodeRow(orgPub pgtype.UUID, ep db.Episode) api.EpisodeRow {
 		Language:       ep.Language,
 		Status:         ep.Status,
 		SizeBytes:      int64OrZero(ep.MasterSizeBytes),
+		DurationMs:     int64OrZero(ep.DurationMs),
 		MasterKey:      textOrEmpty(ep.MasterObjectKey),
+		ProxyKey:       textOrEmpty(ep.ProxyObjectKey),
 		CreatedAt:      ep.CreatedAt.Time,
 	}
 }

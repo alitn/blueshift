@@ -84,8 +84,11 @@ func NewRouter(d Deps) http.Handler {
 	mux.HandleFunc("POST "+auth.LogoutPath, h.logout)
 	mux.HandleFunc("GET "+auth.MePath, h.me)
 	if d.Episodes != nil && d.Blob != nil {
+		mux.HandleFunc("GET /api/episodes", h.listEpisodes)
 		mux.HandleFunc("POST /api/episodes", h.createEpisode)
 		mux.HandleFunc("POST /api/episodes/{id}/upload-complete", h.uploadComplete)
+		mux.HandleFunc("GET /api/episodes/{id}/proxy", h.episodeProxy)
+		mux.HandleFunc("POST /api/episodes/{id}/retry", h.retryEpisode)
 	}
 	return mux
 }

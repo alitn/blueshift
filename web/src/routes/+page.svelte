@@ -1,33 +1,124 @@
 <script lang="ts">
-  // Library first-run placeholder (screen 05). Static only in M0 — real Library
-  // data lands in m0-library and the upload flow in m0-upload, so the primary
-  // CTA is disabled here (opacity 0.35 + not-allowed per DESIGN.md button rules).
+  // Library (prototype screen 03 / first-run screen 05). Lists org episodes with
+  // live pipeline status (polled — see $lib/pollStore), client-side status +
+  // search filtering, an upload dialog, and proxy playback for Ready rows. All
+  // color/type/spacing come from tokens.
+  import { onDestroy, onMount } from 'svelte';
+  import { createEpisodesStore } from '$lib/pollStore';
+  import { retryEpisode, type Episode } from '$lib/episodes';
+  import { applyFilter, counts, type EpisodeFilter } from '$lib/components/studio/filter';
+  import LibraryTable from '$lib/components/studio/LibraryTable.svelte';
+  import FilterChips from '$lib/components/studio/FilterChips.svelte';
+  import EmptyState from '$lib/components/studio/EmptyState.svelte';
+  import UploadDialog from '$lib/components/studio/UploadDialog.svelte';
+  import PlayerDialog from '$lib/components/studio/PlayerDialog.svelte';
+
+  const episodes = createEpisodesStore();
+
+  let filter = $state<EpisodeFilter>('all');
+  let query = $state('');
+  let uploadOpen = $state(false);
+  let playerOpen = $state(false);
+  let playerEpisode = $state<Episode | null>(null);
+
+  const chipCounts = $derived(counts($episodes.episodes));
+  const visible = $derived(applyFilter($episodes.episodes, filter, query));
+  const isEmpty = $derived($episodes.loaded && $episodes.episodes.length === 0);
+
+  onMount(() => episodes.start());
+  onDestroy(() => episodes.stop());
+
+  function openEpisode(ep: Episode) {
+    playerEpisode = ep;
+    playerOpen = true;
+  }
+
+  async function onRetry(ep: Episode) {
+    const ok = await retryEpisode(ep.id);
+    if (ok) {
+      // Optimistically reflect the reset and resume polling so the row advances.
+      await episodes.refresh();
+      episodes.start();
+    }
+  }
+
+  function onUploaded() {
+    // A new 'uploaded' episode exists; refresh and ensure polling is running.
+    void episodes.refresh();
+    episodes.start();
+  }
+
+  // `U` opens the upload dialog, unless the user is typing or a dialog is open.
+  function onWindowKey(event: KeyboardEvent) {
+    if (event.defaultPrevented || event.metaKey || event.ctrlKey || event.altKey) return;
+    if (uploadOpen || playerOpen) return;
+    const el = event.target as HTMLElement | null;
+    const tag = el?.tagName;
+    if (tag === 'INPUT' || tag === 'TEXTAREA' || el?.isContentEditable) return;
+    if (event.key === 'u' || event.key === 'U') {
+      event.preventDefault();
+      uploadOpen = true;
+    }
+  }
 </script>
 
 <svelte:head>
   <title>Library · Blueshift Studio</title>
 </svelte:head>
 
-<section class="flex h-full items-center justify-center p-6" aria-labelledby="first-run-title">
-  <div
-    class="w-[620px] max-w-full rounded-4 border border-dashed border-border-control p-[28px] text-center"
-  >
-    <h1 id="first-run-title" class="text-[14px] font-semibold tracking-[0.01em] text-text-primary">
-      Upload your first master
-    </h1>
-    <p class="mx-auto mb-4 mt-[7px] text-[11.5px] leading-[1.6] text-text-muted">
-      Processing takes about 25 minutes — transcription, analysis and fidelity checks run
-      unattended.<br />Explore the sample episode meanwhile.
-    </p>
+<svelte:window onkeydown={onWindowKey} />
+
+<div class="flex h-full min-h-0 flex-col">
+  <!-- Toolbar: search · filter chips · keyboard hint · upload -->
+  <div class="flex flex-none items-center gap-3.5 border-b border-border-subtle px-6 py-3.5">
+    <div
+      class="flex w-[300px] items-center gap-2 rounded-3 border border-border-strong px-2.5 py-2 transition-colors duration-hover ease-out focus-within:border-accent-border"
+    >
+      <svg width="11" height="11" viewBox="0 0 12 12" aria-hidden="true" class="flex-none">
+        <circle cx="5" cy="5" r="3.6" fill="none" stroke="currentColor" stroke-width="1.2" class="text-text-faint" />
+        <path d="M8 8l3 3" stroke="currentColor" stroke-width="1.2" class="text-text-faint" />
+      </svg>
+      <input
+        type="search"
+        bind:value={query}
+        placeholder="Search episodes, guests, topics…"
+        aria-label="Search episodes"
+        class="w-full bg-transparent font-mono text-[10px] text-text-primary outline-none placeholder:text-text-faint"
+      />
+    </div>
+
+    <FilterChips active={filter} counts={chipCounts} onSelect={(f) => (filter = f)} />
+
+    <div class="flex-1"></div>
+
+    <div
+      class="hidden items-center gap-1.5 font-mono text-[8.5px] tracking-[0.1em] text-text-muted md:flex"
+      aria-hidden="true"
+    >
+      <kbd class="rounded-2 border border-border-strong px-1.5 py-[2px]">U</kbd>
+      <span class="text-text-faint">UPLOAD</span>
+      <kbd class="ml-1.5 rounded-2 border border-border-strong px-1.5 py-[2px]">↵</kbd>
+      <span class="text-text-faint">OPEN</span>
+    </div>
+
     <button
       type="button"
-      disabled
-      class="inline-block cursor-not-allowed rounded-3 bg-accent px-5 py-2 text-[10.5px] font-semibold tracking-[0.1em] text-text-on-accent opacity-[0.35]"
+      onclick={() => (uploadOpen = true)}
+      class="rounded-3 bg-accent px-4.5 py-2 text-[10.5px] font-semibold tracking-[0.1em] text-text-on-accent outline-none transition-colors duration-hover ease-out hover:bg-accent-bright focus-visible:bg-accent-bright"
     >
       UPLOAD MASTER
     </button>
-    <p class="mt-3 font-mono text-[8.5px] tracking-[0.06em] text-text-faint">
-      MP4 · MOV · MXF — UP TO 40 GB
-    </p>
   </div>
-</section>
+
+  <!-- Body: table, empty state, or (first load) nothing -->
+  <div class="min-h-0 flex-1">
+    {#if isEmpty}
+      <EmptyState onUpload={() => (uploadOpen = true)} />
+    {:else if $episodes.loaded}
+      <LibraryTable episodes={visible} onOpen={openEpisode} {onRetry} />
+    {/if}
+  </div>
+</div>
+
+<UploadDialog bind:open={uploadOpen} onUploaded={onUploaded} />
+<PlayerDialog bind:open={playerOpen} episode={playerEpisode} />

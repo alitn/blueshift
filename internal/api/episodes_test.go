@@ -7,6 +7,7 @@ import (
 	"errors"
 	"net/http"
 	"net/http/httptest"
+	"sort"
 	"strings"
 	"sync"
 	"testing"
@@ -33,6 +34,7 @@ type fakeRepo struct {
 	eps        map[string]storedEpisode // key: ep_ encoded public id
 	counter    byte
 	failCreate error
+	failList   error
 }
 
 func newFakeRepo() *fakeRepo { return &fakeRepo{eps: map[string]storedEpisode{}} }
@@ -87,6 +89,51 @@ func (f *fakeRepo) SetEpisodeMasterKey(_ context.Context, orgPublicID, episodePu
 	s.row.MasterKey = key
 	f.eps[episodePublicID] = s
 	return s.row, true, nil
+}
+
+// ListEpisodes returns only the rows owned by orgPublicID, newest-first by
+// counter (the fake's insertion order). It mirrors the store's org scoping.
+func (f *fakeRepo) ListEpisodes(_ context.Context, orgPublicID string) ([]EpisodeRow, error) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	if f.failList != nil {
+		return nil, f.failList
+	}
+	var out []EpisodeRow
+	for _, s := range f.eps {
+		if s.owner == orgPublicID {
+			out = append(out, s.row)
+		}
+	}
+	// Deterministic newest-first: higher counter (last byte) first.
+	sort.Slice(out, func(i, j int) bool { return out[i].PublicID[15] > out[j].PublicID[15] })
+	return out, nil
+}
+
+// RetryEpisode compare-and-sets a failed row back to uploaded, org-scoped.
+func (f *fakeRepo) RetryEpisode(_ context.Context, orgPublicID, episodePublicID string) (EpisodeRow, bool, error) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	s, ok := f.eps[episodePublicID]
+	if !ok || s.owner != orgPublicID || s.row.Status != "failed" {
+		return EpisodeRow{}, false, nil
+	}
+	s.row.Status = "uploaded"
+	f.eps[episodePublicID] = s
+	return s.row, true, nil
+}
+
+// setStatus is a test helper to move a stored row into a given status/state so
+// the proxy and retry guards can be exercised without a worker.
+func (f *fakeRepo) setStatus(epID, status, proxyKey string) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	s := f.eps[epID]
+	s.row.Status = status
+	if proxyKey != "" {
+		s.row.ProxyKey = proxyKey
+	}
+	f.eps[epID] = s
 }
 
 // errTrigger is the failure a fakeTrigger returns when told to fail.
@@ -428,6 +475,197 @@ func TestCreateDTONeutral(t *testing.T) {
 	}
 	if _, present := raw["master_key"]; present {
 		t.Error("response exposes master_key at top level")
+	}
+}
+
+// --- list / proxy / retry ---------------------------------------------------
+
+// seedEpisode creates an episode for org and returns its public id, without
+// uploading bytes (status stays 'uploaded').
+func seedEpisode(t *testing.T, router http.Handler, org, title, filename string) string {
+	t.Helper()
+	body := `{"title":"` + title + `","source_filename":"` + filename + `","size_bytes":10,"content_type":"video/mp4"}`
+	rec := doAs(router, org, createReq(body))
+	if rec.Code != http.StatusCreated {
+		t.Fatalf("seed create status = %d (body %s)", rec.Code, rec.Body.String())
+	}
+	var created createEpisodeResponse
+	if err := json.Unmarshal(rec.Body.Bytes(), &created); err != nil {
+		t.Fatalf("decode: %v", err)
+	}
+	return created.Episode.ID
+}
+
+func TestListEpisodesOrgScoped(t *testing.T) {
+	repo := newFakeRepo()
+	router, _, _ := newEpisodeRouter(t, repo)
+
+	aID := seedEpisode(t, router, orgA, "A one", "a.mp4")
+	_ = seedEpisode(t, router, orgB, "B secret", "b.mp4")
+
+	rec := doAs(router, orgA, httptest.NewRequest(http.MethodGet, "/api/episodes", nil))
+	if rec.Code != http.StatusOK {
+		t.Fatalf("list status = %d, want 200 (body %s)", rec.Code, rec.Body.String())
+	}
+	var resp listEpisodesResponse
+	if err := json.Unmarshal(rec.Body.Bytes(), &resp); err != nil {
+		t.Fatalf("decode: %v", err)
+	}
+	if len(resp.Episodes) != 1 {
+		t.Fatalf("org A sees %d episodes, want 1 (leak?)", len(resp.Episodes))
+	}
+	if resp.Episodes[0].ID != aID {
+		t.Errorf("listed id = %q, want %q", resp.Episodes[0].ID, aID)
+	}
+	if resp.Episodes[0].Status != "uploaded" {
+		t.Errorf("status = %q, want uploaded", resp.Episodes[0].Status)
+	}
+}
+
+// TestListEpisodesDTONeutral asserts the list projection exposes no internal id
+// or storage key, and omits unknown duration (still 'uploaded').
+func TestListEpisodesDTONeutral(t *testing.T) {
+	repo := newFakeRepo()
+	router, _, _ := newEpisodeRouter(t, repo)
+	_ = seedEpisode(t, router, orgA, "A", "a.mp4")
+
+	rec := doAs(router, orgA, httptest.NewRequest(http.MethodGet, "/api/episodes", nil))
+	var raw map[string]any
+	if err := json.Unmarshal(rec.Body.Bytes(), &raw); err != nil {
+		t.Fatalf("decode: %v", err)
+	}
+	list := raw["episodes"].([]any)
+	ep := list[0].(map[string]any)
+	for _, bad := range []string{"org_id", "show_id", "master_object_key", "master_key", "proxy_object_key", "proxy_key"} {
+		if _, present := ep[bad]; present {
+			t.Errorf("list DTO exposes %q", bad)
+		}
+	}
+	if _, present := ep["duration_ms"]; present {
+		t.Error("duration_ms present for a not-yet-measured episode; want omitted")
+	}
+	if _, present := ep["uploaded_at"]; !present {
+		t.Error("uploaded_at missing from list DTO")
+	}
+}
+
+func TestProxy404BeforeReady(t *testing.T) {
+	repo := newFakeRepo()
+	router, _, _ := newEpisodeRouter(t, repo)
+	id := seedEpisode(t, router, orgA, "A", "a.mp4")
+
+	for _, st := range []string{"uploaded", "processing", "failed"} {
+		repo.setStatus(id, st, "")
+		rec := doAs(router, orgA, httptest.NewRequest(http.MethodGet, "/api/episodes/"+id+"/proxy", nil))
+		if rec.Code != http.StatusNotFound {
+			t.Errorf("proxy in state %q status = %d, want 404", st, rec.Code)
+		}
+	}
+}
+
+func TestProxyReadyReturnsSignedURL(t *testing.T) {
+	repo := newFakeRepo()
+	router, _, _ := newEpisodeRouter(t, repo)
+	id := seedEpisode(t, router, orgA, "A", "a.mp4")
+	repo.setStatus(id, "ready", "org_x/ep_y/proxies/proxy.mp4")
+
+	rec := doAs(router, orgA, httptest.NewRequest(http.MethodGet, "/api/episodes/"+id+"/proxy", nil))
+	if rec.Code != http.StatusOK {
+		t.Fatalf("proxy status = %d, want 200 (body %s)", rec.Code, rec.Body.String())
+	}
+	var resp proxyResponse
+	if err := json.Unmarshal(rec.Body.Bytes(), &resp); err != nil {
+		t.Fatalf("decode: %v", err)
+	}
+	if resp.URL == "" || resp.ExpiresAt == "" {
+		t.Errorf("proxy response = %+v, want url + expires_at", resp)
+	}
+}
+
+func TestProxyCrossOrgIsolated(t *testing.T) {
+	repo := newFakeRepo()
+	router, _, _ := newEpisodeRouter(t, repo)
+	id := seedEpisode(t, router, orgA, "A", "a.mp4")
+	repo.setStatus(id, "ready", "org_x/ep_y/proxies/proxy.mp4")
+
+	rec := doAs(router, orgB, httptest.NewRequest(http.MethodGet, "/api/episodes/"+id+"/proxy", nil))
+	if rec.Code != http.StatusNotFound {
+		t.Fatalf("cross-org proxy status = %d, want 404", rec.Code)
+	}
+}
+
+func TestRetryOnlyFromFailed(t *testing.T) {
+	repo := newFakeRepo()
+	tr := &fakeTrigger{}
+	router, _ := newEpisodeRouterWithTrigger(t, repo, tr)
+	id := seedEpisode(t, router, orgA, "A", "a.mp4")
+
+	// Not failed yet -> 409, no trigger.
+	for _, st := range []string{"uploaded", "processing", "ready"} {
+		repo.setStatus(id, st, "")
+		rec := doAs(router, orgA, httptest.NewRequest(http.MethodPost, "/api/episodes/"+id+"/retry", nil))
+		if rec.Code != http.StatusConflict {
+			t.Errorf("retry from %q status = %d, want 409", st, rec.Code)
+		}
+	}
+	if tr.count() != 0 {
+		t.Fatalf("trigger fired %d times before a valid retry, want 0", tr.count())
+	}
+
+	// Failed -> 200, resets to uploaded, fires ingest.
+	repo.setStatus(id, "failed", "")
+	rec := doAs(router, orgA, httptest.NewRequest(http.MethodPost, "/api/episodes/"+id+"/retry", nil))
+	if rec.Code != http.StatusOK {
+		t.Fatalf("retry from failed status = %d, want 200 (body %s)", rec.Code, rec.Body.String())
+	}
+	var dto episodeDTO
+	if err := json.Unmarshal(rec.Body.Bytes(), &dto); err != nil {
+		t.Fatalf("decode: %v", err)
+	}
+	if dto.Status != "uploaded" {
+		t.Errorf("post-retry status = %q, want uploaded", dto.Status)
+	}
+	if tr.count() != 1 {
+		t.Fatalf("trigger fired %d times, want 1", tr.count())
+	}
+	if got := tr.calls[0]; got[0] != id || got[1] != "ingest" {
+		t.Errorf("trigger called with %v, want [%s ingest]", got, id)
+	}
+}
+
+func TestRetryUnknownEpisode404(t *testing.T) {
+	repo := newFakeRepo()
+	router, _, _ := newEpisodeRouter(t, repo)
+	rec := doAs(router, orgA, httptest.NewRequest(http.MethodPost, "/api/episodes/ep_"+strings.Repeat("0", 26)+"/retry", nil))
+	if rec.Code != http.StatusNotFound {
+		t.Fatalf("retry unknown status = %d, want 404", rec.Code)
+	}
+}
+
+func TestRetryCrossOrgIsolated(t *testing.T) {
+	repo := newFakeRepo()
+	router, _, _ := newEpisodeRouter(t, repo)
+	id := seedEpisode(t, router, orgA, "A", "a.mp4")
+	repo.setStatus(id, "failed", "")
+
+	rec := doAs(router, orgB, httptest.NewRequest(http.MethodPost, "/api/episodes/"+id+"/retry", nil))
+	if rec.Code != http.StatusNotFound {
+		t.Fatalf("cross-org retry status = %d, want 404", rec.Code)
+	}
+	// Org A's episode stays failed.
+	if repo.eps[id].row.Status != "failed" {
+		t.Errorf("org B changed org A's episode status to %q", repo.eps[id].row.Status)
+	}
+}
+
+func TestListUnauthenticated401(t *testing.T) {
+	repo := newFakeRepo()
+	router, _, _ := newEpisodeRouter(t, repo)
+	req := httptest.NewRequest(http.MethodGet, "/api/episodes", nil)
+	rec := httptest.NewRecorder()
+	router.ServeHTTP(rec, req)
+	if rec.Code != http.StatusUnauthorized {
+		t.Fatalf("status = %d, want 401", rec.Code)
 	}
 }
 

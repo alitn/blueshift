@@ -61,7 +61,9 @@ type EpisodeRow struct {
 	Language       string
 	Status         string
 	SizeBytes      int64 // declared master size; 0 = unknown
+	DurationMs     int64 // measured proxy duration; 0 = not yet measured
 	MasterKey      string
+	ProxyKey       string // set once ingest succeeds; empty until Ready
 	CreatedAt      time.Time
 }
 
@@ -74,6 +76,15 @@ type EpisodeRepo interface {
 	CreateEpisode(ctx context.Context, orgPublicID string, in NewEpisode) (EpisodeRow, error)
 	GetEpisode(ctx context.Context, orgPublicID, episodePublicID string) (EpisodeRow, bool, error)
 	SetEpisodeMasterKey(ctx context.Context, orgPublicID, episodePublicID, key string) (EpisodeRow, bool, error)
+	// ListEpisodes returns the org's episodes newest-first, excluding
+	// soft-deleted rows. It never sees another org's data (the query is
+	// org-scoped by the resolved org id, not by any client input).
+	ListEpisodes(ctx context.Context, orgPublicID string) ([]EpisodeRow, error)
+	// RetryEpisode compare-and-sets a 'failed' episode back to 'uploaded' so the
+	// ingest trigger can re-run it. retried=false (err=nil) when no failed row
+	// matched the org+id — either it is not visible to the org or it is not in
+	// 'failed' — so the handler can map a lost/invalid transition to 409.
+	RetryEpisode(ctx context.Context, orgPublicID, episodePublicID string) (row EpisodeRow, retried bool, err error)
 }
 
 // createEpisodeRequest is the POST /api/episodes body.
@@ -85,25 +96,38 @@ type createEpisodeRequest struct {
 }
 
 // episodeDTO is the neutral episode projection returned to clients: prefixed
-// public id, no internal ids, no storage key.
+// public id, no internal ids, no storage key. DurationMs and SizeBytes are
+// pointers so an unknown value serializes as absent (the UI renders "—") rather
+// than a misleading zero.
 type episodeDTO struct {
 	ID             string `json:"id"`
 	Title          string `json:"title"`
 	SourceFilename string `json:"source_filename"`
 	Language       string `json:"language"`
 	Status         string `json:"status"`
-	CreatedAt      string `json:"created_at"`
+	DurationMs     *int64 `json:"duration_ms,omitempty"`
+	SizeBytes      *int64 `json:"size_bytes,omitempty"`
+	UploadedAt     string `json:"uploaded_at"`
 }
 
 func episodeDTOFrom(row EpisodeRow) episodeDTO {
-	return episodeDTO{
+	dto := episodeDTO{
 		ID:             ids.Encode(ids.Episode, row.PublicID),
 		Title:          row.Title,
 		SourceFilename: row.SourceFilename,
 		Language:       row.Language,
 		Status:         row.Status,
-		CreatedAt:      row.CreatedAt.UTC().Format(time.RFC3339),
+		UploadedAt:     row.CreatedAt.UTC().Format(time.RFC3339),
 	}
+	if row.DurationMs > 0 {
+		d := row.DurationMs
+		dto.DurationMs = &d
+	}
+	if row.SizeBytes > 0 {
+		s := row.SizeBytes
+		dto.SizeBytes = &s
+	}
+	return dto
 }
 
 // createEpisodeResponse pairs the created episode with the client's upload
@@ -238,6 +262,141 @@ func (h *handler) uploadComplete(w http.ResponseWriter, r *http.Request) {
 
 	writeJSON(w, http.StatusOK, episodeDTOFrom(updated))
 }
+
+// proxyURLTTL bounds how long a minted proxy playback URL stays valid. Short by
+// design: the URL is handed to a <video> element that starts playing at once.
+const proxyURLTTL = 1 * time.Hour
+
+// listEpisodes returns the principal's org-scoped episodes, newest first,
+// projected to the neutral DTO. Soft-deleted rows are excluded by the store.
+func (h *handler) listEpisodes(w http.ResponseWriter, r *http.Request) {
+	p, ok := auth.FromContext(r.Context())
+	if !ok {
+		writeJSON(w, http.StatusUnauthorized, errBody{Error: "unauthorized"})
+		return
+	}
+	rows, err := h.deps.Episodes.ListEpisodes(r.Context(), p.OrgPublicID)
+	if err != nil {
+		h.unavailable(w, r, "list episodes failed", err)
+		return
+	}
+	out := make([]episodeDTO, 0, len(rows))
+	for _, row := range rows {
+		out = append(out, episodeDTOFrom(row))
+	}
+	writeJSON(w, http.StatusOK, listEpisodesResponse{Episodes: out})
+}
+
+// listEpisodesResponse wraps the list so the payload is an object (extensible
+// with paging later) rather than a bare array.
+type listEpisodesResponse struct {
+	Episodes []episodeDTO `json:"episodes"`
+}
+
+// proxyResponse is the signed proxy-playback grant: a short-lived GET URL and
+// its expiry. The URL is opaque to the client and reveals no storage layout.
+type proxyResponse struct {
+	URL       string `json:"url"`
+	ExpiresAt string `json:"expires_at"`
+}
+
+// episodeProxy mints a short-lived signed GET URL for a Ready episode's proxy.
+// It is org-scoped (an episode not visible to the org is a 404) and refuses any
+// episode that is not Ready with a recorded proxy key — before Ready there is
+// nothing to play, so that is a 404 too (a neutral "not available yet").
+func (h *handler) episodeProxy(w http.ResponseWriter, r *http.Request) {
+	p, ok := auth.FromContext(r.Context())
+	if !ok {
+		writeJSON(w, http.StatusUnauthorized, errBody{Error: "unauthorized"})
+		return
+	}
+	episodeID := r.PathValue("id")
+
+	row, found, err := h.deps.Episodes.GetEpisode(r.Context(), p.OrgPublicID, episodeID)
+	if err != nil {
+		h.unavailable(w, r, "get episode failed", err)
+		return
+	}
+	if !found || row.Status != statusReady || row.ProxyKey == "" {
+		writeJSON(w, http.StatusNotFound, errBody{Error: "not_found"})
+		return
+	}
+
+	url, err := h.deps.Blob.SignedGetURL(r.Context(), row.ProxyKey, proxyURLTTL)
+	if errors.Is(err, blob.ErrNotFound) {
+		writeJSON(w, http.StatusNotFound, errBody{Error: "not_found"})
+		return
+	}
+	if err != nil {
+		h.unavailable(w, r, "sign proxy url failed", err)
+		return
+	}
+	expires := h.now().Add(proxyURLTTL).UTC().Format(time.RFC3339)
+	writeJSON(w, http.StatusOK, proxyResponse{URL: url, ExpiresAt: expires})
+}
+
+// retryEpisode re-drives a failed episode. It is allowed only from 'failed':
+// an episode not visible to the org is a 404, one in any other state is a 409,
+// and a successful compare-and-set resets it to 'uploaded' and fires the ingest
+// trigger (best-effort, like upload-complete — the state change is already
+// durable, so a trigger miss is logged and the worker can be re-driven).
+func (h *handler) retryEpisode(w http.ResponseWriter, r *http.Request) {
+	p, ok := auth.FromContext(r.Context())
+	if !ok {
+		writeJSON(w, http.StatusUnauthorized, errBody{Error: "unauthorized"})
+		return
+	}
+	episodeID := r.PathValue("id")
+
+	row, found, err := h.deps.Episodes.GetEpisode(r.Context(), p.OrgPublicID, episodeID)
+	if err != nil {
+		h.unavailable(w, r, "get episode failed", err)
+		return
+	}
+	if !found {
+		writeJSON(w, http.StatusNotFound, errBody{Error: "not_found"})
+		return
+	}
+	if row.Status != statusFailed {
+		writeJSON(w, http.StatusConflict, errBody{Error: "invalid_state"})
+		return
+	}
+
+	updated, retried, err := h.deps.Episodes.RetryEpisode(r.Context(), p.OrgPublicID, episodeID)
+	if err != nil {
+		h.unavailable(w, r, "retry episode failed", err)
+		return
+	}
+	if !retried {
+		// The row left 'failed' between our read and the compare-and-set.
+		writeJSON(w, http.StatusConflict, errBody{Error: "invalid_state"})
+		return
+	}
+
+	if h.deps.Trigger != nil {
+		if err := h.deps.Trigger.Trigger(r.Context(), episodeID, ingestStage); err != nil {
+			id := errorID()
+			h.deps.Logger.LogAttrs(r.Context(), slog.LevelError, "worker retry trigger failed",
+				slog.String("error_id", id), slog.String("error", err.Error()))
+		}
+	}
+	writeJSON(w, http.StatusOK, episodeDTOFrom(updated))
+}
+
+// now returns the handler's clock, defaulting to time.Now when unset.
+func (h *handler) now() time.Time {
+	if h.deps.Now != nil {
+		return h.deps.Now()
+	}
+	return time.Now()
+}
+
+// Episode status values this package reasons about. They mirror the DB CHECK
+// constraint; the store is the source of truth, these are read-only guards.
+const (
+	statusReady  = "ready"
+	statusFailed = "failed"
+)
 
 // ingestStage is the stage name the upload-complete trigger launches. Kept as a
 // neutral local constant so this package does not import the pipeline registry.

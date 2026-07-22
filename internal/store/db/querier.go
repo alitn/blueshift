@@ -45,6 +45,12 @@ type Querier interface {
 	// flip to 'ready'. Org-scoped and gated on 'processing' so it only ever
 	// completes the run this worker claimed (idempotent no-op otherwise).
 	MarkEpisodeReady(ctx context.Context, arg MarkEpisodeReadyParams) (Episode, error)
+	// State-guarded retry: atomically move a single 'failed' episode back to
+	// 'uploaded' so the ingest trigger can re-run it, clearing the prior error_id.
+	// Org-scoped and gated on status = 'failed', so a caller can only retry their
+	// own org's failed episode and a row in any other state is left untouched
+	// (pgx.ErrNoRows, which the handler maps to 409).
+	RetryFailedEpisode(ctx context.Context, arg RetryFailedEpisodeParams) (Episode, error)
 	// Record the verified master object key after the client confirms the upload
 	// landed. Org-scoped so a caller can only complete an upload for their own org's
 	// episode. Status is left as 'uploaded'; the worker flips it later.
