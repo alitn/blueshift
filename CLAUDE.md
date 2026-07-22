@@ -50,6 +50,8 @@ AI-output QA: every LLM call goes through `/internal/llm` with a JSON schema (in
 
 The Reviewer REJECTS UI work whose screenshots visibly drift from `design/` even if all automated checks pass. The human sees UI only at milestone demos.
 
+**Fast UI loop (2026-07-22, human-approved).** The Architect keeps `make dev` running (Vite HMR + seeded backend) and owns its lifecycle — agents never start/stop the human's servers, only the Architect-managed one. UI verification and screenshot evidence go through the **Playwright MCP server** (`.mcp.json`, isolated bundled Chromium — never a personal browser) against the running dev server; ad-hoc headless capture scripts are the fallback only. **Tiered checks:** while iterating, run targeted checks (affected vitest, svelte-check, eslint on touched files); run the full `make check` once before requesting review. For **tiny UI diffs (≤ ~20 changed lines, no logic)** the Reviewer verifies evidence + targeted checks and may rely on the commit-gate hook for the full suite — the hook remains the deterministic backstop for every commit.
+
 `design/` is the single source of visual truth (see `design/DESIGN.md`). `web/src/lib/tokens.css` is generated to match `DESIGN.md` and is the only place raw hex values may appear. If `design/` and a spec conflict, the Architect resolves and updates `DESIGN.md` first.
 
 ## Domain model & data modeling

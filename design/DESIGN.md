@@ -43,7 +43,7 @@ this table. Alpha-composite colors are expressed as rgba over the surface they s
 | `text-primary` | `#EDEBE6` | headings, primary values, active nav |
 | `text-body` | `#DDDAD3` | transcript body, long-form content |
 | `text-muted` | `#9A968E` | secondary labels, section headers, inactive nav |
-| `text-faint` | `#6E6A63` | tertiary metadata, column headers, hints |
+| `text-faint` | `#8C8880` | tertiary metadata, column headers, hints (2026-07-22 refresh: lightened from `#6E6A63` for readability) |
 | `text-faintest` | `#57534C` | separators (·, ▸), lowest-emphasis glyphs |
 | `text-on-accent` | `#F4F6FA` | text on accent-filled buttons |
 | `text-caption` | `#FFFFFF` | burned-caption preview text on video |
@@ -97,13 +97,18 @@ this table. Alpha-composite colors are expressed as rgba over the surface they s
 | `font-mono` | `'IBM Plex Mono', monospace` (400/500/600) | timecodes, IDs, metadata, section labels, status bar — numbers always `font-variant-numeric: tabular-nums` |
 | `font-fa` | `'Vazirmatn', sans-serif` (400/500/600/700) | Persian content: transcript, titles, captions, names. Resolved per-language via `/internal/lang`; `font-fa` is the `fa` registry entry, not a global. |
 
-Scale (px). The UI is deliberately dense; sizes are small and letter-spaced:
+Scale (px) — **2026-07-22 readability refresh**: the micro-type floor rose from 8–9.5px to
+10–12px, and mono is now reserved for **data** (timecodes, IDs, filenames, counts,
+key-value metadata); descriptive micro-labels (status words, hints, badges like
+PROXY 720P / RENDER / PROXY PLAYBACK / "AUTO FA · CLICK WORD TO SEEK") use `font-ui`
+(Archivo) **weight 600**. The updated prototype is ground truth for per-element values.
 
-- **Mono micro-labels:** 7–9px, uppercase, letter-spacing 0.06–0.2em (section headers 9–10px @ 0.16em; wordmark suffix 9px @ 0.26em).
-- **Mono data:** 9.5–11px (IDs, timecodes); player timecode 13.5–15px weight 500.
-- **UI text:** 10–13.5px; buttons 10–10.5px weight 600 @ 0.1em tracking; wordmark 13.5px weight 700.
-- **Persian content:** transcript body 14.5px / line-height 2.0 (condensed panels 12.5px / 1.95); moment quotes 12px / 1.9; names 10.5–11px; popover title 15px weight 600; caption preview 13.5px weight 600 / 1.8.
+- **Micro-labels (Archivo 600):** 10.5–11px, uppercase, letter-spacing 0.06–0.2em; wordmark suffix 10.5px @ 0.26em.
+- **Mono data:** 10.5–12px (IDs, timecodes, counts); player timecode 13.5–15px weight 500.
+- **UI text:** 11–13.5px; buttons 10.5–11px weight 600 @ 0.1em tracking; breadcrumb 12px; wordmark 13.5px weight 700.
+- **Persian content:** transcript body 14.5px / line-height 2.0 (condensed panels 12.5px / 1.95); moment quotes 12px / 1.9; names 12px; popover title 15px weight 600; caption preview 13.5px weight 600 / 1.8.
 - Body base: 13px `text-primary` on `bg-2`.
+- **Video-well hint text:** primary `rgba(237,235,230,0.42)`, secondary `rgba(237,235,230,0.28)` (raised from 0.30/0.18).
 
 ## Spacing, radii, elevation
 

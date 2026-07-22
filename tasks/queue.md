@@ -12,18 +12,22 @@ spec file `tasks/<slug>.md` = one Implementer dispatch = one Reviewer verdict = 
 |------|------|-------|------|
 | m0-scaffold | Repo scaffold, gates, docs (this) | committed (human-approved) | docs/SPEC-M0.md |
 | m0-design-contract | DESIGN.md transcribed from design export (Architect) | committed | design/DESIGN.md |
-| m0-go-skeleton | app server, health, config, embed | committed (a59160c) | tasks/m0-go-skeleton.md |
-| m0-db-baseline | migration 0001 + sqlc + ids codec | committed (427e62d) | tasks/m0-db-baseline.md |
-| m0-check-hardening | make check fails on any red step | committed (82fe99b) | tasks/m0-check-hardening.md |
-| m0-web-skeleton | SvelteKit + tokens + ui primitives | committed (27ac4f9) | tasks/m0-web-skeleton.md |
-| m0-auth | Identity Platform + authz middleware | committed (fc20b53) | tasks/m0-auth.md |
-| m0-upload | signed upload → GCS + episode create | committed (99f1acc) | tasks/m0-upload.md |
-| m0-worker-ingest | worker Job: audio + proxy + status | committed (122d0be) | tasks/m0-worker-ingest.md |
-| m0-library | Library page, live status, playback | committed (d5b522c) | tasks/m0-library.md |
-| m0-demo-seed | make demo/dev + e2e harness + baselines | committed (546bc18) | tasks/m0-demo-seed.md |
-| m0-ci-deploy | CI gates live + staging/prod pipeline | committed (c34b1a2) | tasks/m0-ci-deploy.md |
-| m0-library-id-column | remove raw-id column from Library table | committed (fb2caa2) | tasks/m0-library-id-column.md |
-| m0-env-split | staging/prod in separate GCP projects | committed (6699cef) | tasks/m0-env-split.md |
+| m0-go-skeleton | app server, health, config, embed | committed | tasks/m0-go-skeleton.md |
+| m0-db-baseline | migration 0001 + sqlc + ids codec | committed | tasks/m0-db-baseline.md |
+| m0-check-hardening | make check fails on any red step | committed | tasks/m0-check-hardening.md |
+| m0-web-skeleton | SvelteKit + tokens + ui primitives | committed | tasks/m0-web-skeleton.md |
+| m0-auth | Identity Platform + authz middleware | committed | tasks/m0-auth.md |
+| m0-upload | signed upload → GCS + episode create | committed | tasks/m0-upload.md |
+| m0-worker-ingest | worker Job: audio + proxy + status | committed | tasks/m0-worker-ingest.md |
+| m0-library | Library page, live status, playback | committed | tasks/m0-library.md |
+| m0-demo-seed | make demo/dev + e2e harness + baselines | committed | tasks/m0-demo-seed.md |
+| m0-ci-deploy | CI gates live + staging/prod pipeline | committed | tasks/m0-ci-deploy.md |
+| m0-library-id-column | remove raw-id column from Library table | committed | tasks/m0-library-id-column.md |
+| m0-env-split | staging/prod in separate GCP projects | committed | tasks/m0-env-split.md |
+| m0-single-project | PoC deploy: one project, dev SA, no staging | spec-ready | tasks/m0-single-project.md |
+| m0-design-refresh | apply 2026-07-22 prototype readability refresh | spec-ready | tasks/m0-design-refresh.md |
+| m0-bun-migration | bun replaces npm (ADR 0001) | spec-ready | tasks/m0-bun-migration.md |
+| m0-dev-watch | Go auto-restart in make dev | spec-ready | tasks/m0-dev-watch.md |
 | m0-gate-proofs | Deliberate-failure proofs (AC 2/3/4/6) | blocked(human prerequisites) | tasks/m0-gate-proofs.md |
 
 ## Backlog
@@ -38,48 +42,57 @@ M1 decomposition happens after the M0 gate (see docs/SPEC-M1.md §Task decomposi
   unblocks m0-web-skeleton. design/screens/*.png still pending from human — until they land,
   the prototype HTML + DESIGN.md are the Reviewer's visual ground truth.
 - 2026-07-22 — m0-go-skeleton: Implementer green on first pass; Reviewer APPROVE, no findings;
-  committed a59160c. m0-db-baseline spec written (spec-ready).
-- 2026-07-22 — m0-db-baseline: APPROVE first pass, committed 427e62d (7 deviations accepted:
+  committed. m0-db-baseline spec written (spec-ready).
+- 2026-07-22 — m0-db-baseline: APPROVE first pass, committed (7 deviations accepted:
   go 1.25 directive, orgs/shows public_id, NULLS NOT DISTINCT config unique, etc.). Implementer
-  found make check exit-code hole → m0-check-hardening inserted, APPROVE, committed 82fe99b
-  (proof: seeded vet+lint failures each fail the gate). Scaffold gates/CI committed da5a0a4
+  found make check exit-code hole → m0-check-hardening inserted, APPROVE, committed
+  (proof: seeded vet+lint failures each fail the gate). Scaffold gates/CI committed
   (were untracked since initial commit).
 - 2026-07-22 — m0-web-skeleton: REJECT cycle 1 (tracked build artifact under webembed/dist),
-  fixed, APPROVE cycle 2, committed 27ac4f9. Screenshots in .artifacts/screens/m0-web-skeleton/.
+  fixed, APPROVE cycle 2, committed. Screenshots in .artifacts/screens/m0-web-skeleton/.
   Specs written for m0-auth, m0-upload, m0-worker-ingest, m0-library.
 - 2026-07-22 — m0-auth: REJECT cycle 1 (IDP API key could leak into logs via url.Error on
   transport failure — Reviewer catch), fixed + regression test, APPROVE cycle 2, committed
-  fc20b53. Accepted deviations: email as session subject (users have no public_id — closed
+  Accepted deviations: email as session subject (users have no public_id — closed
   prefix registry), org name-only in /me.
-- 2026-07-22 — m0-upload: APPROVE first pass, committed 99f1acc. blob seam (gcs/localdir),
+- 2026-07-22 — m0-upload: APPROVE first pass, committed. blob seam (gcs/localdir),
   org_ id prefix added, migration 0003 (master_size_bytes, additive). Reviewer note (non-
   blocking): local PUT lacks MaxBytesReader — dev-only seam, revisit if touched.
 - 2026-07-22 — standing rules added to CLAUDE.md (generic dev identities via fixtures,
   process etiquette for agents); docs/RUNBOOK.md added with the prod first-user procedure.
 - 2026-07-22 — m0-worker-ingest: implementer cut off once by API spend limit, resumed from
-  transcript, completed. APPROVE first pass, committed 122d0be (real-ffmpeg tests, process-
+  transcript, completed. APPROVE first pass, committed (real-ffmpeg tests, process-
   group kill, CAS claim, neutral error_id). Accepted: no new migration needed; inline trigger
   dispatch; WORKER_TRIGGER default exec (deploy sets cloudrun). M1 backlog note: no reaper
   for episodes stuck in processing after a worker crash. Specs written for m0-demo-seed,
   m0-ci-deploy, m0-gate-proofs.
-- 2026-07-22 — m0-library: APPROVE first pass, committed d5b522c. Poll store (3s, visibility-
+- 2026-07-22 — m0-library: APPROVE first pass, committed. Poll store (3s, visibility-
   paused), upload dialog with XHR progress, player dialog, retry CAS. Screenshot capture used
   isolated headless Chrome (own user-data-dir, only spawned PID killed) per standing rule.
   Deferred to M1/later: breadcrumb show name, live status-bar telemetry.
 - 2026-07-22 — m0-demo-seed: REJECT cycle 1 (two Playwright strict-mode locator bugs that
-  would have broken the CI baseline run), fixed, APPROVE cycle 2, committed 546bc18. No
+  would have broken the CI baseline run), fixed, APPROVE cycle 2, committed. No
   Docker/Postgres in this environment: demo boot + baselines prove out in CI; visual
   baselines to be generated ONCE on the CI Linux runner post m0-ci-deploy (Architect
   authorization stands, platform-scoped filenames).
 - 2026-07-22 — m0-ci-deploy: REJECT cycle 1 (Reviewer caught: runtime SA lacked run.invoker
   for the worker-Job trigger — would 403 in prod while smoke stayed green; watch probed base
   URL not candidate tag URL; error-reporting query silently zero), all fixed, APPROVE cycle 2,
-  committed c34b1a2. Staging verification = remote smoke; full remote suite is an M1 harness
+  committed. Staging verification = remote smoke; full remote suite is an M1 harness
   task. ALL implementable M0 tasks done. m0-gate-proofs + baselines + prod demo blocked on
   human prerequisites (see tasks/m0-ci-deploy.md §Human prerequisites).
 - 2026-07-22 — human review round: raw public ids ruled out of the UI (DESIGN.md updated;
-  m0-library-id-column APPROVE first pass, committed fb2caa2). Environment strategy decided
+  m0-library-id-column APPROVE first pass, committed). Environment strategy decided
   and documented in docs/ENVIRONMENTS.md: one GCP project per cloud env, local dev GCP-free;
-  m0-env-split APPROVE (digest-copy promote, ENV_TIER guard), committed 6699cef. Human
+  m0-env-split APPROVE (digest-copy promote, ENV_TIER guard), committed. Human
   prerequisites now per deploy/README.md: two projects, gcloud.sh twice, per-project
   vars/secrets.
+- 2026-07-22 — human directives round 2: (a) PoC scope — ONE GCP project, no staging CD
+  (m0-single-project supersedes m0-env-split's layout; ENVIRONMENTS.md to be revised);
+  (b) Playwright MCP adopted (.mcp.json) + fast-UI-loop policy in CLAUDE.md (tiered checks,
+  relaxed review for tiny UI diffs); (c) bun replaces npm — ADR 0001 accepted;
+  (d) Go auto-restart in make dev; (e) design/ prototype refreshed by human — DESIGN.md
+  updated (text-faint #8C8880, micro-type floor 10px+, Archivo-600 label rule),
+  m0-design-refresh queued; (f) author identity rewritten to alitn across history;
+  (g) queue de-hashed — slugs are the key, git log is the hash record. Architect manages
+  the local dev server lifecycle from here on.
