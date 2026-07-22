@@ -19,10 +19,10 @@ spec file `tasks/<slug>.md` = one Implementer dispatch = one Reviewer verdict = 
 | m0-auth | Identity Platform + authz middleware | committed (fc20b53) | tasks/m0-auth.md |
 | m0-upload | signed upload → GCS + episode create | committed (99f1acc) | tasks/m0-upload.md |
 | m0-worker-ingest | worker Job: audio + proxy + status | committed (4e3e582) | tasks/m0-worker-ingest.md |
-| m0-library | Library page, live status, playback | spec-ready | tasks/m0-library.md |
-| m0-demo-seed | make demo/dev + e2e harness + baselines | spec-ready | tasks/m0-demo-seed.md |
-| m0-ci-deploy | CI gates live + staging/prod pipeline | spec-ready | tasks/m0-ci-deploy.md |
-| m0-gate-proofs | Deliberate-failure proofs (AC 2/3/4/6) | spec-ready | tasks/m0-gate-proofs.md |
+| m0-library | Library page, live status, playback | committed (6f42175) | tasks/m0-library.md |
+| m0-demo-seed | make demo/dev + e2e harness + baselines | committed (c7bcf13) | tasks/m0-demo-seed.md |
+| m0-ci-deploy | CI gates live + staging/prod pipeline | committed (f0420c0) | tasks/m0-ci-deploy.md |
+| m0-gate-proofs | Deliberate-failure proofs (AC 2/3/4/6) | blocked(human prerequisites) | tasks/m0-gate-proofs.md |
 
 ## Backlog
 
@@ -58,3 +58,18 @@ M1 decomposition happens after the M0 gate (see docs/SPEC-M1.md §Task decomposi
   dispatch; WORKER_TRIGGER default exec (deploy sets cloudrun). M1 backlog note: no reaper
   for episodes stuck in processing after a worker crash. Specs written for m0-demo-seed,
   m0-ci-deploy, m0-gate-proofs.
+- 2026-07-22 — m0-library: APPROVE first pass, committed 6f42175. Poll store (3s, visibility-
+  paused), upload dialog with XHR progress, player dialog, retry CAS. Screenshot capture used
+  isolated headless Chrome (own user-data-dir, only spawned PID killed) per standing rule.
+  Deferred to M1/later: breadcrumb show name, live status-bar telemetry.
+- 2026-07-22 — m0-demo-seed: REJECT cycle 1 (two Playwright strict-mode locator bugs that
+  would have broken the CI baseline run), fixed, APPROVE cycle 2, committed c7bcf13. No
+  Docker/Postgres in this environment: demo boot + baselines prove out in CI; visual
+  baselines to be generated ONCE on the CI Linux runner post m0-ci-deploy (Architect
+  authorization stands, platform-scoped filenames).
+- 2026-07-22 — m0-ci-deploy: REJECT cycle 1 (Reviewer caught: runtime SA lacked run.invoker
+  for the worker-Job trigger — would 403 in prod while smoke stayed green; watch probed base
+  URL not candidate tag URL; error-reporting query silently zero), all fixed, APPROVE cycle 2,
+  committed f0420c0. Staging verification = remote smoke; full remote suite is an M1 harness
+  task. ALL implementable M0 tasks done. m0-gate-proofs + baselines + prod demo blocked on
+  human prerequisites (see tasks/m0-ci-deploy.md §Human prerequisites).
