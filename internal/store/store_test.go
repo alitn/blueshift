@@ -55,6 +55,20 @@ func applyMigrations(t *testing.T, dsn string) {
 	}
 }
 
+// applyDevSeed loads the dev/demo user identities. Migration 0002 no longer
+// seeds users (they are dev-only), so DB-backed tests that need a user must
+// apply this fixture themselves. It is idempotent, so re-running is a no-op.
+func applyDevSeed(t *testing.T, st *Store, ctx context.Context) {
+	t.Helper()
+	seed, err := os.ReadFile("../../fixtures/dev-seed.sql")
+	if err != nil {
+		t.Fatalf("read dev-seed: %v", err)
+	}
+	if _, err := st.Pool().Exec(ctx, string(seed)); err != nil {
+		t.Fatalf("apply dev-seed: %v", err)
+	}
+}
+
 func TestMigrationsAndQueries(t *testing.T) {
 	dsn := requireDB(t)
 	applyMigrations(t, dsn)
@@ -71,6 +85,9 @@ func TestMigrationsAndQueries(t *testing.T) {
 	if err := st.Ping(ctx); err != nil {
 		t.Fatalf("Ping: %v", err)
 	}
+
+	// Dev users are seeded by the fixture, not by migration 0002.
+	applyDevSeed(t, st, ctx)
 
 	// Seed org lookup.
 	var orgID int64

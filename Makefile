@@ -1,5 +1,5 @@
 SHELL := /bin/bash
-.PHONY: setup check e2e eval demo dev build vendor-gate hex-gate migrate-up sqlc
+.PHONY: setup check e2e eval demo dev build vendor-gate hex-gate migrate-up dev-seed sqlc
 
 # ------------------------------------------------------------------------------
 # make check — the single truth. Nothing red can ever be committed.
@@ -125,6 +125,14 @@ migrate-up:
 	@if [ -z "$$DATABASE_URL" ]; then echo "migrate-up: DATABASE_URL is not set"; exit 1; fi
 	@command -v migrate >/dev/null || { echo "migrate-up: golang-migrate CLI not installed (make setup)"; exit 1; }
 	migrate -path migrations -database "$$DATABASE_URL" up
+
+# Load dev/demo user identities into an already-migrated database. Dev-only:
+# staging/prod provision users per docs/RUNBOOK.md, never via this file. Wiring
+# into `make demo`/`make dev` lands in m0-demo-seed. Requires psql + DATABASE_URL.
+dev-seed:
+	@if [ -z "$$DATABASE_URL" ]; then echo "dev-seed: DATABASE_URL is not set"; exit 1; fi
+	@command -v psql >/dev/null || { echo "dev-seed: psql not installed"; exit 1; }
+	psql "$$DATABASE_URL" -v ON_ERROR_STOP=1 -f fixtures/dev-seed.sql
 
 # Regenerate the sqlc query layer (internal/store/db). sqlc is a dev-only
 # codegen tool; the generated code is committed and `make check` never needs it.

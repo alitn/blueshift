@@ -16,24 +16,10 @@ WHERE o.name = 'Blueshift Pilot'
       SELECT 1 FROM shows s WHERE s.org_id = o.id AND s.title = 'Special Interviews'
   );
 
--- Seeded users.
-INSERT INTO users (email, display_name) VALUES
-    ('dev-approver@blueshift.local', 'Dev Approver'),
-    ('editor@blueshift.local', 'Editor')
-ON CONFLICT (email) DO NOTHING;
-
--- Memberships: ali approves, editor edits.
-INSERT INTO memberships (org_id, user_id, role)
-SELECT o.id, u.id, 'approver'
-FROM orgs o, users u
-WHERE o.name = 'Blueshift Pilot' AND u.email = 'dev-approver@blueshift.local'
-ON CONFLICT (org_id, user_id) DO NOTHING;
-
-INSERT INTO memberships (org_id, user_id, role)
-SELECT o.id, u.id, 'editor'
-FROM orgs o, users u
-WHERE o.name = 'Blueshift Pilot' AND u.email = 'editor@blueshift.local'
-ON CONFLICT (org_id, user_id) DO NOTHING;
+-- No users or memberships are seeded here: this migration ships to every
+-- environment, and user rows are dev/demo-only identities. Dev users live in
+-- fixtures/dev-seed.sql (applied by `make dev-seed`); staging/prod provisioning
+-- follows docs/RUNBOOK.md.
 
 -- Global config: self-approval stays on until the M2 roles split.
 INSERT INTO config (org_id, key, value)
