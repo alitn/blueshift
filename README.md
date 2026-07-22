@@ -50,22 +50,55 @@ Agent beliefs are not trusted; gates are:
 ```sh
 make setup     # git hooks, toolchain checks, web deps
 make check     # the single truth (green on the bare scaffold)
-make dev       # local dev loop            (lands in M0)
-make demo      # seeded offline full stack (lands in M0)
-make e2e       # Playwright                (lands in M0)
+make dev       # local dev loop (Go API + Vite hot reload)
+make demo      # seeded offline full stack (app + worker + Postgres + sample)
+make demo-down # tear down whatever make demo/dev started here
+make e2e       # Playwright suite against make demo
 make eval      # golden AI-output evals    (lands in M1)
 ```
 
 One-time cloud provisioning: [deploy/gcloud.sh](deploy/gcloud.sh) (idempotent, commented).
 
+### Run it locally — `make demo`
+
+`make demo` boots the entire stack offline with deterministic seeded data and blocks
+in the foreground. Prerequisites: ffmpeg, the `golang-migrate` CLI, `npm ci` in `web/`,
+and Postgres — resolved in this order:
+
+1. `DEMO_DATABASE_URL` if set and reachable (e.g. an existing local Postgres);
+2. otherwise a Docker `pgvector/pgvector:pg18` container named `blueshift-demo-pg`
+   (started and later removed by the demo — no other container is ever touched);
+3. otherwise it fails with setup instructions.
+
+It applies migrations, seeds the dev users and a fixed Persian sample episode (generated
+with ffmpeg and run through the real worker ingest so it boots **READY**), then serves the
+embedded UI at `http://127.0.0.1:8080`. Sign in with a seeded dev identity:
+
+| Email | Password | Role |
+|-------|----------|------|
+| `dev-approver@blueshift.local` | `blueshift-dev` | approver |
+| `dev-editor@blueshift.local`   | `blueshift-dev` | editor |
+
+Stop with Ctrl-C, or `make demo-down` from another shell. `make dev` boots the same seeded
+backend but serves the SPA via Vite with hot reload (proxying `/api` to the Go API), for
+editing `web/src` live.
+
+### UI verification — `make e2e`
+
+`make e2e` runs the Playwright suite (`web/tests/`) against `make demo` (reused if already
+up): the upload-to-Ready flow with keyboard paths, visual baselines at 1440×900 and
+1280×800, token-conformance, RTL/ZWNJ, and an axe smoke. Visual baselines live in
+`web/tests/__screenshots__/` and change only when the Architect authorises
+`npx playwright test --update-snapshots`.
+
 ## Repo map
 
 | Path | What |
 |------|------|
-| `cmd/app`, `cmd/worker` | API server (embeds UI) · pipeline Job entrypoint |
+| `cmd/app`, `cmd/worker`, `cmd/demoseed` | API server (embeds UI) · pipeline Job entrypoint · demo sample seeder |
 | `internal/…` | api, ids, pipeline, asr, llm, media, lang (+`lang/fa`), store |
 | `migrations/` | golang-migrate, **additive-only** |
-| `web/` | SvelteKit; `components/ui` (vendored primitives) · `components/studio` (bespoke) |
+| `web/` | SvelteKit; `components/ui` (vendored primitives) · `components/studio` (bespoke); `tests/` Playwright |
 | `design/` | the design contract — single source of visual truth |
-| `fixtures/`, `tools/eval/` | gold data · offline eval scripts (never deployed) |
+| `fixtures/`, `tools/eval/`, `tools/demo/` | gold data · offline eval scripts · make demo/dev orchestration (never deployed) |
 | `docs/`, `tasks/` | specs, ADRs, demo script · task queue |

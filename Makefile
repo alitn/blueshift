@@ -1,5 +1,5 @@
 SHELL := /bin/bash
-.PHONY: setup check e2e eval demo dev build vendor-gate hex-gate migrate-up dev-seed sqlc
+.PHONY: setup check e2e eval demo demo-down dev build vendor-gate hex-gate migrate-up dev-seed sqlc
 
 # ------------------------------------------------------------------------------
 # make check — the single truth. Nothing red can ever be committed.
@@ -106,16 +106,26 @@ eval:
 		echo "skip: eval (tools/eval/run.py not present yet — arrives with M1 pipeline)"; \
 	fi
 
-# Boot the full stack locally with deterministic seeded data and mocked AI
-# (recorded fixtures) so agents can drive every flow offline. Lands in M0.
+# Boot the full stack locally with deterministic seeded data so agents (and
+# humans) can drive every flow offline. Postgres is resolved in this order:
+# DEMO_DATABASE_URL (if reachable) -> a docker pgvector container named
+# blueshift-demo-pg -> a clear failure with setup instructions. A fixed 2s
+# sample episode is generated with ffmpeg and run through the REAL worker ingest
+# so it boots 'ready'. Blocks in the foreground; Ctrl-C or `make demo-down`
+# tears down only what this run created. No AI in M0 — nothing is mocked.
 demo:
-	@echo "TODO(M0): make demo — seeded local stack (app + worker + postgres + fixture episode, AI mocked)"
-	@exit 1
+	@bash tools/demo/up.sh
 
-# Local dev loop: Go API with live reload + Vite dev server. Lands in M0.
+# Tear down whatever `make demo`/`make dev` started here (the app, the Vite dev
+# server, and the demo Postgres container iff this demo created it). Never
+# touches a container or process it did not start.
+demo-down:
+	@bash tools/demo/down.sh
+
+# Local dev loop: the seeded Go API + the Vite dev server (hot reload) with
+# Vite proxying /api -> the API port. Same Postgres resolution as `make demo`.
 dev:
-	@echo "TODO(M0): make dev — go run ./cmd/app + cd web && npm run dev"
-	@exit 1
+	@bash tools/demo/dev.sh
 
 # ------------------------------------------------------------------------------
 # Database: apply additive-only migrations (used by demo/CI). Requires the

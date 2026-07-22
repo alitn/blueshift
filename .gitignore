@@ -11,6 +11,11 @@ web/build/
 web/.svelte-kit/
 web/test-results/
 web/playwright-report/
+web/tests/.auth/
+
+# make demo/dev local state: seeded blob store, built binaries, pids, db url.
+# Never committed; `make demo-down` cleans the runtime bits.
+.demo/
 
 # embedded web build output — populated by `make build`, never committed
 # (the .gitkeep placeholder is kept so `//go:embed all:dist` always resolves)
