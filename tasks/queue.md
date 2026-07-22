@@ -25,9 +25,9 @@ spec file `tasks/<slug>.md` = one Implementer dispatch = one Reviewer verdict = 
 | m0-library-id-column | remove raw-id column from Library table | committed | tasks/m0-library-id-column.md |
 | m0-env-split | staging/prod in separate GCP projects | committed | tasks/m0-env-split.md |
 | m0-single-project | PoC deploy: one project, dev SA, no staging | committed | tasks/m0-single-project.md |
-| m0-design-refresh | apply 2026-07-22 prototype readability refresh | spec-ready | tasks/m0-design-refresh.md |
-| m0-bun-migration | bun replaces npm (ADR 0001) | spec-ready | tasks/m0-bun-migration.md |
-| m0-dev-watch | Go auto-restart in make dev | spec-ready | tasks/m0-dev-watch.md |
+| m0-design-refresh | apply 2026-07-22 prototype readability refresh | committed | tasks/m0-design-refresh.md |
+| m0-bun-migration | bun replaces npm (ADR 0001) | committed | tasks/m0-bun-migration.md |
+| m0-dev-watch | Go auto-restart in make dev | committed | tasks/m0-dev-watch.md |
 | m0-gate-proofs | Deliberate-failure proofs (AC 2/3/4/6) | blocked(human prerequisites) | tasks/m0-gate-proofs.md |
 
 ## Backlog
@@ -96,3 +96,10 @@ M1 decomposition happens after the M0 gate (see docs/SPEC-M1.md §Task decomposi
   m0-design-refresh queued; (f) author identity rewritten to alitn across history;
   (g) queue de-hashed — slugs are the key, git log is the hash record. Architect manages
   the local dev server lifecycle from here on.
+- 2026-07-22 — directives round 2 executed end to end: m0-single-project (rollout-on-main +
+  rollback job + dev-experiments SA/bucket, APPROVE), m0-design-refresh (13-file sweep on the
+  fast UI loop, APPROVE), m0-bun-migration (bun.lock, bun runtime for web checks, Playwright
+  on node, zero load-bearing version drift, APPROVE), m0-dev-watch (fswatch hot-restart of
+  app+worker with coherent-pair staging, APPROVE). Author identity rewritten to alitn.
+  Remaining: m0-gate-proofs + baselines + prod demo on the 4-step human prerequisites in
+  deploy/README.md.
