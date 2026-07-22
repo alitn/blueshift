@@ -52,6 +52,8 @@ M1 decomposition happens after the M0 gate (see docs/SPEC-M1.md §Task decomposi
 - 2026-07-22 — m0-upload: APPROVE first pass, committed 99f1acc. blob seam (gcs/localdir),
   org_ id prefix added, migration 0003 (master_size_bytes, additive). Reviewer note (non-
   blocking): local PUT lacks MaxBytesReader — dev-only seam, revisit if touched.
+- 2026-07-22 — standing rules added to CLAUDE.md (generic dev identities via fixtures,
+  process etiquette for agents); docs/RUNBOOK.md added with the prod first-user procedure.
 - 2026-07-22 — m0-worker-ingest: implementer cut off once by API spend limit, resumed from
   transcript, completed. APPROVE first pass, committed 4e3e582 (real-ffmpeg tests, process-
   group kill, CAS claim, neutral error_id). Accepted: no new migration needed; inline trigger
