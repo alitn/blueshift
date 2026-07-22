@@ -71,6 +71,10 @@ Hierarchy: **Org → Show → Episode → Moment → Clip**. There is no "projec
 
 **Occam with teeth:** no new dependency, service, or abstraction without a human-approved ADR.
 
+**No personal data in the repo — ever.** Real names, personal emails, or any other personal data of the human (or anyone else) must never appear in code, migrations, seeds, tests, fixtures, docs, or commits. Dev/demo identities are generic (`dev-approver@blueshift.local`, `dev-editor@blueshift.local`, display names "Dev Approver"/"Dev Editor"). Production users are created manually per `docs/RUNBOOK.md` — values supplied at run time, never committed.
+
+**Never touch the human's running processes.** Agents must never kill, restart, or reuse the human's applications (browsers especially). Headless captures use an isolated browser instance with a dedicated temporary `--user-data-dir`, and terminate only the PID they spawned. Prefer the Playwright-bundled Chromium once the harness exists.
+
 **Verbatim invariant:** caption text is copied from ASR output, never generated; timestamps come only from ASR/ffmpeg; LLMs decide, they never measure. Every human correction is written to `correction_log`.
 
 Tasks >~1 day get split by the Architect. The human sees plans before execution and demos at milestone gates; everything else runs through the loop.

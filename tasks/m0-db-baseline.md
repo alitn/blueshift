@@ -36,8 +36,9 @@ the README/Makefile, not a runtime dep). Nothing else new.
      `config(org_id nullable FK — NULL = global, key text, value jsonb, UNIQUE(org_id, key))`.
    - Indexes: FKs; `episodes(org_id, status)`; `config` unique above.
 2. **Migration `0002_seed`** (idempotent, `ON CONFLICT DO NOTHING`): one org ("Blueshift
-   Pilot"), one show ("Special Interviews"), seeded users `dev-approver@blueshift.local` (approver) and
-   `editor@blueshift.local` (editor) with memberships; config rows: `allow_self_approval` →
+   Pilot"), one show ("Special Interviews"); **no user rows** (dev users live in
+   `fixtures/dev-seed.sql`, prod users are manual per `docs/RUNBOOK.md` — no personal data
+   in the repo, ever); config rows: `allow_self_approval` →
    `true` (global), `platform_presets` → jsonb array with the two presets from design
    (`reels`: 1080×1920 H.264 high, −14 LUFS, captions burned; `telegram`: 720×1280 H.264
    CRF 23, captions burned). **No provider names in any seed value** (vendor gate greps
