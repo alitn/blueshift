@@ -23,6 +23,15 @@ const (
 	EnvProd    Env = "prod"
 )
 
+// AuthMode selects the login backend. `dev` verifies a shared offline password
+// (used by `make demo`); `identity` calls the identity provider server-side.
+type AuthMode string
+
+const (
+	AuthModeDev      AuthMode = "dev"
+	AuthModeIdentity AuthMode = "identity"
+)
+
 // Config is the fully-resolved, validated server configuration.
 type Config struct {
 	// Port is the TCP port the HTTP server binds to.
@@ -34,6 +43,19 @@ type Config struct {
 	// DatabaseURL is the Postgres DSN. Empty means no database is configured:
 	// the app still boots, and the /readyz "db" check is not registered.
 	DatabaseURL string
+
+	// AuthMode selects the login backend (dev|identity).
+	AuthMode AuthMode
+	// SessionSecret keys the HMAC that signs session cookies.
+	SessionSecret string
+	// SessionSecretDefaulted is true when SessionSecret fell back to the
+	// insecure dev default (SESSION_SECRET was unset in dev); the caller emits
+	// a startup WARN.
+	SessionSecretDefaulted bool
+	// DevPassword is the shared password accepted in dev auth mode.
+	DevPassword string
+	// IDPAPIKey is the identity provider web API key (identity mode only).
+	IDPAPIKey string
 }
 
 // Addr returns the listen address (":<port>") for http.Server.
@@ -44,6 +66,13 @@ const (
 	defaultPort     = "8080"
 	defaultEnv      = EnvDev
 	defaultLogLevel = slog.LevelInfo
+
+	// DevSessionSecret is the insecure fallback signing key used only when
+	// SESSION_SECRET is unset in dev. Real deployments must set the env var.
+	DevSessionSecret = "blueshift-dev-insecure-session-secret"
+	// defaultDevPassword is the dev auth-mode password when DEV_PASSWORD is
+	// unset. Matches `make demo` expectations.
+	defaultDevPassword = "blueshift-dev"
 )
 
 // Load reads configuration from the process environment.
@@ -89,7 +118,64 @@ func load(getenv func(string) string) (Config, error) {
 	// the database readiness check is simply not wired up.
 	cfg.DatabaseURL = strings.TrimSpace(getenv("DATABASE_URL"))
 
+	if err := loadAuth(&cfg, getenv); err != nil {
+		return Config{}, err
+	}
+
 	return cfg, nil
+}
+
+// loadAuth resolves and validates the auth-related settings. The rules encode
+// the deployment posture: dev is offline-friendly with safe defaults; staging
+// and prod must be explicitly configured (real secret, identity mode, API key).
+func loadAuth(cfg *Config, getenv func(string) string) error {
+	isProdLike := cfg.Env == EnvStaging || cfg.Env == EnvProd
+
+	// AUTH_MODE: default derives from env; explicit value is validated; dev
+	// mode is refused outside dev.
+	if v := strings.TrimSpace(getenv("AUTH_MODE")); v != "" {
+		m := AuthMode(v)
+		switch m {
+		case AuthModeDev, AuthModeIdentity:
+			cfg.AuthMode = m
+		default:
+			return fmt.Errorf("config: invalid AUTH_MODE %q (want dev|identity)", v)
+		}
+	} else if isProdLike {
+		cfg.AuthMode = AuthModeIdentity
+	} else {
+		cfg.AuthMode = AuthModeDev
+	}
+	if isProdLike && cfg.AuthMode == AuthModeDev {
+		return fmt.Errorf("config: AUTH_MODE=dev is not allowed when ENV=%s", cfg.Env)
+	}
+
+	// SESSION_SECRET: required outside dev; dev falls back to an insecure
+	// default and flags it for a startup WARN.
+	if v := strings.TrimSpace(getenv("SESSION_SECRET")); v != "" {
+		cfg.SessionSecret = v
+	} else if isProdLike {
+		return fmt.Errorf("config: SESSION_SECRET is required when ENV=%s", cfg.Env)
+	} else {
+		cfg.SessionSecret = DevSessionSecret
+		cfg.SessionSecretDefaulted = true
+	}
+
+	// DEV_PASSWORD: only meaningful in dev mode; always resolved so config is
+	// self-describing.
+	if v := getenv("DEV_PASSWORD"); v != "" {
+		cfg.DevPassword = v
+	} else {
+		cfg.DevPassword = defaultDevPassword
+	}
+
+	// IDP_API_KEY: required in identity mode.
+	cfg.IDPAPIKey = strings.TrimSpace(getenv("IDP_API_KEY"))
+	if cfg.AuthMode == AuthModeIdentity && cfg.IDPAPIKey == "" {
+		return fmt.Errorf("config: IDP_API_KEY is required when AUTH_MODE=identity")
+	}
+
+	return nil
 }
 
 func validPort(v string) bool {

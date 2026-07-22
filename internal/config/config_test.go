@@ -31,10 +31,12 @@ func TestLoadDefaults(t *testing.T) {
 
 func TestLoadOverrides(t *testing.T) {
 	cfg, err := load(env(map[string]string{
-		"PORT":         "9090",
-		"ENV":          "prod",
-		"LOG_LEVEL":    "warning",
-		"DATABASE_URL": "postgres://u:p@h:5432/db",
+		"PORT":           "9090",
+		"ENV":            "prod",
+		"LOG_LEVEL":      "warning",
+		"DATABASE_URL":   "postgres://u:p@h:5432/db",
+		"SESSION_SECRET": "prod-secret",
+		"IDP_API_KEY":    "prod-key",
 	}))
 	if err != nil {
 		t.Fatalf("load: unexpected error: %v", err)
@@ -50,6 +52,71 @@ func TestLoadOverrides(t *testing.T) {
 	}
 	if cfg.DatabaseURL != "postgres://u:p@h:5432/db" {
 		t.Errorf("DatabaseURL = %q", cfg.DatabaseURL)
+	}
+	// prod derives identity mode and must not fall back to the dev secret.
+	if cfg.AuthMode != AuthModeIdentity {
+		t.Errorf("AuthMode = %q, want identity", cfg.AuthMode)
+	}
+	if cfg.SessionSecret != "prod-secret" || cfg.SessionSecretDefaulted {
+		t.Errorf("SessionSecret = %q defaulted=%v, want explicit", cfg.SessionSecret, cfg.SessionSecretDefaulted)
+	}
+}
+
+func TestLoadAuthDevDefaults(t *testing.T) {
+	cfg, err := load(env(nil))
+	if err != nil {
+		t.Fatalf("load: unexpected error: %v", err)
+	}
+	if cfg.AuthMode != AuthModeDev {
+		t.Errorf("AuthMode = %q, want dev", cfg.AuthMode)
+	}
+	if cfg.SessionSecret != DevSessionSecret || !cfg.SessionSecretDefaulted {
+		t.Errorf("dev secret = %q defaulted=%v, want dev default flagged", cfg.SessionSecret, cfg.SessionSecretDefaulted)
+	}
+	if cfg.DevPassword != defaultDevPassword {
+		t.Errorf("DevPassword = %q, want %q", cfg.DevPassword, defaultDevPassword)
+	}
+}
+
+func TestLoadAuthOverrides(t *testing.T) {
+	cfg, err := load(env(map[string]string{
+		"AUTH_MODE":      "identity",
+		"SESSION_SECRET": "s3cret",
+		"DEV_PASSWORD":   "hunter2",
+		"IDP_API_KEY":    "abc123",
+	}))
+	if err != nil {
+		t.Fatalf("load: unexpected error: %v", err)
+	}
+	if cfg.AuthMode != AuthModeIdentity {
+		t.Errorf("AuthMode = %q, want identity", cfg.AuthMode)
+	}
+	if cfg.SessionSecret != "s3cret" || cfg.SessionSecretDefaulted {
+		t.Errorf("SessionSecret = %q defaulted=%v", cfg.SessionSecret, cfg.SessionSecretDefaulted)
+	}
+	if cfg.DevPassword != "hunter2" {
+		t.Errorf("DevPassword = %q, want hunter2", cfg.DevPassword)
+	}
+	if cfg.IDPAPIKey != "abc123" {
+		t.Errorf("IDPAPIKey = %q, want abc123", cfg.IDPAPIKey)
+	}
+}
+
+func TestLoadAuthInvalid(t *testing.T) {
+	cases := map[string]map[string]string{
+		"invalid auth mode":         {"AUTH_MODE": "sso"},
+		"dev mode in prod":          {"ENV": "prod", "SESSION_SECRET": "x", "AUTH_MODE": "dev"},
+		"prod missing secret":       {"ENV": "prod", "IDP_API_KEY": "k"},
+		"identity missing key":      {"AUTH_MODE": "identity"},
+		"staging missing secret":    {"ENV": "staging", "IDP_API_KEY": "k"},
+		"prod identity missing key": {"ENV": "prod", "SESSION_SECRET": "x"},
+	}
+	for name, m := range cases {
+		t.Run(name, func(t *testing.T) {
+			if _, err := load(env(m)); err == nil {
+				t.Fatalf("load(%v): expected error, got nil", m)
+			}
+		})
 	}
 }
 

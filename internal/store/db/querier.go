@@ -9,6 +9,10 @@ import (
 )
 
 type Querier interface {
+	// Resolve a seeded user's authentication context by email: their display name,
+	// their org (public id + name) and their role in that org. One membership per
+	// user in M0, so LIMIT 1 is exact. Soft-deleted users are excluded.
+	GetAuthContextByEmail(ctx context.Context, email string) (GetAuthContextByEmailRow, error)
 	// Resolve a config key for an org: an org-specific row wins, otherwise the
 	// global (NULL org_id) default. NULLS LAST orders the concrete org row ahead of
 	// the global fallback.

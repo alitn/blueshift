@@ -25,11 +25,16 @@ const (
 
 // New builds the HTTP server: routes, middleware, and explicit timeouts. The
 // readiness registry is supplied by the caller so later tasks can register
-// dependency checks (DB, storage) without changing this signature.
-func New(cfg config.Config, logger *slog.Logger, ui http.Handler, ready *Readiness) *http.Server {
+// dependency checks (DB, storage) without changing this signature. api is the
+// (already gated) /api handler; it may be nil in tests that exercise only the
+// public surface. /healthz, /readyz, and the SPA stay public.
+func New(cfg config.Config, logger *slog.Logger, ui http.Handler, ready *Readiness, api http.Handler) *http.Server {
 	mux := http.NewServeMux()
 	mux.HandleFunc("GET /healthz", healthz)
 	mux.Handle("GET /readyz", ready.readyzHandler(logger))
+	if api != nil {
+		mux.Handle("/api/", api)
+	}
 	mux.Handle("/", ui)
 
 	// requestLogger is outermost so panics recovered below are still logged

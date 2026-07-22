@@ -123,7 +123,11 @@ func TestNewRoutesHealthAndReady(t *testing.T) {
 		w.WriteHeader(http.StatusOK)
 		_, _ = w.Write([]byte("ui"))
 	})
-	srv := New(cfg, discardLogger(), ui, ready)
+	apiStub := http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.WriteHeader(http.StatusOK)
+		_, _ = w.Write([]byte("api"))
+	})
+	srv := New(cfg, discardLogger(), ui, ready, apiStub)
 
 	cases := []struct {
 		path       string
@@ -132,6 +136,7 @@ func TestNewRoutesHealthAndReady(t *testing.T) {
 	}{
 		{"/healthz", http.StatusOK, `{"status":"ok"}` + "\n"},
 		{"/readyz", http.StatusOK, `{"status":"ready","checks":{}}` + "\n"},
+		{"/api/anything", http.StatusOK, "api"},
 		{"/", http.StatusOK, "ui"},
 		{"/anything", http.StatusOK, "ui"},
 	}

@@ -1,16 +1,24 @@
 <script lang="ts">
   import type { Snippet } from 'svelte';
+  import {
+    DropdownMenu,
+    DropdownMenuTrigger,
+    DropdownMenuContent,
+    DropdownMenuItem
+  } from '$lib/components/ui/dropdown-menu';
 
   // RENDER indicator placeholder. Only IDLE is wired in M0; the active state
   // (accent-border + accent-wash-12 fill) lands with the render pipeline.
   let {
     breadcrumb,
     renderState = 'IDLE',
-    initials = 'MK'
+    initials = 'MK',
+    onSignOut
   }: {
     breadcrumb?: Snippet;
     renderState?: string;
     initials?: string;
+    onSignOut?: () => void;
   } = $props();
 </script>
 
@@ -68,11 +76,16 @@
     </svg>
   </button>
 
-  <!-- Avatar -->
-  <div
-    class="flex h-6 w-6 flex-none items-center justify-center rounded-full border border-border-strong bg-bg-4 font-mono text-[8.5px] text-text-muted"
-    aria-label="Account"
-  >
-    {initials}
-  </div>
+  <!-- Avatar → account dropdown (vendored dropdown-menu primitive) -->
+  <DropdownMenu>
+    <DropdownMenuTrigger
+      aria-label="Account menu"
+      class="flex h-6 w-6 flex-none items-center justify-center rounded-full border border-border-strong bg-bg-4 font-mono text-[8.5px] text-text-muted outline-none transition-colors duration-hover ease-out hover:border-border-hover data-[state=open]:border-accent-border"
+    >
+      {initials}
+    </DropdownMenuTrigger>
+    <DropdownMenuContent align="end">
+      <DropdownMenuItem onSelect={() => onSignOut?.()}>Sign out</DropdownMenuItem>
+    </DropdownMenuContent>
+  </DropdownMenu>
 </header>
