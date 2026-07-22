@@ -11,6 +11,7 @@ import (
 	"encoding/json"
 
 	"blueshift/internal/auth"
+	"blueshift/internal/blob"
 )
 
 // maxLoginBody bounds the login request body.
@@ -33,6 +34,11 @@ type Deps struct {
 	Now func() time.Time
 	// RatePerMin caps login attempts per client IP per minute. <=0 uses 5.
 	RatePerMin int
+	// Episodes is the org-scoped episode persistence port. When it and Blob are
+	// both set, the episode routes are registered.
+	Episodes EpisodeRepo
+	// Blob mints upload URLs and stats uploaded objects.
+	Blob blob.Store
 }
 
 // handler holds resolved dependencies for the auth endpoints.
@@ -63,6 +69,10 @@ func NewRouter(d Deps) http.Handler {
 	mux.HandleFunc("POST "+auth.LoginPath, h.login)
 	mux.HandleFunc("POST "+auth.LogoutPath, h.logout)
 	mux.HandleFunc("GET "+auth.MePath, h.me)
+	if d.Episodes != nil && d.Blob != nil {
+		mux.HandleFunc("POST /api/episodes", h.createEpisode)
+		mux.HandleFunc("POST /api/episodes/{id}/upload-complete", h.uploadComplete)
+	}
 	return mux
 }
 

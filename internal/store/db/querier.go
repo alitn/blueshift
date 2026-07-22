@@ -6,6 +6,8 @@ package db
 
 import (
 	"context"
+
+	"github.com/jackc/pgx/v5/pgtype"
 )
 
 type Querier interface {
@@ -17,11 +19,23 @@ type Querier interface {
 	// global (NULL org_id) default. NULLS LAST orders the concrete org row ahead of
 	// the global fallback.
 	GetConfig(ctx context.Context, arg GetConfigParams) ([]byte, error)
+	// The org's canonical show. Setup auto-creates exactly one show per org in M0,
+	// so the lowest-id non-deleted show is that show. Every episode hangs off it
+	// until per-show organization arrives.
+	GetDefaultShowForOrg(ctx context.Context, orgID int64) (Show, error)
 	GetEpisodeByPublicID(ctx context.Context, arg GetEpisodeByPublicIDParams) (Episode, error)
 	GetMembershipRole(ctx context.Context, arg GetMembershipRoleParams) (string, error)
 	GetOrg(ctx context.Context, id int64) (Org, error)
+	// Resolve an org's internal row from the public id carried in the session
+	// principal. This is how every org-scoped write turns the caller's org identity
+	// (never client input) into the internal org_id used by the queries below.
+	GetOrgByPublicID(ctx context.Context, publicID pgtype.UUID) (Org, error)
 	InsertEpisode(ctx context.Context, arg InsertEpisodeParams) (Episode, error)
 	ListEpisodesByOrg(ctx context.Context, orgID int64) ([]Episode, error)
+	// Record the verified master object key after the client confirms the upload
+	// landed. Org-scoped so a caller can only complete an upload for their own org's
+	// episode. Status is left as 'uploaded'; the worker flips it later.
+	SetEpisodeMasterKey(ctx context.Context, arg SetEpisodeMasterKeyParams) (Episode, error)
 	UpdateEpisodeStatus(ctx context.Context, arg UpdateEpisodeStatusParams) (Episode, error)
 }
 

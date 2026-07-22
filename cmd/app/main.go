@@ -14,6 +14,7 @@ import (
 
 	"blueshift/internal/api"
 	"blueshift/internal/auth"
+	"blueshift/internal/blob"
 	"blueshift/internal/config"
 	"blueshift/internal/logx"
 	"blueshift/internal/server"
@@ -61,7 +62,12 @@ func run() error {
 		logger.Info("no DATABASE_URL set; database readiness check disabled")
 	}
 
-	apiHandler := buildAPI(cfg, logger, st)
+	bs, err := buildBlob(context.Background(), cfg)
+	if err != nil {
+		return fmt.Errorf("blob: %w", err)
+	}
+
+	apiHandler := buildAPI(cfg, logger, st, bs)
 	srv := server.New(cfg, logger, ui, ready, apiHandler)
 
 	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
@@ -70,11 +76,24 @@ func run() error {
 	return server.Run(ctx, srv, logger)
 }
 
+// buildBlob constructs the object-storage backend for the configured mode. The
+// local store signs its upload tokens with the session secret, reusing the same
+// secret machinery as the auth cookies.
+func buildBlob(ctx context.Context, cfg config.Config) (blob.Store, error) {
+	switch cfg.BlobMode {
+	case config.BlobModeGCS:
+		return blob.NewGCS(ctx, cfg.GCSBucket)
+	default:
+		return blob.NewLocal(cfg.BlobDir, []byte(cfg.SessionSecret), nil)
+	}
+}
+
 // buildAPI wires the auth surface: session codec, login backend for the
-// configured mode, and the deny-by-default gate around the /api routes. st may
-// be nil (no database configured); the directory then reports the backend
-// unavailable rather than crashing.
-func buildAPI(cfg config.Config, logger *slog.Logger, st *store.Store) http.Handler {
+// configured mode, and the deny-by-default gate around the /api routes. In local
+// blob mode it also mounts the token-authenticated upload endpoint ahead of the
+// gate. st may be nil (no database configured); the directory then reports the
+// backend unavailable rather than crashing, and the episode routes stay off.
+func buildAPI(cfg config.Config, logger *slog.Logger, st *store.Store, bs blob.Store) http.Handler {
 	codec := auth.NewCodec(cfg.SessionSecret)
 	cookie := auth.CookieConfig{Secure: cfg.Env != config.EnvDev}
 	if cfg.SessionSecretDefaulted {
@@ -101,12 +120,30 @@ func buildAPI(cfg config.Config, logger *slog.Logger, st *store.Store) http.Hand
 		logger.Info("auth mode: dev (offline password sign-in)")
 	}
 
-	router := api.NewRouter(api.Deps{
+	deps := api.Deps{
 		Authenticator: authenticator,
 		Directory:     dir,
 		Codec:         codec,
 		Cookie:        cookie,
 		Logger:        logger,
-	})
-	return server.AuthGate(codec, logger, router)
+		Blob:          bs,
+	}
+	// Episode routes need both the store and the blob backend; without a
+	// database they stay off (the rest of /api still serves).
+	if st != nil {
+		deps.Episodes = st
+	}
+	router := api.NewRouter(deps)
+	gated := server.AuthGate(codec, logger, router)
+
+	// In local blob mode the upload endpoint authenticates by signed token, not
+	// the session cookie, so it is mounted ahead of the gate. Its path is more
+	// specific than "/api/", so it wins for upload requests.
+	if local, ok := bs.(*blob.Local); ok {
+		mux := http.NewServeMux()
+		mux.Handle(blob.LocalBasePath+"/", local.Handler())
+		mux.Handle("/api/", gated)
+		return mux
+	}
+	return gated
 }

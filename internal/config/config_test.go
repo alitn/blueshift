@@ -27,6 +27,39 @@ func TestLoadDefaults(t *testing.T) {
 	if got, want := cfg.Addr(), ":8080"; got != want {
 		t.Errorf("Addr() = %q, want %q", got, want)
 	}
+	// Dev defaults to the offline local blob store with a temp-dir root.
+	if cfg.BlobMode != BlobModeLocal {
+		t.Errorf("BlobMode = %q, want local", cfg.BlobMode)
+	}
+	if cfg.BlobDir == "" {
+		t.Error("BlobDir empty in local mode, want a default root")
+	}
+}
+
+func TestLoadBlobInvalid(t *testing.T) {
+	cases := map[string]map[string]string{
+		"invalid blob mode":       {"BLOB_MODE": "s3"},
+		"gcs missing bucket":      {"BLOB_MODE": "gcs"},
+		"local blob mode in prod": {"ENV": "prod", "SESSION_SECRET": "x", "IDP_API_KEY": "k", "BLOB_MODE": "local"},
+		"prod missing bucket":     {"ENV": "prod", "SESSION_SECRET": "x", "IDP_API_KEY": "k"},
+	}
+	for name, m := range cases {
+		t.Run(name, func(t *testing.T) {
+			if _, err := load(env(m)); err == nil {
+				t.Fatalf("load(%v): expected error, got nil", m)
+			}
+		})
+	}
+}
+
+func TestLoadBlobLocalOverride(t *testing.T) {
+	cfg, err := load(env(map[string]string{"BLOB_MODE": "local", "BLOB_DIR": "/tmp/custom-blob"}))
+	if err != nil {
+		t.Fatalf("load: unexpected error: %v", err)
+	}
+	if cfg.BlobMode != BlobModeLocal || cfg.BlobDir != "/tmp/custom-blob" {
+		t.Errorf("blob = %q dir=%q", cfg.BlobMode, cfg.BlobDir)
+	}
 }
 
 func TestLoadOverrides(t *testing.T) {
@@ -37,9 +70,13 @@ func TestLoadOverrides(t *testing.T) {
 		"DATABASE_URL":   "postgres://u:p@h:5432/db",
 		"SESSION_SECRET": "prod-secret",
 		"IDP_API_KEY":    "prod-key",
+		"GCS_BUCKET":     "bs-masters",
 	}))
 	if err != nil {
 		t.Fatalf("load: unexpected error: %v", err)
+	}
+	if cfg.BlobMode != BlobModeGCS || cfg.GCSBucket != "bs-masters" {
+		t.Errorf("blob = %q bucket=%q, want gcs + bs-masters", cfg.BlobMode, cfg.GCSBucket)
 	}
 	if cfg.Port != "9090" {
 		t.Errorf("Port = %q, want 9090", cfg.Port)

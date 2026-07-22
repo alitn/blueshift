@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"log/slog"
 	"os"
+	"path/filepath"
 	"strconv"
 	"strings"
 )
@@ -30,6 +31,16 @@ type AuthMode string
 const (
 	AuthModeDev      AuthMode = "dev"
 	AuthModeIdentity AuthMode = "identity"
+)
+
+// BlobMode selects the object-storage backend. `local` writes under BLOB_DIR and
+// serves uploads from the app itself (used by `make demo`); `gcs` uses the
+// bucket named by GCS_BUCKET with credentials from the runtime.
+type BlobMode string
+
+const (
+	BlobModeLocal BlobMode = "local"
+	BlobModeGCS   BlobMode = "gcs"
 )
 
 // Config is the fully-resolved, validated server configuration.
@@ -56,6 +67,13 @@ type Config struct {
 	DevPassword string
 	// IDPAPIKey is the identity provider web API key (identity mode only).
 	IDPAPIKey string
+
+	// BlobMode selects the object-storage backend (local|gcs).
+	BlobMode BlobMode
+	// GCSBucket is the storage bucket name (gcs mode only).
+	GCSBucket string
+	// BlobDir is the filesystem root for the local blob store (local mode).
+	BlobDir string
 }
 
 // Addr returns the listen address (":<port>") for http.Server.
@@ -73,6 +91,10 @@ const (
 	// defaultDevPassword is the dev auth-mode password when DEV_PASSWORD is
 	// unset. Matches `make demo` expectations.
 	defaultDevPassword = "blueshift-dev"
+
+	// defaultBlobDirName is the local blob root under the OS temp dir when
+	// BLOB_DIR is unset in local mode.
+	defaultBlobDirName = "blueshift-blob"
 )
 
 // Load reads configuration from the process environment.
@@ -122,7 +144,47 @@ func load(getenv func(string) string) (Config, error) {
 		return Config{}, err
 	}
 
+	if err := loadBlob(&cfg, getenv); err != nil {
+		return Config{}, err
+	}
+
 	return cfg, nil
+}
+
+// loadBlob resolves and validates object-storage settings. Dev defaults to the
+// offline local store; staging and prod must use gcs with an explicit bucket.
+func loadBlob(cfg *Config, getenv func(string) string) error {
+	isProdLike := cfg.Env == EnvStaging || cfg.Env == EnvProd
+
+	if v := strings.TrimSpace(getenv("BLOB_MODE")); v != "" {
+		m := BlobMode(v)
+		switch m {
+		case BlobModeLocal, BlobModeGCS:
+			cfg.BlobMode = m
+		default:
+			return fmt.Errorf("config: invalid BLOB_MODE %q (want local|gcs)", v)
+		}
+	} else if isProdLike {
+		cfg.BlobMode = BlobModeGCS
+	} else {
+		cfg.BlobMode = BlobModeLocal
+	}
+	if isProdLike && cfg.BlobMode == BlobModeLocal {
+		return fmt.Errorf("config: BLOB_MODE=local is not allowed when ENV=%s", cfg.Env)
+	}
+
+	cfg.GCSBucket = strings.TrimSpace(getenv("GCS_BUCKET"))
+	if cfg.BlobMode == BlobModeGCS && cfg.GCSBucket == "" {
+		return fmt.Errorf("config: GCS_BUCKET is required when BLOB_MODE=gcs")
+	}
+
+	if v := strings.TrimSpace(getenv("BLOB_DIR")); v != "" {
+		cfg.BlobDir = v
+	} else if cfg.BlobMode == BlobModeLocal {
+		cfg.BlobDir = filepath.Join(os.TempDir(), defaultBlobDirName)
+	}
+
+	return nil
 }
 
 // loadAuth resolves and validates the auth-related settings. The rules encode

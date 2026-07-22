@@ -16,8 +16,12 @@ import (
 // registered; anything else is rejected on the way in (Decode/Parse).
 type Prefix string
 
-// The registered prefixes, one per externally-exposed entity.
+// The registered prefixes, one per externally-exposed entity. Org is exposed
+// only inside storage keys (never in an API/URL path today), but it is a real
+// public identifier the same way the others are and so lives in the same
+// registry rather than being encoded ad hoc.
 const (
+	Org     Prefix = "org"
 	Episode Prefix = "ep"
 	Show    Prefix = "sh"
 	Moment  Prefix = "mo"
@@ -27,6 +31,7 @@ const (
 
 // registry is the closed set of valid prefixes.
 var registry = map[Prefix]struct{}{
+	Org:     {},
 	Episode: {},
 	Show:    {},
 	Moment:  {},

@@ -9,7 +9,7 @@ import (
 
 // allPrefixes is the full registered set, asserted against the registry so a
 // new prefix cannot be added without updating the tests.
-var allPrefixes = []Prefix{Episode, Show, Moment, Clip, Speaker}
+var allPrefixes = []Prefix{Org, Episode, Show, Moment, Clip, Speaker}
 
 func TestRegistryMatchesConstants(t *testing.T) {
 	if len(registry) != len(allPrefixes) {

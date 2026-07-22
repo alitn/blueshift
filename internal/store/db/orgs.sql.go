@@ -7,6 +7,8 @@ package db
 
 import (
 	"context"
+
+	"github.com/jackc/pgx/v5/pgtype"
 )
 
 const getOrg = `-- name: GetOrg :one
@@ -16,6 +18,27 @@ WHERE id = $1
 
 func (q *Queries) GetOrg(ctx context.Context, id int64) (Org, error) {
 	row := q.db.QueryRow(ctx, getOrg, id)
+	var i Org
+	err := row.Scan(
+		&i.ID,
+		&i.PublicID,
+		&i.Name,
+		&i.CreatedAt,
+		&i.UpdatedAt,
+	)
+	return i, err
+}
+
+const getOrgByPublicID = `-- name: GetOrgByPublicID :one
+SELECT id, public_id, name, created_at, updated_at FROM orgs
+WHERE public_id = $1
+`
+
+// Resolve an org's internal row from the public id carried in the session
+// principal. This is how every org-scoped write turns the caller's org identity
+// (never client input) into the internal org_id used by the queries below.
+func (q *Queries) GetOrgByPublicID(ctx context.Context, publicID pgtype.UUID) (Org, error) {
+	row := q.db.QueryRow(ctx, getOrgByPublicID, publicID)
 	var i Org
 	err := row.Scan(
 		&i.ID,

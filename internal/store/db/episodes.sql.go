@@ -12,7 +12,7 @@ import (
 )
 
 const getEpisodeByPublicID = `-- name: GetEpisodeByPublicID :one
-SELECT id, public_id, org_id, show_id, title, source_filename, language, status, duration_ms, master_object_key, proxy_object_key, error_id, created_at, updated_at, deleted_at FROM episodes
+SELECT id, public_id, org_id, show_id, title, source_filename, language, status, duration_ms, master_object_key, proxy_object_key, error_id, created_at, updated_at, deleted_at, master_size_bytes FROM episodes
 WHERE public_id = $1
   AND org_id = $2
   AND deleted_at IS NULL
@@ -42,17 +42,18 @@ func (q *Queries) GetEpisodeByPublicID(ctx context.Context, arg GetEpisodeByPubl
 		&i.CreatedAt,
 		&i.UpdatedAt,
 		&i.DeletedAt,
+		&i.MasterSizeBytes,
 	)
 	return i, err
 }
 
 const insertEpisode = `-- name: InsertEpisode :one
 INSERT INTO episodes (
-    org_id, show_id, title, source_filename, language, master_object_key
+    org_id, show_id, title, source_filename, language, master_object_key, master_size_bytes
 ) VALUES (
-    $1, $2, $3, $4, $5, $6
+    $1, $2, $3, $4, $5, $6, $7
 )
-RETURNING id, public_id, org_id, show_id, title, source_filename, language, status, duration_ms, master_object_key, proxy_object_key, error_id, created_at, updated_at, deleted_at
+RETURNING id, public_id, org_id, show_id, title, source_filename, language, status, duration_ms, master_object_key, proxy_object_key, error_id, created_at, updated_at, deleted_at, master_size_bytes
 `
 
 type InsertEpisodeParams struct {
@@ -62,6 +63,7 @@ type InsertEpisodeParams struct {
 	SourceFilename  string
 	Language        string
 	MasterObjectKey pgtype.Text
+	MasterSizeBytes pgtype.Int8
 }
 
 func (q *Queries) InsertEpisode(ctx context.Context, arg InsertEpisodeParams) (Episode, error) {
@@ -72,6 +74,7 @@ func (q *Queries) InsertEpisode(ctx context.Context, arg InsertEpisodeParams) (E
 		arg.SourceFilename,
 		arg.Language,
 		arg.MasterObjectKey,
+		arg.MasterSizeBytes,
 	)
 	var i Episode
 	err := row.Scan(
@@ -90,12 +93,13 @@ func (q *Queries) InsertEpisode(ctx context.Context, arg InsertEpisodeParams) (E
 		&i.CreatedAt,
 		&i.UpdatedAt,
 		&i.DeletedAt,
+		&i.MasterSizeBytes,
 	)
 	return i, err
 }
 
 const listEpisodesByOrg = `-- name: ListEpisodesByOrg :many
-SELECT id, public_id, org_id, show_id, title, source_filename, language, status, duration_ms, master_object_key, proxy_object_key, error_id, created_at, updated_at, deleted_at FROM episodes
+SELECT id, public_id, org_id, show_id, title, source_filename, language, status, duration_ms, master_object_key, proxy_object_key, error_id, created_at, updated_at, deleted_at, master_size_bytes FROM episodes
 WHERE org_id = $1
   AND deleted_at IS NULL
 ORDER BY created_at DESC, id DESC
@@ -126,6 +130,7 @@ func (q *Queries) ListEpisodesByOrg(ctx context.Context, orgID int64) ([]Episode
 			&i.CreatedAt,
 			&i.UpdatedAt,
 			&i.DeletedAt,
+			&i.MasterSizeBytes,
 		); err != nil {
 			return nil, err
 		}
@@ -137,13 +142,56 @@ func (q *Queries) ListEpisodesByOrg(ctx context.Context, orgID int64) ([]Episode
 	return items, nil
 }
 
+const setEpisodeMasterKey = `-- name: SetEpisodeMasterKey :one
+UPDATE episodes
+SET master_object_key = $3,
+    updated_at = now()
+WHERE public_id = $1
+  AND org_id = $2
+  AND deleted_at IS NULL
+RETURNING id, public_id, org_id, show_id, title, source_filename, language, status, duration_ms, master_object_key, proxy_object_key, error_id, created_at, updated_at, deleted_at, master_size_bytes
+`
+
+type SetEpisodeMasterKeyParams struct {
+	PublicID        pgtype.UUID
+	OrgID           int64
+	MasterObjectKey pgtype.Text
+}
+
+// Record the verified master object key after the client confirms the upload
+// landed. Org-scoped so a caller can only complete an upload for their own org's
+// episode. Status is left as 'uploaded'; the worker flips it later.
+func (q *Queries) SetEpisodeMasterKey(ctx context.Context, arg SetEpisodeMasterKeyParams) (Episode, error) {
+	row := q.db.QueryRow(ctx, setEpisodeMasterKey, arg.PublicID, arg.OrgID, arg.MasterObjectKey)
+	var i Episode
+	err := row.Scan(
+		&i.ID,
+		&i.PublicID,
+		&i.OrgID,
+		&i.ShowID,
+		&i.Title,
+		&i.SourceFilename,
+		&i.Language,
+		&i.Status,
+		&i.DurationMs,
+		&i.MasterObjectKey,
+		&i.ProxyObjectKey,
+		&i.ErrorID,
+		&i.CreatedAt,
+		&i.UpdatedAt,
+		&i.DeletedAt,
+		&i.MasterSizeBytes,
+	)
+	return i, err
+}
+
 const updateEpisodeStatus = `-- name: UpdateEpisodeStatus :one
 UPDATE episodes
 SET status = $3,
     updated_at = now()
 WHERE public_id = $1
   AND org_id = $2
-RETURNING id, public_id, org_id, show_id, title, source_filename, language, status, duration_ms, master_object_key, proxy_object_key, error_id, created_at, updated_at, deleted_at
+RETURNING id, public_id, org_id, show_id, title, source_filename, language, status, duration_ms, master_object_key, proxy_object_key, error_id, created_at, updated_at, deleted_at, master_size_bytes
 `
 
 type UpdateEpisodeStatusParams struct {
@@ -171,6 +219,7 @@ func (q *Queries) UpdateEpisodeStatus(ctx context.Context, arg UpdateEpisodeStat
 		&i.CreatedAt,
 		&i.UpdatedAt,
 		&i.DeletedAt,
+		&i.MasterSizeBytes,
 	)
 	return i, err
 }
