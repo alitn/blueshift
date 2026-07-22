@@ -3,6 +3,7 @@ package config
 import (
 	"log/slog"
 	"testing"
+	"time"
 )
 
 // env builds a getenv func backed by a fixed map.
@@ -174,6 +175,58 @@ func TestLoadInvalid(t *testing.T) {
 		"port out of range": {"PORT": "70000"},
 		"unknown env":       {"ENV": "production"},
 		"unknown log level": {"LOG_LEVEL": "verbose"},
+	}
+	for name, m := range cases {
+		t.Run(name, func(t *testing.T) {
+			if _, err := load(env(m)); err == nil {
+				t.Fatalf("load(%v): expected error, got nil", m)
+			}
+		})
+	}
+}
+
+func TestLoadWorkerDefaults(t *testing.T) {
+	cfg, err := load(env(nil))
+	if err != nil {
+		t.Fatalf("load: %v", err)
+	}
+	if cfg.WorkerTrigger != WorkerTriggerExec {
+		t.Errorf("WorkerTrigger = %q, want exec", cfg.WorkerTrigger)
+	}
+	if cfg.IngestTimeout != defaultIngestTimeout {
+		t.Errorf("IngestTimeout = %v, want %v", cfg.IngestTimeout, defaultIngestTimeout)
+	}
+}
+
+func TestLoadWorkerCloudRun(t *testing.T) {
+	cfg, err := load(env(map[string]string{
+		"WORKER_TRIGGER":     "cloudrun",
+		"WORKER_JOB_REGION":  "us-central1",
+		"WORKER_JOB_PROJECT": "bs-proj",
+		"WORKER_JOB_NAME":    "bs-worker",
+		"INGEST_TIMEOUT":     "45m",
+	}))
+	if err != nil {
+		t.Fatalf("load: %v", err)
+	}
+	if cfg.WorkerTrigger != WorkerTriggerCloudRun {
+		t.Errorf("WorkerTrigger = %q, want cloudrun", cfg.WorkerTrigger)
+	}
+	if cfg.WorkerJobRegion != "us-central1" || cfg.WorkerJobProject != "bs-proj" || cfg.WorkerJobName != "bs-worker" {
+		t.Errorf("job coords = %q/%q/%q", cfg.WorkerJobRegion, cfg.WorkerJobProject, cfg.WorkerJobName)
+	}
+	if cfg.IngestTimeout != 45*time.Minute {
+		t.Errorf("IngestTimeout = %v, want 45m", cfg.IngestTimeout)
+	}
+}
+
+func TestLoadWorkerInvalid(t *testing.T) {
+	cases := map[string]map[string]string{
+		"invalid trigger":          {"WORKER_TRIGGER": "lambda"},
+		"cloudrun missing coords":  {"WORKER_TRIGGER": "cloudrun"},
+		"cloudrun partial coords":  {"WORKER_TRIGGER": "cloudrun", "WORKER_JOB_REGION": "r"},
+		"bad ingest timeout":       {"INGEST_TIMEOUT": "soon"},
+		"nonpositive ingest tmout": {"INGEST_TIMEOUT": "0s"},
 	}
 	for name, m := range cases {
 		t.Run(name, func(t *testing.T) {

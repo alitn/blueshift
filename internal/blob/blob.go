@@ -53,8 +53,12 @@ type Store interface {
 }
 
 // mastersSegment is the fixed sub-prefix under {org}/{episode} for source
-// masters. proxies/ and clips/ join it in later milestones.
-const mastersSegment = "masters"
+// masters. proxiesSegment holds the derived proxy + audio renders; clips/ joins
+// them in later milestones.
+const (
+	mastersSegment = "masters"
+	proxiesSegment = "proxies"
+)
 
 // maxFilenameLen bounds the sanitized filename component of a key.
 const maxFilenameLen = 200
@@ -78,6 +82,26 @@ func MasterKey(orgID, episodeID, filename string) (string, error) {
 		return "", err
 	}
 	return path.Join(orgID, episodeID, mastersSegment, name), nil
+}
+
+// ProxyKey builds the object key for a derived render under an episode's
+// proxies/ prefix (the browser proxy and the ASR audio). It mirrors MasterKey:
+// org and episode ids are validated as separator-free tokens and the name is
+// sanitized to a single safe component, so the same public ids always produce
+// the same, org-owned key. name is a fixed, code-supplied filename
+// (e.g. "proxy-720p.mp4"), never client input.
+func ProxyKey(orgID, episodeID, name string) (string, error) {
+	if err := validIDToken(orgID); err != nil {
+		return "", fmt.Errorf("blob: org id: %w", err)
+	}
+	if err := validIDToken(episodeID); err != nil {
+		return "", fmt.Errorf("blob: episode id: %w", err)
+	}
+	clean, err := SanitizeFilename(name)
+	if err != nil {
+		return "", err
+	}
+	return path.Join(orgID, episodeID, proxiesSegment, clean), nil
 }
 
 // ErrBadFilename means the filename sanitized down to nothing usable (empty,

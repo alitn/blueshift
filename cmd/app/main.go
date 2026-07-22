@@ -17,6 +17,7 @@ import (
 	"blueshift/internal/blob"
 	"blueshift/internal/config"
 	"blueshift/internal/logx"
+	"blueshift/internal/pipeline"
 	"blueshift/internal/server"
 	"blueshift/internal/store"
 	"blueshift/internal/webembed"
@@ -88,6 +89,21 @@ func buildBlob(ctx context.Context, cfg config.Config) (blob.Store, error) {
 	}
 }
 
+// buildTrigger constructs the pipeline worker trigger for the configured mode.
+// exec spawns the local worker binary (dev/demo); cloudrun starts a Cloud Run
+// Jobs execution. Both satisfy api.StageTrigger; the provider detail stays
+// inside internal/pipeline.
+func buildTrigger(cfg config.Config, logger *slog.Logger) api.StageTrigger {
+	switch cfg.WorkerTrigger {
+	case config.WorkerTriggerCloudRun:
+		logger.Info("worker trigger: cloudrun", "job", cfg.WorkerJobName, "region", cfg.WorkerJobRegion)
+		return pipeline.NewCloudRunTrigger(cfg.WorkerJobProject, cfg.WorkerJobRegion, cfg.WorkerJobName, logger)
+	default:
+		logger.Info("worker trigger: exec", "bin", cfg.WorkerBin)
+		return pipeline.NewExecTrigger(cfg.WorkerBin, logger)
+	}
+}
+
 // buildAPI wires the auth surface: session codec, login backend for the
 // configured mode, and the deny-by-default gate around the /api routes. In local
 // blob mode it also mounts the token-authenticated upload endpoint ahead of the
@@ -132,6 +148,7 @@ func buildAPI(cfg config.Config, logger *slog.Logger, st *store.Store, bs blob.S
 	// database they stay off (the rest of /api still serves).
 	if st != nil {
 		deps.Episodes = st
+		deps.Trigger = buildTrigger(cfg, logger)
 	}
 	router := api.NewRouter(deps)
 	gated := server.AuthGate(codec, logger, router)

@@ -1,6 +1,7 @@
 package api
 
 import (
+	"context"
 	"errors"
 	"io"
 	"log/slog"
@@ -39,6 +40,19 @@ type Deps struct {
 	Episodes EpisodeRepo
 	// Blob mints upload URLs and stats uploaded objects.
 	Blob blob.Store
+	// Trigger launches the pipeline worker after an upload is verified. Optional:
+	// when nil, upload-complete records the master and returns without launching
+	// (e.g. a deployment where the worker is driven another way). Neutral by
+	// contract — it never carries provider detail into this package.
+	Trigger StageTrigger
+}
+
+// StageTrigger launches a pipeline stage for an episode out of band from the
+// request. The concrete implementations (subprocess or Cloud Run Jobs) live in
+// internal/pipeline; this interface stays neutral so the vendor-leak gate over
+// this package never sees a provider name.
+type StageTrigger interface {
+	Trigger(ctx context.Context, episodePublicID, stage string) error
 }
 
 // handler holds resolved dependencies for the auth endpoints.

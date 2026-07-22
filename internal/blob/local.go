@@ -95,6 +95,82 @@ func (l *Local) SignedGetURL(_ context.Context, key string, ttl time.Duration) (
 	return localObjectPath + "?t=" + url.QueryEscape(tok), nil
 }
 
+// LocalPath returns the absolute on-disk path backing key, confined to the
+// store root. It lets pipeline tooling (ffmpeg) read a master and write its
+// renders in place without a copy, which is why the local store is preferred
+// over Download/Upload when the pipeline detects it. The object need not exist
+// yet: callers writing an output MkdirAll its parent first.
+func (l *Local) LocalPath(key string) (string, error) {
+	p, err := l.resolve(key)
+	if err != nil {
+		return "", err
+	}
+	abs, err := filepath.Abs(p)
+	if err != nil {
+		return "", fmt.Errorf("blob: abs path: %w", err)
+	}
+	return abs, nil
+}
+
+// Download copies the object at key to destPath (parent created). It exists so
+// the local store satisfies the same movement contract as GCS; the pipeline
+// normally uses LocalPath instead to avoid the copy.
+func (l *Local) Download(_ context.Context, key, destPath string) error {
+	src, err := l.resolve(key)
+	if err != nil {
+		return err
+	}
+	in, err := os.Open(src) //nolint:gosec // src is confined to l.dir by resolve.
+	if errors.Is(err, os.ErrNotExist) {
+		return ErrNotFound
+	}
+	if err != nil {
+		return fmt.Errorf("blob: open source: %w", err)
+	}
+	defer func() { _ = in.Close() }()
+	return copyToFile(in, destPath)
+}
+
+// Upload copies the local file at srcPath to the object at key (parent created).
+// contentType is ignored by the filesystem store.
+func (l *Local) Upload(_ context.Context, key, srcPath, _ string) error {
+	dst, err := l.resolve(key)
+	if err != nil {
+		return err
+	}
+	in, err := os.Open(srcPath) //nolint:gosec // srcPath is a pipeline-produced temp file.
+	if err != nil {
+		return fmt.Errorf("blob: open output: %w", err)
+	}
+	defer func() { _ = in.Close() }()
+	return copyToFile(in, dst)
+}
+
+// copyToFile streams r into destPath, creating the parent directory and writing
+// via a temp sibling + rename so a reader never sees a partial object.
+func copyToFile(r io.Reader, destPath string) error {
+	if err := os.MkdirAll(filepath.Dir(destPath), 0o750); err != nil {
+		return fmt.Errorf("blob: mkdir: %w", err)
+	}
+	tmp, err := os.CreateTemp(filepath.Dir(destPath), ".copy-*")
+	if err != nil {
+		return fmt.Errorf("blob: temp: %w", err)
+	}
+	tmpName := tmp.Name()
+	defer func() { _ = os.Remove(tmpName) }()
+	if _, err := io.Copy(tmp, r); err != nil {
+		_ = tmp.Close()
+		return fmt.Errorf("blob: copy: %w", err)
+	}
+	if err := tmp.Close(); err != nil {
+		return fmt.Errorf("blob: close: %w", err)
+	}
+	if err := os.Rename(tmpName, destPath); err != nil {
+		return fmt.Errorf("blob: rename: %w", err)
+	}
+	return nil
+}
+
 // Handler serves the local PUT/GET endpoint. Mount it at LocalBasePath+"/",
 // ahead of the /api auth gate. It authenticates by verifying the token in ?t=;
 // there is no session cookie on this path.

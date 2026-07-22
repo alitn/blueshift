@@ -223,8 +223,25 @@ func (h *handler) uploadComplete(w http.ResponseWriter, r *http.Request) {
 		writeJSON(w, http.StatusNotFound, errBody{Error: "not_found"})
 		return
 	}
+
+	// Launch the ingest stage. This is best-effort: the master is safely
+	// recorded, so a trigger failure is logged server-side (neutrally) and the
+	// upload still reports success — the worker can be re-driven — rather than
+	// telling the client their finished upload failed.
+	if h.deps.Trigger != nil {
+		if err := h.deps.Trigger.Trigger(r.Context(), episodeID, ingestStage); err != nil {
+			id := errorID()
+			h.deps.Logger.LogAttrs(r.Context(), slog.LevelError, "worker trigger failed",
+				slog.String("error_id", id), slog.String("error", err.Error()))
+		}
+	}
+
 	writeJSON(w, http.StatusOK, episodeDTOFrom(updated))
 }
+
+// ingestStage is the stage name the upload-complete trigger launches. Kept as a
+// neutral local constant so this package does not import the pipeline registry.
+const ingestStage = "ingest"
 
 // unavailable logs the raw cause server-side with a correlation id and returns
 // the neutral 503 envelope, matching the auth handlers.

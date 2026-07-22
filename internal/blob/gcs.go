@@ -4,6 +4,9 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"io"
+	"os"
+	"path/filepath"
 	"time"
 
 	"cloud.google.com/go/storage"
@@ -81,6 +84,56 @@ func (g *GCS) Stat(ctx context.Context, key string) (int64, error) {
 		return 0, fmt.Errorf("blob: stat: %w", err)
 	}
 	return attrs.Size, nil
+}
+
+// Download streams the object at key into destPath (parent created). The
+// pipeline uses it to stage a master into a worker's tmpdir before ffmpeg runs.
+func (g *GCS) Download(ctx context.Context, key, destPath string) error {
+	rc, err := g.client.Bucket(g.bucket).Object(key).NewReader(ctx)
+	if errors.Is(err, storage.ErrObjectNotExist) {
+		return ErrNotFound
+	}
+	if err != nil {
+		return fmt.Errorf("blob: open object reader: %w", err)
+	}
+	defer func() { _ = rc.Close() }()
+	if err := os.MkdirAll(filepath.Dir(destPath), 0o750); err != nil {
+		return fmt.Errorf("blob: mkdir: %w", err)
+	}
+	f, err := os.Create(destPath)
+	if err != nil {
+		return fmt.Errorf("blob: create dest: %w", err)
+	}
+	if _, err := io.Copy(f, rc); err != nil {
+		_ = f.Close()
+		return fmt.Errorf("blob: download copy: %w", err)
+	}
+	if err := f.Close(); err != nil {
+		return fmt.Errorf("blob: close dest: %w", err)
+	}
+	return nil
+}
+
+// Upload streams the local file at srcPath to the object at key with
+// contentType. The pipeline uses it to persist rendered proxy/audio outputs.
+func (g *GCS) Upload(ctx context.Context, key, srcPath, contentType string) error {
+	f, err := os.Open(srcPath) //nolint:gosec // srcPath is a pipeline-produced temp file.
+	if err != nil {
+		return fmt.Errorf("blob: open output: %w", err)
+	}
+	defer func() { _ = f.Close() }()
+	w := g.client.Bucket(g.bucket).Object(key).NewWriter(ctx)
+	if contentType != "" {
+		w.ContentType = contentType
+	}
+	if _, err := io.Copy(w, f); err != nil {
+		_ = w.Close()
+		return fmt.Errorf("blob: upload copy: %w", err)
+	}
+	if err := w.Close(); err != nil {
+		return fmt.Errorf("blob: finalize upload: %w", err)
+	}
+	return nil
 }
 
 // SignedGetURL returns a short-lived V4 signed GET URL for key.

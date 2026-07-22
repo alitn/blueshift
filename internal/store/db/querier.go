@@ -11,6 +11,12 @@ import (
 )
 
 type Querier interface {
+	// Compare-and-set claim: atomically move a single 'uploaded' episode to
+	// 'processing'. The status predicate is the concurrency guard — a second
+	// concurrent worker finds no matching row and no-ops (pgx.ErrNoRows). The
+	// returned org_id is how the worker scopes every later write to the claimed
+	// tenant; it never takes an org from its arguments.
+	ClaimEpisodeForIngest(ctx context.Context, publicID pgtype.UUID) (Episode, error)
 	// Resolve a seeded user's authentication context by email: their display name,
 	// their org (public id + name) and their role in that org. One membership per
 	// user in M0, so LIMIT 1 is exact. Soft-deleted users are excluded.
@@ -32,6 +38,13 @@ type Querier interface {
 	GetOrgByPublicID(ctx context.Context, publicID pgtype.UUID) (Org, error)
 	InsertEpisode(ctx context.Context, arg InsertEpisodeParams) (Episode, error)
 	ListEpisodesByOrg(ctx context.Context, orgID int64) ([]Episode, error)
+	// Finalize an exhausted stage: record a neutral error_id and flip to 'failed'.
+	// Org-scoped and gated on 'processing' for the same reason as MarkEpisodeReady.
+	MarkEpisodeFailed(ctx context.Context, arg MarkEpisodeFailedParams) (Episode, error)
+	// Finalize a successful stage: record the proxy key and measured duration and
+	// flip to 'ready'. Org-scoped and gated on 'processing' so it only ever
+	// completes the run this worker claimed (idempotent no-op otherwise).
+	MarkEpisodeReady(ctx context.Context, arg MarkEpisodeReadyParams) (Episode, error)
 	// Record the verified master object key after the client confirms the upload
 	// landed. Org-scoped so a caller can only complete an upload for their own org's
 	// episode. Status is left as 'uploaded'; the worker flips it later.

@@ -11,6 +11,46 @@ import (
 	"github.com/jackc/pgx/v5/pgtype"
 )
 
+const claimEpisodeForIngest = `-- name: ClaimEpisodeForIngest :one
+UPDATE episodes
+SET status = 'processing',
+    error_id = NULL,
+    updated_at = now()
+WHERE public_id = $1
+  AND status = 'uploaded'
+  AND deleted_at IS NULL
+RETURNING id, public_id, org_id, show_id, title, source_filename, language, status, duration_ms, master_object_key, proxy_object_key, error_id, created_at, updated_at, deleted_at, master_size_bytes
+`
+
+// Compare-and-set claim: atomically move a single 'uploaded' episode to
+// 'processing'. The status predicate is the concurrency guard — a second
+// concurrent worker finds no matching row and no-ops (pgx.ErrNoRows). The
+// returned org_id is how the worker scopes every later write to the claimed
+// tenant; it never takes an org from its arguments.
+func (q *Queries) ClaimEpisodeForIngest(ctx context.Context, publicID pgtype.UUID) (Episode, error) {
+	row := q.db.QueryRow(ctx, claimEpisodeForIngest, publicID)
+	var i Episode
+	err := row.Scan(
+		&i.ID,
+		&i.PublicID,
+		&i.OrgID,
+		&i.ShowID,
+		&i.Title,
+		&i.SourceFilename,
+		&i.Language,
+		&i.Status,
+		&i.DurationMs,
+		&i.MasterObjectKey,
+		&i.ProxyObjectKey,
+		&i.ErrorID,
+		&i.CreatedAt,
+		&i.UpdatedAt,
+		&i.DeletedAt,
+		&i.MasterSizeBytes,
+	)
+	return i, err
+}
+
 const getEpisodeByPublicID = `-- name: GetEpisodeByPublicID :one
 SELECT id, public_id, org_id, show_id, title, source_filename, language, status, duration_ms, master_object_key, proxy_object_key, error_id, created_at, updated_at, deleted_at, master_size_bytes FROM episodes
 WHERE public_id = $1
@@ -140,6 +180,103 @@ func (q *Queries) ListEpisodesByOrg(ctx context.Context, orgID int64) ([]Episode
 		return nil, err
 	}
 	return items, nil
+}
+
+const markEpisodeFailed = `-- name: MarkEpisodeFailed :one
+UPDATE episodes
+SET status = 'failed',
+    error_id = $3,
+    updated_at = now()
+WHERE public_id = $1
+  AND org_id = $2
+  AND status = 'processing'
+  AND deleted_at IS NULL
+RETURNING id, public_id, org_id, show_id, title, source_filename, language, status, duration_ms, master_object_key, proxy_object_key, error_id, created_at, updated_at, deleted_at, master_size_bytes
+`
+
+type MarkEpisodeFailedParams struct {
+	PublicID pgtype.UUID
+	OrgID    int64
+	ErrorID  pgtype.Text
+}
+
+// Finalize an exhausted stage: record a neutral error_id and flip to 'failed'.
+// Org-scoped and gated on 'processing' for the same reason as MarkEpisodeReady.
+func (q *Queries) MarkEpisodeFailed(ctx context.Context, arg MarkEpisodeFailedParams) (Episode, error) {
+	row := q.db.QueryRow(ctx, markEpisodeFailed, arg.PublicID, arg.OrgID, arg.ErrorID)
+	var i Episode
+	err := row.Scan(
+		&i.ID,
+		&i.PublicID,
+		&i.OrgID,
+		&i.ShowID,
+		&i.Title,
+		&i.SourceFilename,
+		&i.Language,
+		&i.Status,
+		&i.DurationMs,
+		&i.MasterObjectKey,
+		&i.ProxyObjectKey,
+		&i.ErrorID,
+		&i.CreatedAt,
+		&i.UpdatedAt,
+		&i.DeletedAt,
+		&i.MasterSizeBytes,
+	)
+	return i, err
+}
+
+const markEpisodeReady = `-- name: MarkEpisodeReady :one
+UPDATE episodes
+SET status = 'ready',
+    proxy_object_key = $3,
+    duration_ms = $4,
+    error_id = NULL,
+    updated_at = now()
+WHERE public_id = $1
+  AND org_id = $2
+  AND status = 'processing'
+  AND deleted_at IS NULL
+RETURNING id, public_id, org_id, show_id, title, source_filename, language, status, duration_ms, master_object_key, proxy_object_key, error_id, created_at, updated_at, deleted_at, master_size_bytes
+`
+
+type MarkEpisodeReadyParams struct {
+	PublicID       pgtype.UUID
+	OrgID          int64
+	ProxyObjectKey pgtype.Text
+	DurationMs     pgtype.Int8
+}
+
+// Finalize a successful stage: record the proxy key and measured duration and
+// flip to 'ready'. Org-scoped and gated on 'processing' so it only ever
+// completes the run this worker claimed (idempotent no-op otherwise).
+func (q *Queries) MarkEpisodeReady(ctx context.Context, arg MarkEpisodeReadyParams) (Episode, error) {
+	row := q.db.QueryRow(ctx, markEpisodeReady,
+		arg.PublicID,
+		arg.OrgID,
+		arg.ProxyObjectKey,
+		arg.DurationMs,
+	)
+	var i Episode
+	err := row.Scan(
+		&i.ID,
+		&i.PublicID,
+		&i.OrgID,
+		&i.ShowID,
+		&i.Title,
+		&i.SourceFilename,
+		&i.Language,
+		&i.Status,
+		&i.DurationMs,
+		&i.MasterObjectKey,
+		&i.ProxyObjectKey,
+		&i.ErrorID,
+		&i.CreatedAt,
+		&i.UpdatedAt,
+		&i.DeletedAt,
+		&i.MasterSizeBytes,
+	)
+	return i, err
 }
 
 const setEpisodeMasterKey = `-- name: SetEpisodeMasterKey :one

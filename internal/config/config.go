@@ -10,6 +10,7 @@ import (
 	"path/filepath"
 	"strconv"
 	"strings"
+	"time"
 )
 
 func getenvFromOS(key string) string { return os.Getenv(key) }
@@ -43,6 +44,16 @@ const (
 	BlobModeGCS   BlobMode = "gcs"
 )
 
+// WorkerTrigger selects how the API server launches the pipeline worker after an
+// upload completes. `exec` spawns the local worker binary (dev/demo); `cloudrun`
+// starts a Cloud Run Jobs execution over the platform's admin REST API.
+type WorkerTrigger string
+
+const (
+	WorkerTriggerExec     WorkerTrigger = "exec"
+	WorkerTriggerCloudRun WorkerTrigger = "cloudrun"
+)
+
 // Config is the fully-resolved, validated server configuration.
 type Config struct {
 	// Port is the TCP port the HTTP server binds to.
@@ -74,6 +85,22 @@ type Config struct {
 	GCSBucket string
 	// BlobDir is the filesystem root for the local blob store (local mode).
 	BlobDir string
+
+	// WorkerTrigger selects how upload-complete launches the pipeline worker
+	// (exec|cloudrun). Defaults to exec in dev, cloudrun in staging/prod.
+	WorkerTrigger WorkerTrigger
+	// WorkerBin is the path to the worker binary the exec trigger spawns.
+	// Required only when WorkerTrigger=exec and a trigger is actually fired.
+	WorkerBin string
+	// WorkerJobRegion is the Cloud region of the worker Job (cloudrun trigger).
+	WorkerJobRegion string
+	// WorkerJobProject is the Cloud project id hosting the worker Job (cloudrun).
+	WorkerJobProject string
+	// WorkerJobName is the Cloud Run Job resource name to execute (cloudrun).
+	WorkerJobName string
+
+	// IngestTimeout bounds a single ingest stage attempt in the worker.
+	IngestTimeout time.Duration
 }
 
 // Addr returns the listen address (":<port>") for http.Server.
@@ -95,6 +122,10 @@ const (
 	// defaultBlobDirName is the local blob root under the OS temp dir when
 	// BLOB_DIR is unset in local mode.
 	defaultBlobDirName = "blueshift-blob"
+
+	// defaultIngestTimeout bounds a single ingest stage attempt when
+	// INGEST_TIMEOUT is unset.
+	defaultIngestTimeout = 30 * time.Minute
 )
 
 // Load reads configuration from the process environment.
@@ -148,7 +179,54 @@ func load(getenv func(string) string) (Config, error) {
 		return Config{}, err
 	}
 
+	if err := loadWorker(&cfg, getenv); err != nil {
+		return Config{}, err
+	}
+
 	return cfg, nil
+}
+
+// loadWorker resolves the pipeline trigger and worker-stage settings. The
+// trigger defaults to exec (spawns the local worker for `make demo`/`make dev`);
+// deployments select cloudrun explicitly via WORKER_TRIGGER. The cloudrun job
+// coordinates are validated only when that mode is selected, so dev and the
+// existing prod smoke config boot with no extra worker env.
+func loadWorker(cfg *Config, getenv func(string) string) error {
+	if v := strings.TrimSpace(getenv("WORKER_TRIGGER")); v != "" {
+		t := WorkerTrigger(v)
+		switch t {
+		case WorkerTriggerExec, WorkerTriggerCloudRun:
+			cfg.WorkerTrigger = t
+		default:
+			return fmt.Errorf("config: invalid WORKER_TRIGGER %q (want exec|cloudrun)", v)
+		}
+	} else {
+		cfg.WorkerTrigger = WorkerTriggerExec
+	}
+
+	cfg.WorkerBin = strings.TrimSpace(getenv("WORKER_BIN"))
+	cfg.WorkerJobRegion = strings.TrimSpace(getenv("WORKER_JOB_REGION"))
+	cfg.WorkerJobProject = strings.TrimSpace(getenv("WORKER_JOB_PROJECT"))
+	cfg.WorkerJobName = strings.TrimSpace(getenv("WORKER_JOB_NAME"))
+	if cfg.WorkerTrigger == WorkerTriggerCloudRun {
+		if cfg.WorkerJobRegion == "" || cfg.WorkerJobProject == "" || cfg.WorkerJobName == "" {
+			return fmt.Errorf("config: WORKER_JOB_REGION, WORKER_JOB_PROJECT, and WORKER_JOB_NAME are required when WORKER_TRIGGER=cloudrun")
+		}
+	}
+
+	cfg.IngestTimeout = defaultIngestTimeout
+	if v := strings.TrimSpace(getenv("INGEST_TIMEOUT")); v != "" {
+		d, err := time.ParseDuration(v)
+		if err != nil {
+			return fmt.Errorf("config: invalid INGEST_TIMEOUT %q: %w", v, err)
+		}
+		if d <= 0 {
+			return fmt.Errorf("config: INGEST_TIMEOUT must be positive, got %q", v)
+		}
+		cfg.IngestTimeout = d
+	}
+
+	return nil
 }
 
 // loadBlob resolves and validates object-storage settings. Dev defaults to the

@@ -4,6 +4,7 @@ import (
 	"context"
 	"crypto/sha256"
 	"encoding/json"
+	"errors"
 	"net/http"
 	"net/http/httptest"
 	"strings"
@@ -88,6 +89,30 @@ func (f *fakeRepo) SetEpisodeMasterKey(_ context.Context, orgPublicID, episodePu
 	return s.row, true, nil
 }
 
+// errTrigger is the failure a fakeTrigger returns when told to fail.
+var errTrigger = errors.New("trigger unavailable")
+
+// fakeTrigger records the (episode, stage) pairs upload-complete launches, and
+// can be told to fail so the best-effort behaviour is observable.
+type fakeTrigger struct {
+	mu    sync.Mutex
+	calls [][2]string
+	err   error
+}
+
+func (f *fakeTrigger) Trigger(_ context.Context, episodePublicID, stage string) error {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	f.calls = append(f.calls, [2]string{episodePublicID, stage})
+	return f.err
+}
+
+func (f *fakeTrigger) count() int {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	return len(f.calls)
+}
+
 // --- harness ----------------------------------------------------------------
 
 const (
@@ -118,6 +143,89 @@ func newEpisodeRouter(t *testing.T, repo EpisodeRepo) (http.Handler, *blob.Local
 		Blob:          local,
 	})
 	return router, local, blobSrv
+}
+
+// newEpisodeRouterWithTrigger is newEpisodeRouter plus a stage trigger wired
+// into Deps, for exercising the upload-complete launch path.
+func newEpisodeRouterWithTrigger(t *testing.T, repo EpisodeRepo, tr StageTrigger) (http.Handler, *httptest.Server) {
+	t.Helper()
+	local, err := blob.NewLocal(t.TempDir(), []byte("test-secret"), func() time.Time { return time.Unix(1_700_000_000, 0) })
+	if err != nil {
+		t.Fatalf("NewLocal: %v", err)
+	}
+	blobSrv := httptest.NewServer(local.Handler())
+	t.Cleanup(blobSrv.Close)
+	router := NewRouter(Deps{
+		Authenticator: stubAuth{},
+		Directory:     stubDir{},
+		Codec:         auth.NewCodec("test-secret"),
+		Logger:        discard(),
+		Now:           func() time.Time { return time.Unix(1_700_000_000, 0) },
+		Episodes:      repo,
+		Blob:          local,
+		Trigger:       tr,
+	})
+	return router, blobSrv
+}
+
+// completeUpload runs the create -> PUT bytes -> upload-complete flow for orgA
+// and returns the created episode id and the upload-complete recorder.
+func completeUpload(t *testing.T, router http.Handler, blobSrv *httptest.Server) (string, *httptest.ResponseRecorder) {
+	t.Helper()
+	body := []byte("master-bytes")
+	reqBody := `{"title":"Ep","source_filename":"a.mp4","size_bytes":` + itoa(len(body)) + `,"content_type":"video/mp4"}`
+	rec := doAs(router, orgA, createReq(reqBody))
+	if rec.Code != http.StatusCreated {
+		t.Fatalf("create status = %d (body %s)", rec.Code, rec.Body.String())
+	}
+	var created createEpisodeResponse
+	if err := json.Unmarshal(rec.Body.Bytes(), &created); err != nil {
+		t.Fatalf("decode: %v", err)
+	}
+	putReq, _ := http.NewRequest(created.Upload.Method, blobSrv.URL+created.Upload.URL, strings.NewReader(string(body)))
+	for k, v := range created.Upload.Headers {
+		putReq.Header.Set(k, v)
+	}
+	putResp, err := blobSrv.Client().Do(putReq)
+	if err != nil {
+		t.Fatalf("PUT: %v", err)
+	}
+	_ = putResp.Body.Close()
+	crec := doAs(router, orgA, httptest.NewRequest(http.MethodPost, "/api/episodes/"+created.Episode.ID+"/upload-complete", nil))
+	return created.Episode.ID, crec
+}
+
+func TestUploadCompleteFiresTrigger(t *testing.T) {
+	repo := newFakeRepo()
+	tr := &fakeTrigger{}
+	router, blobSrv := newEpisodeRouterWithTrigger(t, repo, tr)
+
+	epID, crec := completeUpload(t, router, blobSrv)
+	if crec.Code != http.StatusOK {
+		t.Fatalf("upload-complete status = %d (body %s)", crec.Code, crec.Body.String())
+	}
+	if tr.count() != 1 {
+		t.Fatalf("trigger fired %d times, want 1", tr.count())
+	}
+	if got := tr.calls[0]; got[0] != epID || got[1] != "ingest" {
+		t.Errorf("trigger called with %v, want [%s ingest]", got, epID)
+	}
+}
+
+func TestUploadCompleteSucceedsWhenTriggerFails(t *testing.T) {
+	repo := newFakeRepo()
+	// A trigger failure must not fail the upload: the master is recorded and the
+	// worker can be re-driven.
+	tr := &fakeTrigger{err: errTrigger}
+	router, blobSrv := newEpisodeRouterWithTrigger(t, repo, tr)
+
+	_, crec := completeUpload(t, router, blobSrv)
+	if crec.Code != http.StatusOK {
+		t.Fatalf("upload-complete status = %d, want 200 despite trigger failure", crec.Code)
+	}
+	if tr.count() != 1 {
+		t.Errorf("trigger fired %d times, want 1", tr.count())
+	}
 }
 
 // doAs issues req with the given principal in context (simulating AuthGate).
