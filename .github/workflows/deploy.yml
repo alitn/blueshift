@@ -129,7 +129,7 @@ jobs:
             --image "$IMAGE:${{ github.sha }}" --region "$REGION" \
             --command /app/worker \
             --service-account "$RUNTIME_SA" \
-            --add-cloudsql-instances "$SQL_INSTANCE" \
+            --set-cloudsql-instances "$SQL_INSTANCE" \
             --set-env-vars "ENV=prod,AUTH_MODE=identity,BLOB_MODE=gcs,GCS_BUCKET=$BUCKET" \
             --set-secrets "DATABASE_URL=database-url:latest,SESSION_SECRET=session-signing-key:latest,IDP_API_KEY=identity-platform-config:latest" \
             --max-retries 2 --task-timeout 3600 --quiet

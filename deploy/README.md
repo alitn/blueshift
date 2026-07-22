@@ -122,7 +122,7 @@ Same image, `--command /app/worker`, invoked per stage as
 | `SESSION_SECRET` | secret `session-signing-key`      | `--set-secrets`     |
 | `IDP_API_KEY`    | secret `identity-platform-config` | `--set-secrets`     |
 
-Also: `--add-cloudsql-instances`, `--service-account app-runtime`,
+Also: `--set-cloudsql-instances`, `--service-account app-runtime`,
 `--max-retries 2 --task-timeout 3600`.
 
 The worker never authenticates, but `config.Load()` validates the auth env in a
