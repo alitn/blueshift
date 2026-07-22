@@ -18,11 +18,11 @@ spec file `tasks/<slug>.md` = one Implementer dispatch = one Reviewer verdict = 
 | m0-web-skeleton | SvelteKit + tokens + ui primitives | committed (27ac4f9) | tasks/m0-web-skeleton.md |
 | m0-auth | Identity Platform + authz middleware | committed (fc20b53) | tasks/m0-auth.md |
 | m0-upload | signed upload → GCS + episode create | committed (99f1acc) | tasks/m0-upload.md |
-| m0-worker-ingest | worker Job: audio + proxy + status | spec-ready | tasks/m0-worker-ingest.md |
+| m0-worker-ingest | worker Job: audio + proxy + status | committed (4e3e582) | tasks/m0-worker-ingest.md |
 | m0-library | Library page, live status, playback | spec-ready | tasks/m0-library.md |
-| m0-demo-seed | make demo/dev + e2e harness + baselines | queued | — |
-| m0-ci-deploy | CI gates live + staging/prod pipeline | queued | — |
-| m0-gate-proofs | Deliberate-failure proofs (AC 2/3/4/6) | queued | — |
+| m0-demo-seed | make demo/dev + e2e harness + baselines | spec-ready | tasks/m0-demo-seed.md |
+| m0-ci-deploy | CI gates live + staging/prod pipeline | spec-ready | tasks/m0-ci-deploy.md |
+| m0-gate-proofs | Deliberate-failure proofs (AC 2/3/4/6) | spec-ready | tasks/m0-gate-proofs.md |
 
 ## Backlog
 
@@ -52,3 +52,9 @@ M1 decomposition happens after the M0 gate (see docs/SPEC-M1.md §Task decomposi
 - 2026-07-22 — m0-upload: APPROVE first pass, committed 99f1acc. blob seam (gcs/localdir),
   org_ id prefix added, migration 0003 (master_size_bytes, additive). Reviewer note (non-
   blocking): local PUT lacks MaxBytesReader — dev-only seam, revisit if touched.
+- 2026-07-22 — m0-worker-ingest: implementer cut off once by API spend limit, resumed from
+  transcript, completed. APPROVE first pass, committed 4e3e582 (real-ffmpeg tests, process-
+  group kill, CAS claim, neutral error_id). Accepted: no new migration needed; inline trigger
+  dispatch; WORKER_TRIGGER default exec (deploy sets cloudrun). M1 backlog note: no reaper
+  for episodes stuck in processing after a worker crash. Specs written for m0-demo-seed,
+  m0-ci-deploy, m0-gate-proofs.
