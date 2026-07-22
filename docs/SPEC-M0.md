@@ -34,8 +34,9 @@ living system", never "wire up plumbing".
    episode seeded and AI/external calls mocked from recorded fixtures; deterministic; offline.
    `make dev` loop. Playwright + vitest harness wired; first visual baselines (1440×900,
    1280×800) captured and committed; axe smoke wired.
-10. **CI + deploy** — `pr.yml` green-gates merges; `deploy.yml` ships staging on main and
-    supports manual prod promote per §7; `deploy/gcloud.sh` run once by the human.
+10. **CI + deploy** — `pr.yml` green-gates merges; `deploy.yml` rolls out prod progressively
+    on main per §7 (PoC ruling 2026-07-22: single project, no staging — docs/ENVIRONMENTS.md);
+    `deploy/gcloud.sh` run once by the human.
 
 ## Out of scope
 
@@ -67,7 +68,7 @@ publishing. Anything not needed to move one video through upload → proxy → R
 | `m0-worker-ingest` | worker Job: audio + proxy + status | db-baseline |
 | `m0-library` | Library page, live status, proxy playback | web-skeleton, upload |
 | `m0-demo-seed` | make demo/dev, fixtures, e2e harness, baselines | library, worker |
-| `m0-ci-deploy` | CI green-gates + staging/prod pipeline live | all |
+| `m0-ci-deploy` | CI green-gates + prod pipeline live | all |
 
 Each task ships with its tests, passes `make check`, and goes through the
 Implementer → Reviewer loop. UI tasks additionally satisfy the UI Definition of Done.

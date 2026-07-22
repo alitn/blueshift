@@ -40,8 +40,8 @@ Agent beliefs are not trusted; gates are:
 - Real git hooks ([.githooks/pre-commit](.githooks/pre-commit)) — same gate, enabled by
   `make setup`.
 - CI ([.github/workflows/pr.yml](.github/workflows/pr.yml)) — check + eval + e2e gate every
-  merge; [deploy.yml](.github/workflows/deploy.yml) ships staging automatically and prod by
-  gradual, watched promotion.
+  merge; [deploy.yml](.github/workflows/deploy.yml) rolls out prod progressively on
+  main (no-traffic → migrate → smoke → 10% → watch → 100%); manual rollback job.
 - Visual truth — [design/](design/) is the design contract; screenshot baselines only change
   when the Architect says so.
 

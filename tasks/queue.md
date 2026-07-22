@@ -24,7 +24,7 @@ spec file `tasks/<slug>.md` = one Implementer dispatch = one Reviewer verdict = 
 | m0-ci-deploy | CI gates live + staging/prod pipeline | committed | tasks/m0-ci-deploy.md |
 | m0-library-id-column | remove raw-id column from Library table | committed | tasks/m0-library-id-column.md |
 | m0-env-split | staging/prod in separate GCP projects | committed | tasks/m0-env-split.md |
-| m0-single-project | PoC deploy: one project, dev SA, no staging | spec-ready | tasks/m0-single-project.md |
+| m0-single-project | PoC deploy: one project, dev SA, no staging | committed | tasks/m0-single-project.md |
 | m0-design-refresh | apply 2026-07-22 prototype readability refresh | spec-ready | tasks/m0-design-refresh.md |
 | m0-bun-migration | bun replaces npm (ADR 0001) | spec-ready | tasks/m0-bun-migration.md |
 | m0-dev-watch | Go auto-restart in make dev | spec-ready | tasks/m0-dev-watch.md |

@@ -1,12 +1,13 @@
 # DEMO.md — the M1 demo script (skeleton)
 
-Target: end-to-end on **staging**, under **15 minutes**, **zero live-processing waits**
-(the sample episode is pre-processed; nothing renders live except the final clip, which is
-short). Filled in as M1 lands; timings measured on a dry run before every showing.
+Target: end-to-end on **prod** (PoC: single project, no staging — see docs/ENVIRONMENTS.md),
+under **15 minutes**, **zero live-processing waits** (the sample episode is pre-processed;
+nothing renders live except the final clip, which is short). Filled in as M1 lands; timings
+measured on a dry run before every showing.
 
 ## Preconditions
 
-- [ ] Staging deployed from the release-candidate tag; `/healthz` green.
+- [ ] Prod rollout green from latest main; `/healthz` green on the live revision.
 - [ ] Sample episode (1-hr Persian interview fixture) pre-processed: transcript, speakers,
       moments all `ready`.
 - [ ] Demo user seeded (editor role, self-approval on).
@@ -29,5 +30,5 @@ short). Filled in as M1 lands; timings measured on a dry run before every showin
 
 ## Fallbacks
 
-_TBD: what to do if staging is down (local `make demo`), if render is slow (pre-rendered
-clip), etc._
+_TBD: what to do if prod is unreachable (fall back to local `make demo`), if render is slow
+(pre-rendered clip), etc._
