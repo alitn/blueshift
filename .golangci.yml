@@ -1,0 +1,9 @@
+version: "2"
+
+# The Go toolchain's `./...` expansion skips directories named node_modules;
+# golangci-lint walks them anyway. web/ holds only the SvelteKit app (its sole
+# Go files are vendored junk under node_modules), so exclude it from linting.
+linters:
+  exclusions:
+    paths:
+      - web/

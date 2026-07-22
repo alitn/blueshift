@@ -30,8 +30,19 @@ check: vendor-gate hex-gate
 	@$(MAKE) build
 	@echo "check: GREEN"
 
+# Build order: web build → copy static output into the Go embed dir → go build.
+# The embed dir is gitignored (only .gitkeep is tracked); we rebuild it here so
+# `//go:embed all:dist` picks up the fresh SPA before compiling the binary.
 build:
-	@set -e; if [ -f web/package.json ]; then echo "--> web build"; cd web && npm run build; else echo "skip: web build"; fi
+	@set -e; \
+	if [ -f web/package.json ]; then \
+		echo "--> web build"; (cd web && npm run build); \
+		echo "--> copy web build -> internal/webembed/dist"; \
+		rm -rf internal/webembed/dist; \
+		mkdir -p internal/webembed/dist; \
+		cp -R web/build/. internal/webembed/dist/; \
+		touch internal/webembed/dist/.gitkeep; \
+	else echo "skip: web build"; fi
 	@set -e; if [ -f go.mod ]; then echo "--> go build"; go build ./...; else echo "skip: go build"; fi
 
 # ------------------------------------------------------------------------------

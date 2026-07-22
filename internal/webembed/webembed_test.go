@@ -5,15 +5,24 @@ import (
 	"net/http/httptest"
 	"strings"
 	"testing"
+	"testing/fstest"
 )
+
+// indexHTML is a stand-in for the built SvelteKit index; it carries a stable
+// marker the SPA-fallback assertions look for.
+const indexHTML = `<!doctype html><html><head><title>Blueshift Studio</title></head>` +
+	`<body><div id="app">Blueshift Studio</div></body></html>`
+
+func testFS() fstest.MapFS {
+	return fstest.MapFS{
+		"index.html":            {Data: []byte(indexHTML)},
+		"_app/immutable/app.js": {Data: []byte("console.log('app')")},
+	}
+}
 
 func newHandler(t *testing.T) http.Handler {
 	t.Helper()
-	h, err := Handler()
-	if err != nil {
-		t.Fatalf("Handler: %v", err)
-	}
-	return h
+	return NewHandler(testFS())
 }
 
 func do(t *testing.T, h http.Handler, method, target string) *httptest.ResponseRecorder {
@@ -22,6 +31,14 @@ func do(t *testing.T, h http.Handler, method, target string) *httptest.ResponseR
 	rec := httptest.NewRecorder()
 	h.ServeHTTP(rec, req)
 	return rec
+}
+
+// Handler wires the embedded FS; it must build without error even when dist/
+// holds only the committed .gitkeep placeholder.
+func TestProdHandlerBuilds(t *testing.T) {
+	if _, err := Handler(); err != nil {
+		t.Fatalf("Handler: %v", err)
+	}
 }
 
 func TestServesIndexAtRoot(t *testing.T) {
@@ -34,18 +51,18 @@ func TestServesIndexAtRoot(t *testing.T) {
 		t.Errorf("Content-Type = %q, want text/html*", ct)
 	}
 	if !strings.Contains(rec.Body.String(), "Blueshift Studio") {
-		t.Errorf("body missing placeholder marker: %q", rec.Body.String())
+		t.Errorf("body missing index marker: %q", rec.Body.String())
 	}
 }
 
 func TestServesNamedFile(t *testing.T) {
 	h := newHandler(t)
-	rec := do(t, h, http.MethodGet, "/index.html")
+	rec := do(t, h, http.MethodGet, "/_app/immutable/app.js")
 	if rec.Code != http.StatusOK {
 		t.Fatalf("status = %d, want 200", rec.Code)
 	}
-	if !strings.Contains(rec.Body.String(), "<html") {
-		t.Errorf("expected html body, got %q", rec.Body.String())
+	if !strings.Contains(rec.Body.String(), "console.log") {
+		t.Errorf("expected asset body, got %q", rec.Body.String())
 	}
 }
 
@@ -72,8 +89,8 @@ func TestAPIPathNotMaskedBySPA(t *testing.T) {
 
 func TestNoDirectoryListing(t *testing.T) {
 	h := newHandler(t)
-	// "/" resolves to the dist root directory; it must serve index.html, never
-	// a directory listing.
+	// "/" resolves to the root directory; it must serve index.html, never a
+	// directory listing.
 	rec := do(t, h, http.MethodGet, "/")
 	if strings.Contains(rec.Body.String(), "<pre>") || strings.Contains(rec.Body.String(), "Index of") {
 		t.Errorf("directory listing leaked: %q", rec.Body.String())

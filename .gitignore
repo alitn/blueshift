@@ -12,6 +12,11 @@ web/.svelte-kit/
 web/test-results/
 web/playwright-report/
 
+# embedded web build output — populated by `make build`, never committed
+# (the .gitkeep placeholder is kept so `//go:embed all:dist` always resolves)
+internal/webembed/dist/*
+!internal/webembed/dist/.gitkeep
+
 # local env & secrets
 .env
 .env.*

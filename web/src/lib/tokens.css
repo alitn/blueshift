@@ -1,0 +1,111 @@
+/*
+ * tokens.css — the single source of raw design values, generated to match
+ * design/DESIGN.md. This is the ONLY file in web/ permitted to contain raw hex
+ * colors (enforced by the hex gate in `make check`). Every other stylesheet,
+ * component, and the Tailwind theme reference these custom properties via var().
+ *
+ * Do not add values here that are not in DESIGN.md; if DESIGN.md changes, this
+ * file is regenerated to match. Alpha-composite colors are expressed as rgba
+ * over the surface they sit on, exactly as the contract specifies.
+ */
+
+:root {
+  /* ---- Background ramp ---- */
+  --bg-page: #0c0c0d;
+  --bg-0: #09090a;
+  --bg-1: #0a0a0b;
+  --bg-2: #141414;
+  --bg-3: #1a1a1b;
+  --bg-4: #212123;
+  --bg-5: #2a2a2c;
+  --bg-film-1: #0b0b0c;
+  --bg-film-2: #111114;
+  --bg-film-flash: #17171a;
+
+  /* ---- Text ramp ---- */
+  --text-primary: #edebe6;
+  --text-body: #dddad3;
+  --text-muted: #9a968e;
+  --text-faint: #6e6a63;
+  --text-faintest: #57534c;
+  --text-on-accent: #f4f6fa;
+  --text-caption: #ffffff;
+
+  /* ---- Accent ---- */
+  --accent: #4e7fc2;
+  --accent-bright: #6493d1;
+  --accent-soft: #8fb0dc;
+  --accent-selection: rgba(78, 127, 194, 0.35);
+  --accent-wash-08: rgba(78, 127, 194, 0.08);
+  --accent-wash-12: rgba(78, 127, 194, 0.12);
+  --accent-wash-14: rgba(78, 127, 194, 0.14);
+  --accent-wash-16: rgba(78, 127, 194, 0.16);
+  --accent-wash-18: rgba(78, 127, 194, 0.18);
+  --accent-border: rgba(78, 127, 194, 0.55);
+
+  /* ---- Semantic ---- */
+  --ok: #5ba97b;
+  --warn: #d0973b;
+  --danger: #c4554d;
+  --warn-underline: rgba(208, 151, 59, 0.55);
+  --warn-border-40: rgba(208, 151, 59, 0.4);
+  --warn-border-45: rgba(208, 151, 59, 0.45);
+  --warn-border-65: rgba(208, 151, 59, 0.65);
+  --danger-border: rgba(196, 85, 77, 0.55);
+  --danger-border-hover: rgba(196, 85, 77, 0.85);
+  --danger-wash: rgba(196, 85, 77, 0.22);
+
+  /* ---- Borders & overlays (white-alpha system) ---- */
+  --border-hairline: rgba(255, 255, 255, 0.06);
+  --border-subtle: rgba(255, 255, 255, 0.08);
+  --border-default: rgba(255, 255, 255, 0.1);
+  --border-strong: rgba(255, 255, 255, 0.12);
+  --border-control: rgba(255, 255, 255, 0.14);
+  --border-hover: rgba(255, 255, 255, 0.28);
+  --border-hover-control: rgba(255, 255, 255, 0.3);
+  --overlay-scrim: rgba(10, 10, 11, 0.58);
+  --overlay-timecode: rgba(0, 0, 0, 0.62);
+  --overlay-caption: rgba(0, 0, 0, 0.55);
+  --wave-unplayed: rgba(237, 235, 230, 0.2);
+  --step-done: rgba(237, 235, 230, 0.45);
+  --hover-row: rgba(255, 255, 255, 0.025);
+  --guide-dashed: rgba(255, 255, 255, 0.09);
+
+  /* ---- Typography ---- */
+  --font-ui: "Archivo", sans-serif;
+  --font-mono: "IBM Plex Mono", monospace;
+  --font-fa: "Vazirmatn", sans-serif;
+
+  /* ---- Radii ---- */
+  --radius-1: 2px; /* progress tracks, mini chips */
+  --radius-2: 3px; /* badges, chips, timecode overlays */
+  --radius-3: 4px; /* buttons, inputs, controls */
+  --radius-4: 5px; /* cards, panels, popovers, app frame */
+  --radius-full: 50%; /* avatars, dots */
+
+  /* ---- Spacing scale ---- */
+  --space-4: 4px;
+  --space-6: 6px;
+  --space-8: 8px;
+  --space-10: 10px;
+  --space-12: 12px;
+  --space-14: 14px;
+  --space-16: 16px;
+  --space-18: 18px;
+  --space-20: 20px;
+  --space-24: 24px;
+
+  /* ---- Fixed chrome ---- */
+  --topbar-h: 52px;
+  --panel-header-h: 44px;
+  --statusbar-h: 28px;
+  --statusbar-h-library: 34px;
+  --library-row-h: 62px;
+  --moment-rail-w: 52px;
+
+  /* ---- Motion ---- */
+  --motion-ease: ease-out;
+  --motion-hover: 120ms;
+  --motion-scrim: 150ms;
+  --motion-drawer: 200ms;
+}

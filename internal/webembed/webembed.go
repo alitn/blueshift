@@ -1,7 +1,10 @@
-// Package webembed serves the embedded web build. The committed dist/ here is a
-// placeholder; the real SvelteKit build replaces its contents via the Makefile
-// in a later task. Serving is SPA-style: known files are served by path, and
-// any other non-API path falls back to index.html so client-side routing works.
+// Package webembed serves the SvelteKit SPA build. In production the build is
+// embedded from dist/ (populated by `make build`: web build → copied here → go
+// build). The serving logic takes an fs.FS so it can be exercised in tests with
+// an in-memory filesystem (fstest.MapFS) rather than the embedded bytes.
+//
+// Serving is SPA-style: known files are served by path, and any other non-API
+// path falls back to index.html so client-side routing works.
 package webembed
 
 import (
@@ -14,20 +17,30 @@ import (
 	"strings"
 )
 
+// distFS embeds the built SPA. The committed tree carries only a .gitkeep (the
+// build output is gitignored); `all:dist` still embeds successfully from that,
+// and `make build` fills dist/ with the real build before `go build`.
+//
 //go:embed all:dist
 var distFS embed.FS
 
 const indexFile = "index.html"
 
-// Handler returns an http.Handler that serves the embedded build. It never
-// lists directories, and it never falls back to index.html for /api/ paths so
-// unmatched API requests surface as 404s rather than HTML.
+// Handler returns the production handler backed by the embedded build.
 func Handler() (http.Handler, error) {
 	sub, err := fs.Sub(distFS, "dist")
 	if err != nil {
 		return nil, err
 	}
-	return &spaHandler{fsys: sub}, nil
+	return NewHandler(sub), nil
+}
+
+// NewHandler returns an http.Handler that serves the SPA from fsys. It never
+// lists directories, and it never falls back to index.html for /api/ paths so
+// unmatched API requests surface as 404s rather than HTML. Callers (and tests)
+// supply any fs.FS whose root holds index.html and the static assets.
+func NewHandler(fsys fs.FS) http.Handler {
+	return &spaHandler{fsys: fsys}
 }
 
 type spaHandler struct {

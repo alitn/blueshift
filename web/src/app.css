@@ -1,0 +1,101 @@
+/*
+ * app.css — global stylesheet. Order matters:
+ *   1. @font-face imports (self-hosted via @fontsource — zero CDN/network at
+ *      runtime; the app must render fully offline).
+ *   2. tokens.css — the design contract (only raw-hex file).
+ *   3. Tailwind layers, themed entirely from those tokens.
+ * All @import statements must precede other rules per the CSS spec.
+ */
+
+/* Archivo — UI (400/500/600/700) */
+@import "@fontsource/archivo/400.css";
+@import "@fontsource/archivo/500.css";
+@import "@fontsource/archivo/600.css";
+@import "@fontsource/archivo/700.css";
+
+/* IBM Plex Mono — timecodes, IDs, metadata, status bar (400/500/600) */
+@import "@fontsource/ibm-plex-mono/400.css";
+@import "@fontsource/ibm-plex-mono/500.css";
+@import "@fontsource/ibm-plex-mono/600.css";
+
+/* Vazirmatn — Persian content (400/500/600/700), resolved per-lang at runtime */
+@import "@fontsource/vazirmatn/400.css";
+@import "@fontsource/vazirmatn/500.css";
+@import "@fontsource/vazirmatn/600.css";
+@import "@fontsource/vazirmatn/700.css";
+
+@import "./lib/tokens.css";
+
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
+
+@layer base {
+  html,
+  body {
+    height: 100%;
+  }
+
+  body {
+    background-color: var(--bg-page);
+    color: var(--text-primary);
+    font-family: var(--font-ui);
+    /* Body base per DESIGN.md typography: 13px on the app canvas. */
+    font-size: 13px;
+    -webkit-font-smoothing: antialiased;
+    text-rendering: optimizeLegibility;
+  }
+
+  ::selection {
+    background: var(--accent-selection);
+  }
+
+  /* Tabular numerals for all mono data per DESIGN.md typography rules. */
+  .font-mono {
+    font-variant-numeric: tabular-nums;
+  }
+
+  /* Reduced-motion contract: transitions collapse to <=1ms, fades only. */
+  @media (prefers-reduced-motion: reduce) {
+    *,
+    *::before,
+    *::after {
+      transition-duration: 1ms !important;
+      animation-duration: 1ms !important;
+      scroll-behavior: auto !important;
+    }
+  }
+}
+
+@layer utilities {
+  /* Motion primitives per DESIGN.md: scrim fade 150ms, drawer/popover 200ms
+     ease-out. Exit animations are omitted (bits-ui unmounts on close); enter
+     is enough and reduced-motion collapses these to ~1ms above. */
+  .animate-overlay-in {
+    animation: bs-fade-in var(--motion-scrim) var(--motion-ease);
+  }
+  .animate-content-in {
+    animation: bs-fade-in var(--motion-drawer) var(--motion-ease);
+  }
+  .animate-drawer-in {
+    animation: bs-slide-in-right var(--motion-drawer) var(--motion-ease);
+  }
+
+  @keyframes bs-fade-in {
+    from {
+      opacity: 0;
+    }
+    to {
+      opacity: 1;
+    }
+  }
+
+  @keyframes bs-slide-in-right {
+    from {
+      transform: translateX(100%);
+    }
+    to {
+      transform: translateX(0);
+    }
+  }
+}
