@@ -51,6 +51,18 @@ describe('LibraryTable status -> pipeline mapping', () => {
     expect(within(byStatus('failed')).getByText('RETRY')).toBeInTheDocument();
   });
 
+  it('never renders the raw public id (no ID column until M1 episode codes)', () => {
+    render(LibraryTable, {
+      props: {
+        episodes: [{ ...ep('EP-RD', 'ready', 'x'), id: 'ep_7k9zvisibleid', sourceFilename: 'master.mp4' }],
+        onOpen: vi.fn(),
+        onRetry: vi.fn()
+      }
+    });
+    expect(screen.queryByText('ep_7k9zvisibleid')).not.toBeInTheDocument();
+    expect(screen.queryByText('ID')).not.toBeInTheDocument();
+  });
+
   it('CLIPS and COST render an em dash (no data until M1)', () => {
     render(LibraryTable, { props: { episodes: [ep('EP-RD', 'ready', 'x')], onOpen: vi.fn(), onRetry: vi.fn() } });
     expect(screen.getAllByText('—').length).toBeGreaterThanOrEqual(2);

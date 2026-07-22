@@ -31,7 +31,6 @@
   <div
     class="flex flex-none items-center border-b border-border-subtle px-6 py-2 font-mono text-[8.5px] tracking-[0.14em] text-text-faint"
   >
-    <div class="w-[120px] flex-none">ID</div>
     <div class="min-w-0 flex-1">EPISODE</div>
     <div class="w-[80px] flex-none">UPLOADED</div>
     <div class="w-[90px] flex-none">DURATION</div>
@@ -72,7 +71,6 @@
 </div>
 
 {#snippet rowCells(ep: Episode)}
-  <div class="w-[120px] flex-none font-mono text-[10.5px] text-text-primary">{ep.id}</div>
   <div class="min-w-0 flex-1 pr-5">
     <div
       dir="rtl"
