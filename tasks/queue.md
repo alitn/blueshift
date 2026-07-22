@@ -22,6 +22,8 @@ spec file `tasks/<slug>.md` = one Implementer dispatch = one Reviewer verdict = 
 | m0-library | Library page, live status, playback | committed (d5b522c) | tasks/m0-library.md |
 | m0-demo-seed | make demo/dev + e2e harness + baselines | committed (546bc18) | tasks/m0-demo-seed.md |
 | m0-ci-deploy | CI gates live + staging/prod pipeline | committed (c34b1a2) | tasks/m0-ci-deploy.md |
+| m0-library-id-column | remove raw-id column from Library table | committed (fb2caa2) | tasks/m0-library-id-column.md |
+| m0-env-split | staging/prod in separate GCP projects | committed (6699cef) | tasks/m0-env-split.md |
 | m0-gate-proofs | Deliberate-failure proofs (AC 2/3/4/6) | blocked(human prerequisites) | tasks/m0-gate-proofs.md |
 
 ## Backlog
@@ -75,3 +77,9 @@ M1 decomposition happens after the M0 gate (see docs/SPEC-M1.md §Task decomposi
   committed c34b1a2. Staging verification = remote smoke; full remote suite is an M1 harness
   task. ALL implementable M0 tasks done. m0-gate-proofs + baselines + prod demo blocked on
   human prerequisites (see tasks/m0-ci-deploy.md §Human prerequisites).
+- 2026-07-22 — human review round: raw public ids ruled out of the UI (DESIGN.md updated;
+  m0-library-id-column APPROVE first pass, committed fb2caa2). Environment strategy decided
+  and documented in docs/ENVIRONMENTS.md: one GCP project per cloud env, local dev GCP-free;
+  m0-env-split APPROVE (digest-copy promote, ENV_TIER guard), committed 6699cef. Human
+  prerequisites now per deploy/README.md: two projects, gcloud.sh twice, per-project
+  vars/secrets.

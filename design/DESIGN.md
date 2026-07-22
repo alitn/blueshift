@@ -127,6 +127,10 @@ Scale (px). The UI is deliberately dense; sizes are small and letter-spaced:
 - **Inputs (search):** `border-strong`, radius 4, mono 10px `text-faint` placeholder.
 - **Empty state (first-run):** 1px dashed `border-control`, radius 5; title 14px/600; body 11.5px `text-muted`; primary CTA; mono footnote.
 - **Top bar:** wordmark = 2×15px `accent` tick + "BLUE SHIFT" 13.5/700 + "STUDIO" 9/500 @ 0.26em `text-muted`; breadcrumb 11px with `text-faintest` ▸ separators; RENDER indicator chip (44×3px mini progress) — active state gets `accent-border` + `accent-wash-12`.
+- **Library ID column (human ruling, 2026-07-22):** raw public ids (`ep_…`) are never
+  displayed in the UI — they are URL/API material only. The prototype's ID column shows
+  editorial episode codes (`EP-2026-0212`); until such codes exist as a real field (M1+),
+  the Library table has no ID column.
 - **Status bar:** mono 9.5px `text-muted`: `QUEUE n · STORAGE a / b TB · ENGINE nnn MS` · (right) version; live render progress inline when active. Engine labels are always Blueshift-neutral (`ENGINE 412 MS`) — never provider names.
 - **Focus:** keyboard focus = 1px `accent-border` ring + `accent-wash-12` fill on the focused control (prototype shows hover only; focus mirrors hover with accent instead of white).
 
