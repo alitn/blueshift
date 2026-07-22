@@ -7,7 +7,8 @@ SHELL := /bin/bash
 # vendor-leak and hex gates are live from day one.
 # ------------------------------------------------------------------------------
 check: vendor-gate hex-gate
-	@if [ -f go.mod ]; then \
+	@set -e; \
+	if [ -f go.mod ]; then \
 		echo "--> gofmt"; \
 		fmt=$$(gofmt -l . | grep -v '^web/' || true); \
 		if [ -n "$$fmt" ]; then echo "gofmt needed on:"; echo "$$fmt"; exit 1; fi; \
@@ -18,7 +19,8 @@ check: vendor-gate hex-gate
 	else \
 		echo "skip: Go checks (no go.mod yet)"; \
 	fi
-	@if [ -f web/package.json ]; then \
+	@set -e; \
+	if [ -f web/package.json ]; then \
 		echo "--> svelte-check"; cd web && npx svelte-check --fail-on-warnings && \
 		echo "--> eslint" && npx eslint . && \
 		echo "--> vitest" && npx vitest run; \
@@ -29,8 +31,8 @@ check: vendor-gate hex-gate
 	@echo "check: GREEN"
 
 build:
-	@if [ -f web/package.json ]; then echo "--> web build"; cd web && npm run build; else echo "skip: web build"; fi
-	@if [ -f go.mod ]; then echo "--> go build"; go build ./...; else echo "skip: go build"; fi
+	@set -e; if [ -f web/package.json ]; then echo "--> web build"; cd web && npm run build; else echo "skip: web build"; fi
+	@set -e; if [ -f go.mod ]; then echo "--> go build"; go build ./...; else echo "skip: go build"; fi
 
 # ------------------------------------------------------------------------------
 # Vendor-leak gate: provider/model names must never appear in client-visible
