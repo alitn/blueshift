@@ -5,16 +5,16 @@
 # for existence before creating. No Terraform by design (see CLAUDE.md /
 # "Occam with teeth"); this script IS the infrastructure record.
 #
-# Staging and prod are SEPARATE GCP projects (see docs/ENVIRONMENTS.md): the
-# project boundary is Google's isolation unit for data, IAM, quotas, and
-# billing. This script is per-PROJECT; run it ONCE PER PROJECT. Because the
-# project scopes them, both projects host IDENTICALLY-named services
-# (blueshift-app / blueshift-worker — no -staging suffix).
+# PoC scope: ONE GCP project hosts prod (see docs/ENVIRONMENTS.md). Run this
+# script ONCE for that project. It provisions the prod runtime + CI deployer,
+# the prod media bucket, Cloud SQL, secrets, and WIF — AND a separate
+# dev-experiments@ SA + <project>-media-dev bucket used only for local ASR/LLM
+# fixture capture (never Cloud SQL, never the prod bucket, never Cloud Run).
+# The Cloud Run service + worker Job are blueshift-app / blueshift-worker.
 #
 # Prereqs: gcloud CLI authenticated as an owner of $PROJECT; billing enabled.
-# Usage (run twice, once per project):
-#   ENV_TIER=staging PROJECT=blueshift-staging GITHUB_REPO=you/blueshift ./deploy/gcloud.sh
-#   ENV_TIER=prod    PROJECT=blueshift-prod    GITHUB_REPO=you/blueshift ./deploy/gcloud.sh
+# Usage (run once):
+#   PROJECT=blueshift-prod GITHUB_REPO=you/blueshift ./deploy/gcloud.sh
 # Optional (cost guardrails, see "Cost & quota guardrails" below):
 #   BILLING_ACCOUNT=XXXXXX-XXXXXX-XXXXXX BUDGET_AMOUNT=50
 # ==============================================================================
@@ -23,25 +23,11 @@ set -euo pipefail
 PROJECT="${PROJECT:?set PROJECT=<gcp-project-id>}"
 REGION="${REGION:-us-central1}"
 GITHUB_REPO="${GITHUB_REPO:?set GITHUB_REPO=<owner>/<repo> for WIF}"
-ENV_TIER="${ENV_TIER:?set ENV_TIER=staging|prod}"   # required: picks the GitHub var/secret suffix
 BILLING_ACCOUNT="${BILLING_ACCOUNT:-}"  # optional: enables scripted budget-alert creation
-BUDGET_AMOUNT="${BUDGET_AMOUNT:-50}"    # monthly budget alert threshold, USD (keep staging tight)
+BUDGET_AMOUNT="${BUDGET_AMOUNT:-50}"    # monthly budget alert threshold, USD
 BUCKET="gs://${PROJECT}-media"
+DEV_BUCKET="gs://${PROJECT}-media-dev"
 SQL_INSTANCE="blueshift-pg"
-
-# ENV_TIER must be exactly 'staging' or 'prod' — it selects the GitHub
-# var/secret suffix printed at the end, so a wrong value would wire the repo to
-# the wrong project. Fail fast rather than print a misleading suffix.
-case "$ENV_TIER" in
-  staging) SUF="STAGING" ;;
-  prod)    SUF="PROD" ;;
-  *)
-    echo "ERROR: ENV_TIER must be 'staging' or 'prod' (got '${ENV_TIER}')." >&2
-    echo "Usage (run once per project):" >&2
-    echo "  ENV_TIER=staging PROJECT=blueshift-staging GITHUB_REPO=<owner>/<repo> ./deploy/gcloud.sh" >&2
-    echo "  ENV_TIER=prod    PROJECT=blueshift-prod    GITHUB_REPO=<owner>/<repo> ./deploy/gcloud.sh" >&2
-    exit 2 ;;
-esac
 
 gcloud config set project "$PROJECT" >/dev/null
 
@@ -76,7 +62,7 @@ gcloud sql users list --instance "$SQL_INSTANCE" --format 'value(name)' | grep -
     --password "$(openssl rand -base64 24)" # rotate into Secret Manager below
 # Extensions (pgvector, pg_trgm) are created by migration 0001, not here.
 
-# ---- GCS: single bucket, lifecycle per CLAUDE.md ----------------------------
+# ---- GCS: single prod bucket, lifecycle per CLAUDE.md ------------------------
 if ! gcloud storage buckets describe "$BUCKET" >/dev/null 2>&1; then
   gcloud storage buckets create "$BUCKET" --location "$REGION" \
     --uniform-bucket-level-access --public-access-prevention
@@ -95,16 +81,36 @@ cat > /tmp/blueshift-lifecycle.json <<'EOF'
 EOF
 gcloud storage buckets update "$BUCKET" --lifecycle-file=/tmp/blueshift-lifecycle.json
 
+# ---- GCS: dev-experiments scratch bucket (local fixture capture only) --------
+# The dev-experiments@ SA (below) uploads extracted audio here to capture
+# ASR/LLM fixtures from a laptop, then deletes the temp object. It is throwaway —
+# a short lifecycle deletes anything left behind. It is NEVER the prod bucket and
+# holds no customer data. See docs/ENVIRONMENTS.md "Live-provider usage".
+if ! gcloud storage buckets describe "$DEV_BUCKET" >/dev/null 2>&1; then
+  gcloud storage buckets create "$DEV_BUCKET" --location "$REGION" \
+    --uniform-bucket-level-access --public-access-prevention
+fi
+cat > /tmp/blueshift-dev-lifecycle.json <<'EOF'
+{
+  "rule": [
+    { "action": {"type": "Delete"}, "condition": {"age": 7} }
+  ]
+}
+EOF
+gcloud storage buckets update "$DEV_BUCKET" --lifecycle-file=/tmp/blueshift-dev-lifecycle.json
+
 # ---- Service accounts --------------------------------------------------------
 ensure_sa() { # name display
   gcloud iam service-accounts describe "$1@$PROJECT.iam.gserviceaccount.com" >/dev/null 2>&1 || \
     gcloud iam service-accounts create "$1" --display-name "$2"
 }
-ensure_sa app-runtime "Blueshift app+worker runtime"
-ensure_sa deployer    "Blueshift CI deployer (GitHub Actions via WIF)"
+ensure_sa app-runtime     "Blueshift app+worker runtime"
+ensure_sa deployer        "Blueshift CI deployer (GitHub Actions via WIF)"
+ensure_sa dev-experiments "Blueshift local ASR/LLM fixture capture (dev only)"
 
 RUNTIME="app-runtime@$PROJECT.iam.gserviceaccount.com"
 DEPLOYER="deployer@$PROJECT.iam.gserviceaccount.com"
+DEV_SA="dev-experiments@$PROJECT.iam.gserviceaccount.com"
 
 grant() { gcloud projects add-iam-policy-binding "$PROJECT" \
   --member "serviceAccount:$1" --role "$2" --condition=None >/dev/null; }
@@ -124,12 +130,25 @@ grant "$RUNTIME" roles/errorreporting.writer
 grant "$RUNTIME" roles/run.invoker
 # Deployer: push images, deploy Cloud Run service+jobs, act as the runtime SA,
 # run additive migrations from CI through the Cloud SQL Auth Proxy, and read
-# Error Reporting during the promote watch.
+# Error Reporting during the rollout watch.
 grant "$DEPLOYER" roles/run.admin
 grant "$DEPLOYER" roles/artifactregistry.writer
 grant "$DEPLOYER" roles/iam.serviceAccountUser
 grant "$DEPLOYER" roles/cloudsql.client        # auth-proxy connection for `migrate up`
-grant "$DEPLOYER" roles/errorreporting.viewer  # promote-watch error-event query
+grant "$DEPLOYER" roles/errorreporting.viewer  # rollout-watch error-event query
+
+# ---- dev-experiments: local fixture capture ONLY -----------------------------
+# It may invoke Speech-to-Text and Vertex AI (project-scoped invocation roles)
+# and read/write ONLY the dev scratch bucket (bucket-scoped IAM, applied AFTER
+# the bucket exists). It gets NO Cloud SQL, NO Cloud Run, and NO access to the
+# prod bucket — the bucket-scoped binding cannot reach any other bucket, and no
+# project-level storage role is granted. It has no WIF binding: it is never used
+# by CI, only by developers via short-lived local ADC impersonation (below).
+grant "$DEV_SA" roles/aiplatform.user   # Vertex AI invocation
+grant "$DEV_SA" roles/speech.client     # Speech-to-Text invocation
+gcloud storage buckets add-iam-policy-binding "$DEV_BUCKET" \
+  --member "serviceAccount:$DEV_SA" \
+  --role roles/storage.objectAdmin >/dev/null
 
 # ---- Workload Identity Federation for GitHub Actions ------------------------
 if ! gcloud iam workload-identity-pools describe github --location global >/dev/null 2>&1; then
@@ -171,9 +190,10 @@ gcloud secrets add-iam-policy-binding database-url \
 echo "MANUAL STEP: enable Email/Password sign-in in Identity Platform console."
 
 # ---- Cost & quota guardrails -------------------------------------------------
-# Both projects run LIVE ASR/LLM (Speech-to-Text, Vertex AI), so both need a
-# budget alert and explicit quota caps. Staging's caps stay tight — it only ever
-# processes fixtures and demo episodes (docs/ENVIRONMENTS.md). See CLAUDE.md.
+# The project runs LIVE ASR/LLM (Speech-to-Text, Vertex AI) — in prod, and from
+# the dev-experiments@ SA during fixture capture — so it needs a budget alert
+# and explicit quota caps. Default local development stays on recorded fixtures
+# (offline, free); see docs/ENVIRONMENTS.md and CLAUDE.md.
 #
 # Budget alert: created idempotently by displayName IF a billing account is
 # supplied; the Budgets API has no create-if-absent, so we list-then-create.
@@ -194,32 +214,44 @@ if [ -n "$BILLING_ACCOUNT" ] && gcloud billing budgets list \
 else
   echo "MANUAL STEP: create a monthly budget alert for $PROJECT (no BILLING_ACCOUNT given,"
   echo "  or the billing CLI is unavailable). Console: Billing > Budgets & alerts >"
-  echo "  Create budget, scope to project '$PROJECT', amount ~\$${BUDGET_AMOUNT} (staging: tight),"
+  echo "  Create budget, scope to project '$PROJECT', amount ~\$${BUDGET_AMOUNT},"
   echo "  thresholds 50/90/100%. Or re-run with BILLING_ACCOUNT=<id> BUDGET_AMOUNT=<usd>."
 fi
 # Quota caps: Service Usage consumer quota overrides for Speech-to-Text and
 # Vertex AI. These are per-metric QuotaPreferences with no stable idempotent
-# gcloud verb across versions, so they are a documented manual step (tighten
-# hard for staging — it only runs fixtures/demos):
+# gcloud verb across versions, so they are a documented manual step:
 echo "MANUAL STEP: cap live-AI quotas for $PROJECT (Console: IAM & Admin > Quotas,"
 echo "  or 'gcloud alpha services quota update'):"
-echo "  - Speech-to-Text: cap per-minute / per-day request quota (staging: minimal)."
+echo "  - Speech-to-Text: cap per-minute / per-day request quota."
 echo "  - Vertex AI (aiplatform): cap online-prediction / generate-content request quota."
-echo "  Staging caps should be as low as fixture recording + demos allow; prod sized to pilot."
+echo "  Size to the pilot; keep headroom low so a runaway job is bounded."
+
+# ---- Local ADC for dev-experiments (fixture capture) -------------------------
+# Developers never hold prod credentials. To capture fixtures locally, mint
+# short-lived ADC by IMPERSONATING dev-experiments@ (no downloaded JSON key).
+# The owner grants a developer impersonation once, then each session mints ADC:
+echo "INFO: local fixture capture uses dev-SA impersonation (no JSON keys):"
+echo "  one-time (owner grants a developer impersonation on the dev SA):"
+echo "    gcloud iam service-accounts add-iam-policy-binding $DEV_SA \\"
+echo "      --member=user:<you@example.com> --role=roles/iam.serviceAccountTokenCreator"
+echo "  per session (mint local ADC that impersonates the dev SA):"
+echo "    gcloud auth application-default login --impersonate-service-account=$DEV_SA"
+echo "  the local worker then uploads audio to $DEV_BUCKET, calls the AI APIs,"
+echo "  stores the transcript in LOCAL Postgres, and deletes the temp object."
 
 # ---- Cloud Run service + jobs (created by CI, not here) ----------------------
 # There is no image until the first deploy, so the service and job are created
-# and kept in sync by .github/workflows/deploy.yml (create-or-update semantics).
-# Both projects host the SAME service+job names (the project scopes them):
+# and kept in sync by .github/workflows/deploy.yml (create-or-update semantics):
 #   blueshift-app     (Cloud Run service)
 #   blueshift-worker  (Cloud Run Job)
 # Both run the SAME image; the worker Job overrides ENTRYPOINT with
 #   --command /app/worker  (+ <episode> <stage> args supplied per execution).
-# On promote, deploy.yml COPIES the staging-tested image BY DIGEST into this
-# project's registry (no rebuild) before deploying prod. Env/secret wiring per
-# service is in deploy/README.md and must match the secret ids created above
-# (database-url / session-signing-key / identity-platform-config) and $RUNTIME
-# as the service account.
+# On push to main, deploy.yml builds the image and rolls it out through the
+# progressive rollout (--no-traffic candidate -> migrate -> smoke -> 10% ->
+# watch -> 100%); there is no separate promote and no cross-project image copy.
+# Env/secret wiring per service is in deploy/README.md and must match the secret
+# ids created above (database-url / session-signing-key / identity-platform-config)
+# and $RUNTIME as the service account.
 #
 # Migrations: there is NO separate migrate binary or migrate Job. deploy.yml
 # runs `migrate up` from the CI runner against Cloud SQL through the Cloud SQL
@@ -227,13 +259,13 @@ echo "  Staging caps should be as low as fixture recording + demos allow; prod s
 # also used by `make demo` and the DB-backed tests.
 
 echo "----------------------------------------------------------------------"
-echo "Provisioning complete for $PROJECT ($REGION) [tier: $ENV_TIER]."
-echo "GitHub repo settings needed for THIS project (run again with the other"
-echo "project + ENV_TIER for its half):"
-echo "  vars.GCP_PROJECT_$SUF=$PROJECT"
-echo "  vars.GCP_REGION=$REGION  (shared)"
-echo "  vars.STAGING_URL=<url>   (staging tier only)"
-echo "  secrets.GCP_WIF_PROVIDER_$SUF=$POOL/providers/github"
-echo "  secrets.GCP_DEPLOY_SA_$SUF=$DEPLOYER"
+echo "Provisioning complete for $PROJECT ($REGION)."
+echo "GitHub repo settings needed (4):"
+echo "  vars.GCP_PROJECT=$PROJECT"
+echo "  vars.GCP_REGION=$REGION"
+echo "  secrets.GCP_WIF_PROVIDER=$POOL/providers/github"
+echo "  secrets.GCP_DEPLOY_SA=$DEPLOYER"
 echo "Remaining manual steps: Identity Platform provider, secret values,"
-echo "  budget alert + AI quota caps (above), domain mapping for blueshift-app."
+echo "  budget alert + AI quota caps (above), domain mapping for blueshift-app,"
+echo "  and (optional) grant a developer impersonation on $DEV_SA for local"
+echo "  fixture capture."

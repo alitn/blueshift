@@ -1,48 +1,50 @@
 # Deploy — configuration reference
 
-Staging and prod are **separate GCP projects** (`blueshift-staging`,
-`blueshift-prod` — exact ids are the human's choice via `vars`). The project
-boundary is Google's isolation unit for data, IAM, quotas, and billing; see
-`docs/ENVIRONMENTS.md` for the rationale. Local dev and CI stay GCP-free.
+**PoC scope: one GCP project** hosts prod (the exact id is the human's choice via
+`vars.GCP_PROJECT`); see `docs/ENVIRONMENTS.md` for the rationale and the recorded
+scale-up path (one project per environment, restorable when the PoC graduates).
+Local dev and CI are GCP-free. Inside the single project, dev work is separated
+from prod by a dedicated `dev-experiments@` service account and a
+`<project>-media-dev` bucket used only for local ASR/LLM fixture capture — never
+Cloud SQL, never the prod bucket, never Cloud Run.
 
 One image (`Dockerfile`) ships both binaries. `deploy/gcloud.sh` provisions the
-durable Google Cloud infrastructure once **per project** (idempotent — run it
-twice, once for each project); `.github/workflows/deploy.yml` builds the image
-and creates/updates the Cloud Run service + worker Job on every push to `main`
-(staging) and on manual promote (prod). Because the project scopes them, both
-projects host **identically-named** services — `blueshift-app` and
-`blueshift-worker`, no `-staging` suffix. Migrations run from the deploy workflow
-through the Cloud SQL Auth Proxy against the repo `migrations/` tree — there is
-no separate migrate binary or Job.
+durable Google Cloud infrastructure **once** (idempotent);
+`.github/workflows/deploy.yml` builds the image and rolls it out on every push to
+`main` through the progressive rollout. The Cloud Run service + worker Job are
+`blueshift-app` and `blueshift-worker`. Migrations run from the deploy workflow
+through the Cloud SQL Auth Proxy against the repo `migrations/` tree — there is no
+separate migrate binary or Job.
 
 All env vars are read by `internal/config` (`config.Load`); the validation rules
 there are the source of truth for what is required in which `ENV`.
 
-## Two projects at a glance
+## The project at a glance
 
-| Concern                | staging project (`GCP_PROJECT_STAGING`)          | prod project (`GCP_PROJECT_PROD`)              |
-| ---------------------- | ------------------------------------------------ | ---------------------------------------------- |
-| Cloud Run service      | `blueshift-app`                                  | `blueshift-app`                                |
-| Cloud Run Job          | `blueshift-worker`                               | `blueshift-worker`                             |
-| Artifact Registry      | `<region>-docker.pkg.dev/<staging>/blueshift`    | `<region>-docker.pkg.dev/<prod>/blueshift`     |
-| Cloud SQL instance     | `<staging>:<region>:blueshift-pg`                | `<prod>:<region>:blueshift-pg`                 |
-| GCS bucket             | `<staging>-media`                                | `<prod>-media`                                 |
-| WIF provider (secret)  | `GCP_WIF_PROVIDER_STAGING`                        | `GCP_WIF_PROVIDER_PROD`                         |
-| Deploy SA (secret)     | `GCP_DEPLOY_SA_STAGING`                           | `GCP_DEPLOY_SA_PROD`                            |
-| Runtime SA             | `app-runtime@<staging>.iam.gserviceaccount.com`  | `app-runtime@<prod>.iam.gserviceaccount.com`   |
-| Secret ids             | `database-url`, `session-signing-key`, `identity-platform-config` (same ids, separate values, separate Secret Manager) | same ids, separate values |
-| Live AI                | quota-capped (tight) + budget alert              | quota-capped (pilot) + budget alert            |
+| Concern               | value                                               |
+| --------------------- | --------------------------------------------------- |
+| Cloud Run service     | `blueshift-app`                                      |
+| Cloud Run Job         | `blueshift-worker`                                   |
+| Artifact Registry     | `<region>-docker.pkg.dev/<project>/blueshift`        |
+| Cloud SQL instance    | `<project>:<region>:blueshift-pg`                    |
+| Prod GCS bucket       | `<project>-media`                                   |
+| Dev scratch bucket    | `<project>-media-dev` (fixture capture only)         |
+| WIF provider (secret) | `GCP_WIF_PROVIDER`                                   |
+| Deploy SA (secret)    | `GCP_DEPLOY_SA` → `deployer@<project>...`            |
+| Runtime SA            | `app-runtime@<project>.iam.gserviceaccount.com`      |
+| Dev SA                | `dev-experiments@<project>.iam.gserviceaccount.com`  |
+| Secret ids            | `database-url`, `session-signing-key`, `identity-platform-config` |
+| Live AI               | quota-capped + budget alert                          |
 
-The image is **built once** in the staging job and pushed to the staging
-registry. On promote it is **copied by digest** into the prod registry (no
-rebuild) — see "Promote" below.
+The image is **built once per push** in the rollout job and pushed to the
+project's registry, then deployed `--no-traffic` as a `candidate` tag before any
+traffic shift. There is no cross-project copy and no manual promote — what `main`
+builds is exactly what prod runs, gated by the smoke + watch.
 
 ## Secrets (Secret Manager → env var)
 
-Created empty by `deploy/gcloud.sh` **in each project**; values are filled by the
-human per project (see `docs/RUNBOOK.md`). Never printed to client-visible
-surfaces. The secret ids are the same in both projects; the values are not, and
-they live in each project's own Secret Manager.
+Created empty by `deploy/gcloud.sh`; values are filled by the human (see
+`docs/RUNBOOK.md`). Never printed to client-visible surfaces.
 
 | Secret id                  | Injected as      | Contents                                             |
 | -------------------------- | ---------------- | ---------------------------------------------------- |
@@ -50,32 +52,42 @@ they live in each project's own Secret Manager.
 | `session-signing-key`      | `SESSION_SECRET` | random 32B+; signs session cookies and upload tokens |
 | `identity-platform-config` | `IDP_API_KEY`    | Identity Platform web API key (server-side sign-in)  |
 
-## Service-account IAM (granted by `deploy/gcloud.sh`, per project)
+## Service-account IAM (granted by `deploy/gcloud.sh`)
 
-Each project gets its own `app-runtime@` and `deployer@` SAs — never shared
-across projects.
-
-| SA                     | Roles                                                                                                                                              | Why                                                                          |
-| ---------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------- | ---------------------------------------------------------------------------- |
-| `app-runtime@<project>`| `cloudsql.client`, `storage.objectAdmin`, `aiplatform.user`, `speech.client`, `secretmanager.secretAccessor`, `logging.logWriter`, `errorreporting.writer`, **`run.invoker`** | DB, blob, AI, secrets, logs — and `run.invoker` so the app can execute the worker Job (`jobs/{job}:run`) |
-| `deployer@<project>`   | `run.admin`, `artifactregistry.writer`, `iam.serviceAccountUser`, `cloudsql.client`, **`errorreporting.viewer`**, + `secretmanager.secretAccessor` on **only** `database-url` | Build/deploy service+jobs, act as runtime SA, run `migrate up` via auth proxy, and read Error Reporting during the promote watch |
+| SA                         | Roles                                                                                                                                              | Why                                                                          |
+| -------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------- | ---------------------------------------------------------------------------- |
+| `app-runtime@<project>`    | `cloudsql.client`, `storage.objectAdmin`, `aiplatform.user`, `speech.client`, `secretmanager.secretAccessor`, `logging.logWriter`, `errorreporting.writer`, **`run.invoker`** | DB, blob, AI, secrets, logs — and `run.invoker` so the app can execute the worker Job (`jobs/{job}:run`) |
+| `deployer@<project>`       | `run.admin`, `artifactregistry.writer`, `iam.serviceAccountUser`, `cloudsql.client`, **`errorreporting.viewer`**, + `secretmanager.secretAccessor` on **only** `database-url` | Build/deploy service+jobs, act as runtime SA, run `migrate up` via auth proxy, and read Error Reporting during the rollout watch |
+| `dev-experiments@<project>`| `aiplatform.user`, `speech.client` (project-scoped invocation) + `storage.objectAdmin` on **only** `<project>-media-dev` (bucket-scoped) | Local ASR/LLM fixture capture. **No Cloud SQL, no Cloud Run, no access to the prod bucket** — the storage binding is scoped to the dev bucket alone and no project-level storage role is granted. |
 
 The worker-Job execute permission is project-scoped `run.invoker` rather than a
 per-Job binding: the worker Jobs do not exist when `gcloud.sh` runs (deploy.yml
 creates them), so a job-scoped binding could not be applied idempotently there.
 
-**Cross-project note:** promote does NOT require any cross-project IAM binding.
-The digest copy uses two project-scoped WIF auths in one job — pull as the
-staging deployer, push as the prod deployer — so each project's `deployer@` only
-ever touches its own registry.
+**Dev-SA isolation.** `dev-experiments@` exists only for laptop fixture capture
+and has **no WIF binding** (it is never used by CI). Developers mint short-lived
+local ADC by impersonating it — no JSON keys leave Google:
 
-## Cloud Run service — `blueshift-app` (same name in both projects)
+```
+# one-time (owner grants a developer impersonation on the dev SA):
+gcloud iam service-accounts add-iam-policy-binding \
+  dev-experiments@<project>.iam.gserviceaccount.com \
+  --member=user:<you@example.com> --role=roles/iam.serviceAccountTokenCreator
+# per session (mint local ADC that impersonates the dev SA):
+gcloud auth application-default login \
+  --impersonate-service-account=dev-experiments@<project>.iam.gserviceaccount.com
+```
+
+Default local development stays on recorded fixtures and needs none of this
+(`docs/ENVIRONMENTS.md`).
+
+## Cloud Run service — `blueshift-app`
 
 ENTRYPOINT `/app/app`. Serves the embedded SPA + `/api`, `/healthz`, `/readyz`.
 
 | Env var             | Value                              | Source (deploy.yml)          |
 | ------------------- | ---------------------------------- | ---------------------------- |
-| `ENV`               | `prod` / `staging`                 | `--set-env-vars`             |
+| `ENV`               | `prod`                             | `--set-env-vars`             |
 | `AUTH_MODE`         | `identity`                         | `--set-env-vars`             |
 | `WORKER_TRIGGER`    | `cloudrun`                         | `--set-env-vars`             |
 | `WORKER_JOB_NAME`   | `blueshift-worker`                 | `--set-env-vars`             |
@@ -93,17 +105,16 @@ Also: `--add-cloudsql-instances <project>:<region>:blueshift-pg`,
 
 `WORKER_TRIGGER=cloudrun` makes the app start the worker Job (name/region/project
 above) instead of spawning a local process; those three vars are required by
-`config` whenever the trigger is `cloudrun`. `WORKER_JOB_PROJECT` is always the
-same project the service runs in — the app never triggers the other env's worker.
+`config` whenever the trigger is `cloudrun`.
 
-## Cloud Run Job — `blueshift-worker` (same name in both projects)
+## Cloud Run Job — `blueshift-worker`
 
 Same image, `--command /app/worker`, invoked per stage as
 `<episode_public_id> <stage>` (args supplied at execution time).
 
 | Env var          | Value                             | Source (deploy.yml) |
 | ---------------- | --------------------------------- | ------------------- |
-| `ENV`            | `prod` / `staging`                | `--set-env-vars`    |
+| `ENV`            | `prod`                            | `--set-env-vars`    |
 | `AUTH_MODE`      | `identity`                        | `--set-env-vars`    |
 | `BLOB_MODE`      | `gcs`                             | `--set-env-vars`    |
 | `GCS_BUCKET`     | `<project>-media`                 | `--set-env-vars`    |
@@ -118,28 +129,40 @@ The worker never authenticates, but `config.Load()` validates the auth env in a
 prod-like `ENV` (identity mode requires `SESSION_SECRET` and `IDP_API_KEY`), so
 the Job carries the same three secrets as the service.
 
-## Promote — same digest tested, same digest shipped
+## Rollout — `main` auto-deploys through the progressive rollout
 
-The staging job builds the image once and pushes it to the **staging** registry.
-The manual `workflow_dispatch` promote (input = the git SHA to ship) does **not**
-rebuild:
+Every push to `main` runs one `rollout` job that follows the §7 safety order:
 
-1. Auth as the **staging** deployer, `docker pull` the tag, record its immutable
-   digest.
-2. Re-auth as the **prod** deployer, retag into the prod registry, `docker push`,
-   then assert the pushed digest equals the recorded staging digest (content-
-   addressed manifests guarantee this; the check makes it provable).
-3. Deploy prod **by digest** (`$IMAGE@<digest>`), `--no-traffic --tag candidate`,
-   run additive migrations, shift 10% → 10-min watch → 100%.
+1. **Build** the image once and push it to the project registry (`$IMAGE:<sha>`).
+2. **Deploy** `blueshift-app` **`--no-traffic --tag candidate`** and update
+   `blueshift-worker` (same image).
+3. **Migrate** (additive-only) via the Cloud SQL Auth Proxy.
+4. **Smoke the candidate tag url** (`/healthz`, `/readyz`, `/` html): at
+   `--no-traffic` the base url still serves the previous revision, so only the
+   tag url exercises the new code. The rollout gates on this smoke.
+5. Shift **10%** to the candidate, **watch ~10 min** (candidate-tag `/healthz` +
+   Error Reporting), then shift **100%**.
 
-There is no `docker build` in the promote path — what staging tested is exactly
-what prod runs.
+There is no `docker build` outside step 1.
 
-## CI migration step (deploy.yml, staging + promote)
+**Rollback.** Re-point traffic to a known-good revision, either via the command
+printed at the end of a successful run:
+
+```
+gcloud run services update-traffic blueshift-app --region <region> \
+  --to-revisions <previous>=100
+```
+
+or by triggering the workflow manually (Actions → **deploy** → **Run workflow**)
+with the revision name in the `rollback_to_revision` input — that runs a
+traffic-only `rollback` job (no build, no migrate). Leaving the input blank on a
+manual run re-runs a normal build + progressive rollout.
+
+## CI migration step (deploy.yml)
 
 | Value          | Source                                                        |
 | -------------- | ------------------------------------------------------------- |
-| `DATABASE_URL` | `gcloud secrets versions access latest --secret=database-url` (in that job's project) |
+| `DATABASE_URL` | `gcloud secrets versions access latest --secret=database-url` |
 | instance conn  | `<project>:<region>:blueshift-pg` via Cloud SQL Auth Proxy    |
 
 The proxy binds a unix socket under `/cloudsql/<instance>` whose path matches the
@@ -158,26 +181,21 @@ connects with no DSN rewriting. Migrations are additive-only.
 
 ## Human prerequisites (run before the first deploy)
 
-1. Create **two** GCP projects (e.g. `blueshift-staging`, `blueshift-prod`),
-   billing enabled on both.
-2. Run `deploy/gcloud.sh` **once per project** (owner creds on that project):
+1. Create **one** GCP project (e.g. `blueshift-prod`), billing enabled.
+2. Run `deploy/gcloud.sh` **once** (owner creds on the project):
    ```
-   ENV_TIER=staging PROJECT=blueshift-staging GITHUB_REPO=<owner>/blueshift ./deploy/gcloud.sh
-   ENV_TIER=prod    PROJECT=blueshift-prod    GITHUB_REPO=<owner>/blueshift ./deploy/gcloud.sh
+   PROJECT=blueshift-prod GITHUB_REPO=<owner>/blueshift ./deploy/gcloud.sh
    ```
    Optionally pass `BILLING_ACCOUNT=<id> BUDGET_AMOUNT=<usd>` to script the budget
    alert; otherwise create it by hand (the script prints the exact manual step).
-3. Complete the per-project manual steps the script prints: enable
-   Email/Password in Identity Platform; fill the three secret values; set the
-   **budget alert** and **Speech-to-Text / Vertex AI quota caps** (staging tight,
-   prod pilot-sized); map the domain for `blueshift-app`.
-4. Set GitHub **repo variables**:
-   `GCP_PROJECT_STAGING`, `GCP_PROJECT_PROD`, `GCP_REGION`, `STAGING_URL`.
-5. Set GitHub **repo secrets** (each printed by the matching `gcloud.sh` run):
-   `GCP_WIF_PROVIDER_STAGING`, `GCP_WIF_PROVIDER_PROD`,
-   `GCP_DEPLOY_SA_STAGING`, `GCP_DEPLOY_SA_PROD`.
+3. Complete the manual steps the script prints: enable Email/Password in Identity
+   Platform; fill the three secret values; set the **budget alert** and
+   **Speech-to-Text / Vertex AI quota caps** (sized to the pilot); map the domain
+   for `blueshift-app`. Optionally grant a developer impersonation on
+   `dev-experiments@` for local fixture capture.
+4. Set **4** GitHub repo settings:
+   - **variables:** `GCP_PROJECT`, `GCP_REGION`
+   - **secrets:** `GCP_WIF_PROVIDER`, `GCP_DEPLOY_SA` (both printed by `gcloud.sh`)
 
-The **staging** job no-ops while `GCP_PROJECT_STAGING` is empty; **promote**
-no-ops until **both** `GCP_PROJECT_STAGING` and `GCP_PROJECT_PROD` are set
-(promote reads the tested image from the staging registry). Both are therefore
-safe to land before any project exists.
+The rollout job **no-ops** while `GCP_PROJECT` is empty — safe to land before the
+project exists.
