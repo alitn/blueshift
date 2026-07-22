@@ -5,6 +5,13 @@ SHELL := /bin/bash
 # make check — the single truth. Nothing red can ever be committed.
 # Go and web steps self-activate once go.mod / web/package.json exist; the
 # vendor-leak and hex gates are live from day one.
+#
+# Web toolchain (ADR 0001): bun is the package manager AND the runtime for the
+# build/type-check/lint/test tools. `bunx --bun` / `bun --bun run` force the bun
+# runtime so the native rollup/esbuild optional deps ALWAYS match the runtime
+# arch bun installed them for — this is portable and immune to a host node whose
+# arch differs from bun's. Playwright is the one exception: it has a hard Node
+# runtime dependency, so `make e2e` pins it to node via `bunx --bun=false`.
 # ------------------------------------------------------------------------------
 check: vendor-gate hex-gate
 	@set -e; \
@@ -21,9 +28,9 @@ check: vendor-gate hex-gate
 	fi
 	@set -e; \
 	if [ -f web/package.json ]; then \
-		echo "--> svelte-check"; cd web && npx svelte-check --fail-on-warnings && \
-		echo "--> eslint" && npx eslint . && \
-		echo "--> vitest" && npx vitest run; \
+		echo "--> svelte-check"; cd web && bunx --bun svelte-check --fail-on-warnings && \
+		echo "--> eslint" && bunx --bun eslint . && \
+		echo "--> vitest" && bunx --bun vitest run; \
 	else \
 		echo "skip: web checks (no web/package.json yet)"; \
 	fi
@@ -36,7 +43,7 @@ check: vendor-gate hex-gate
 build:
 	@set -e; \
 	if [ -f web/package.json ]; then \
-		echo "--> web build"; (cd web && npm run build); \
+		echo "--> web build"; (cd web && bun --bun run build); \
 		echo "--> copy web build -> internal/webembed/dist"; \
 		rm -rf internal/webembed/dist; \
 		mkdir -p internal/webembed/dist; \
@@ -57,7 +64,7 @@ vendor-gate:
 	@echo "--> vendor-leak gate"
 	@matches=$$(grep -rinIE '$(FORBIDDEN)' $(LEAK_DIRS) \
 		--exclude-dir=node_modules --exclude-dir=.svelte-kit --exclude-dir=build \
-		--exclude-dir=__screenshots__ --exclude=package-lock.json --exclude=.gitkeep \
+		--exclude-dir=__screenshots__ --exclude=package-lock.json --exclude=bun.lock --exclude=.gitkeep \
 		2>/dev/null || true); \
 	if [ -n "$$matches" ]; then \
 		echo "$$matches"; echo "FAIL: provider name leaked into client-visible surface"; exit 1; \
@@ -86,13 +93,14 @@ setup:
 	@command -v migrate >/dev/null || echo "TODO: install golang-migrate (brew install golang-migrate)"
 	@command -v sqlc >/dev/null || echo "TODO: install sqlc (brew install sqlc) — codegen only, not a runtime dep"
 	@command -v ffmpeg >/dev/null || echo "TODO: install ffmpeg (brew install ffmpeg)"
-	@if [ -f web/package.json ]; then cd web && npm install; fi
+	@command -v bun >/dev/null || { echo "TODO: install bun — the web package manager (brew install oven-sh/bun/bun)"; }
+	@if [ -f web/package.json ]; then command -v bun >/dev/null && (cd web && bun install) || echo "skip: web deps (bun not installed)"; fi
 	@echo "setup: done (git hooks -> .githooks)"
 
 # Playwright E2E against the demo stack. Real target lands with M0 web scaffold.
 e2e:
 	@if [ -f web/package.json ] && [ -d web/tests ]; then \
-		cd web && npx playwright test; \
+		cd web && bunx --bun=false playwright test; \
 	else \
 		echo "skip: e2e (web scaffold not present yet — arrives in M0)"; \
 	fi

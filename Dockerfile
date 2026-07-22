@@ -1,7 +1,7 @@
 # ==============================================================================
 # Blueshift Studio — one image, both binaries (app + worker).
 #
-#   stage 1 (web)     node:22   → npm ci && npm run build  → web/build
+#   stage 1 (web)     oven/bun  → bun install && bun run build → web/build
 #   stage 2 (build)   golang    → copy the SPA into internal/webembed/dist,
 #                                  go build ./cmd/app ./cmd/worker (static, CGO off)
 #   stage 3 (runtime) debian    → ffmpeg only, non-root, both binaries
@@ -15,15 +15,20 @@
 # ==============================================================================
 
 # ---- stage 1: web build ------------------------------------------------------
-FROM node:22-bookworm-slim AS web
+# bun is the web package manager + build runtime (ADR 0001). oven/bun ships bun
+# without Node, so the build forces the bun runtime (`bun --bun run build`); the
+# native rollup/esbuild optional deps then match bun's arch. Pinned to the local
+# bun version for reproducibility.
+FROM oven/bun:1.3.14-slim AS web
 WORKDIR /src/web
 # Install deps against the lockfile first so the layer caches across source edits.
-COPY web/package.json web/package-lock.json ./
-RUN npm ci
+# --frozen-lockfile fails the build if bun.lock and package.json drift.
+COPY web/package.json web/bun.lock ./
+RUN bun install --frozen-lockfile
 COPY web/ ./
 # adapter-static writes the SPA to web/build (fallback index.html for the SPA
 # router). tokens.css is committed under src/lib, so the build is self-contained.
-RUN npm run build
+RUN bun --bun run build
 
 # ---- stage 2: go build -------------------------------------------------------
 FROM golang:1.25-bookworm AS build

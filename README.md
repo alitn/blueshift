@@ -62,7 +62,7 @@ One-time cloud provisioning: [deploy/gcloud.sh](deploy/gcloud.sh) (idempotent, c
 ### Run it locally — `make demo`
 
 `make demo` boots the entire stack offline with deterministic seeded data and blocks
-in the foreground. Prerequisites: ffmpeg, the `golang-migrate` CLI, `npm ci` in `web/`,
+in the foreground. Prerequisites: ffmpeg, the `golang-migrate` CLI, `bun install` in `web/`,
 and Postgres — resolved in this order:
 
 1. `DEMO_DATABASE_URL` if set and reachable (e.g. an existing local Postgres);
@@ -89,7 +89,7 @@ editing `web/src` live.
 up): the upload-to-Ready flow with keyboard paths, visual baselines at 1440×900 and
 1280×800, token-conformance, RTL/ZWNJ, and an axe smoke. Visual baselines live in
 `web/tests/__screenshots__/` and change only when the Architect authorises
-`npx playwright test --update-snapshots`.
+`bunx --bun=false playwright test --update-snapshots`.
 
 ## Repo map
 

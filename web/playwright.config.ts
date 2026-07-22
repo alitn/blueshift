@@ -23,7 +23,7 @@ export default defineConfig({
   // generated on the CI (Linux) runner where `make demo` runs; a local darwin
   // run writes alongside without clobbering. Updating baselines is an explicit,
   // Architect-authorised act (never a side effect of a passing run):
-  // `npx playwright test --update-snapshots`.
+  // `bunx --bun=false playwright test --update-snapshots`.
   snapshotPathTemplate: '{testDir}/__screenshots__/{projectName}/{arg}-{platform}{ext}',
 
   use: {

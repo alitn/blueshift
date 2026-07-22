@@ -30,7 +30,9 @@ cat >&2 <<BANNER
 BANNER
 
 # Vite dev server in the foreground. Its /api proxy target follows the app port.
-( cd web && BS_API_PORT="$DEMO_PORT" npm run dev -- --port "$DEMO_WEB_PORT" --strictPort ) &
+# `bun --bun run` forces the bun runtime so vite's native rollup/esbuild deps
+# match bun's arch (ADR 0001).
+( cd web && BS_API_PORT="$DEMO_PORT" bun --bun run dev -- --port "$DEMO_WEB_PORT" --strictPort ) &
 WEB_PID=$!
 echo "$WEB_PID" > "$STATE_DIR/web.pid"
 wait "$WEB_PID"
