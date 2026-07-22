@@ -132,6 +132,8 @@ demo-down:
 
 # Local dev loop: the seeded Go API + the Vite dev server (hot reload) with
 # Vite proxying /api -> the API port. Same Postgres resolution as `make demo`.
+# Go hot-restart (rebuild+restart the app on save) is active when a file watcher
+# (watchexec or fswatch) is on PATH; without one the loop runs as before.
 dev:
 	@bash tools/demo/dev.sh
 
