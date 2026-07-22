@@ -1,0 +1,21 @@
+# agent evidence & scratch — regenerated per task, never committed
+.artifacts/
+
+# go
+bin/
+*.test
+
+# web
+node_modules/
+web/build/
+web/.svelte-kit/
+web/test-results/
+web/playwright-report/
+
+# local env & secrets
+.env
+.env.*
+*.local
+
+# OS
+.DS_Store

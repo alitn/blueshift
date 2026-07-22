@@ -1,0 +1,6 @@
+#!/bin/sh
+# Blueshift pre-commit: make check is the single truth. Enabled via `make setup`
+# (git config core.hooksPath .githooks). Do not bypass with --no-verify.
+set -e
+echo "pre-commit: running make check ..."
+make check

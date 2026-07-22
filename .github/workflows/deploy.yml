@@ -1,0 +1,135 @@
+# Deploy pipeline (§7): main -> build ONE image (app+worker) -> staging ->
+# e2e against staging -> tag release-candidate. Manual promote (workflow_dispatch)
+# -> same image to prod --no-traffic -> migrations Job -> 10% traffic ->
+# scripted 10-min watch -> 100%. Rollback = re-point traffic to prior revision.
+#
+# Auth is Workload Identity Federation (no JSON keys). Required configuration:
+#   vars.GCP_PROJECT              e.g. blueshift-pilot
+#   vars.GCP_REGION               us-central1
+#   vars.STAGING_URL              https://staging.<domain>
+#   secrets.GCP_WIF_PROVIDER      projects/N/locations/global/workloadIdentityPools/github/providers/github
+#   secrets.GCP_DEPLOY_SA         deployer@<project>.iam.gserviceaccount.com
+# Jobs no-op until vars.GCP_PROJECT is set, so this file is safe to land now.
+name: deploy
+
+on:
+  push:
+    branches: [main]
+  workflow_dispatch:
+    inputs:
+      promote:
+        description: "Image tag (git SHA) to promote to prod"
+        required: true
+
+permissions:
+  contents: write
+  id-token: write # WIF
+
+env:
+  REGION: ${{ vars.GCP_REGION || 'us-central1' }}
+  IMAGE: ${{ vars.GCP_REGION || 'us-central1' }}-docker.pkg.dev/${{ vars.GCP_PROJECT }}/blueshift/app
+
+jobs:
+  # ---------------------------------------------------------------- staging --
+  staging:
+    if: github.event_name == 'push' && vars.GCP_PROJECT != ''
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: google-github-actions/auth@v2
+        with:
+          workload_identity_provider: ${{ secrets.GCP_WIF_PROVIDER }}
+          service_account: ${{ secrets.GCP_DEPLOY_SA }}
+
+      - uses: google-github-actions/setup-gcloud@v2
+
+      - name: Build & push image (app + worker in one image)
+        run: |
+          gcloud auth configure-docker "$REGION-docker.pkg.dev" -q
+          docker build -t "$IMAGE:${{ github.sha }}" .
+          docker push "$IMAGE:${{ github.sha }}"
+
+      - name: Deploy staging service + worker job
+        run: |
+          gcloud run deploy blueshift-app-staging \
+            --image "$IMAGE:${{ github.sha }}" --region "$REGION" \
+            --set-env-vars ENV=staging --quiet
+          gcloud run jobs update blueshift-worker-staging \
+            --image "$IMAGE:${{ github.sha }}" --region "$REGION" --quiet
+
+      - name: Run migrations (staging)
+        run: |
+          gcloud run jobs execute blueshift-migrate-staging --region "$REGION" --wait
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "22"
+
+      - name: E2E against staging
+        run: |
+          if [ -f web/package.json ] && [ -d web/tests ]; then
+            cd web && npm ci && npx playwright install --with-deps chromium
+            E2E_BASE_URL="${{ vars.STAGING_URL }}" npx playwright test
+          else
+            echo "skip: e2e scaffold not present yet"
+          fi
+
+      - name: Tag release-candidate
+        run: |
+          git tag -f "rc-${{ github.sha }}"
+          git push -f origin "rc-${{ github.sha }}"
+
+  # ---------------------------------------------------------------- promote --
+  promote:
+    if: github.event_name == 'workflow_dispatch' && vars.GCP_PROJECT != ''
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: google-github-actions/auth@v2
+        with:
+          workload_identity_provider: ${{ secrets.GCP_WIF_PROVIDER }}
+          service_account: ${{ secrets.GCP_DEPLOY_SA }}
+
+      - uses: google-github-actions/setup-gcloud@v2
+
+      - name: Deploy prod --no-traffic
+        run: |
+          gcloud run deploy blueshift-app \
+            --image "$IMAGE:${{ inputs.promote }}" --region "$REGION" \
+            --no-traffic --tag candidate --set-env-vars ENV=prod --quiet
+          gcloud run jobs update blueshift-worker \
+            --image "$IMAGE:${{ inputs.promote }}" --region "$REGION" --quiet
+
+      - name: Run migrations (prod, additive-only)
+        run: |
+          gcloud run jobs execute blueshift-migrate --region "$REGION" --wait
+
+      - name: Shift 10% traffic
+        run: |
+          gcloud run services update-traffic blueshift-app \
+            --region "$REGION" --to-tags candidate=10 --quiet
+
+      - name: Watch 10 minutes (healthz + Error Reporting)
+        run: |
+          URL=$(gcloud run services describe blueshift-app --region "$REGION" --format 'value(status.url)')
+          for i in $(seq 1 20); do
+            code=$(curl -s -o /dev/null -w '%{http_code}' "$URL/healthz")
+            echo "[$i/20] healthz=$code"
+            [ "$code" = "200" ] || { echo "healthz failed — leaving traffic at 10%, rollback:"; \
+              echo "  gcloud run services update-traffic blueshift-app --region $REGION --to-tags candidate=0"; exit 1; }
+            errs=$(gcloud beta error-reporting events list --limit 5 \
+              --format 'value(eventTime)' 2>/dev/null | wc -l)
+            echo "  recent error events: $errs"
+            sleep 30
+          done
+
+      - name: Shift 100% traffic
+        run: |
+          gcloud run services update-traffic blueshift-app \
+            --region "$REGION" --to-tags candidate=100 --quiet
+          echo "Promoted ${{ inputs.promote }} to 100%."
+          echo "Rollback = gcloud run services update-traffic blueshift-app --region $REGION --to-revisions <previous>=100"
