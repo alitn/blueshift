@@ -49,8 +49,11 @@ fi
 
 # ---- Cloud SQL: PostgreSQL 18, smallest tier, no HA (pilot), backups + PITR --
 if ! gcloud sql instances describe "$SQL_INSTANCE" >/dev/null 2>&1; then
+  # PG18 defaults to the ENTERPRISE_PLUS edition, which forbids shared-core
+  # tiers (rejects db-g1-small: "Invalid Tier ... for ENTERPRISE_PLUS Edition").
+  # Pin ENTERPRISE so the smallest pilot tier is accepted.
   gcloud sql instances create "$SQL_INSTANCE" \
-    --database-version=POSTGRES_18 --region "$REGION" \
+    --database-version=POSTGRES_18 --edition=enterprise --region "$REGION" \
     --tier=db-g1-small --availability-type=ZONAL \
     --backup --enable-point-in-time-recovery \
     --database-flags=cloudsql.iam_authentication=on

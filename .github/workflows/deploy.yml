@@ -67,17 +67,56 @@ jobs:
 
       - uses: google-github-actions/setup-gcloud@v2
 
+      - name: Detect first-ever deploy (bootstrap)
+        id: detect
+        # `gcloud run deploy --no-traffic` is rejected when CREATING a service, and
+        # a brand-new service has no prior revision to split traffic against. So
+        # decide the path up front: if blueshift-app does not yet exist this is a
+        # bootstrap deploy (serve 100% immediately, skip the 10%/watch/100% split);
+        # if it exists, run the normal progressive rollout unchanged. Later steps
+        # read steps.detect.outputs.bootstrap via their `if:` conditions.
+        #
+        # FAIL CLOSED: `describe` can also fail for transient/auth/quota/5xx
+        # reasons. Treating those as "absent" would drop --no-traffic on a
+        # steady-state deploy and route an untested revision 100% live. So set
+        # bootstrap=true ONLY when the captured error unambiguously means the
+        # service does not exist; on any other error, stop the rollout.
+        run: |
+          set -euo pipefail
+          if out=$(gcloud run services describe blueshift-app --region "$REGION" 2>&1); then
+            echo "bootstrap=false" >> "$GITHUB_OUTPUT"
+            echo "blueshift-app exists — steady-state progressive rollout."
+          elif printf '%s' "$out" | grep -qiE 'not[_ ]?found|could not be found|cannot find|does not exist|\b404\b'; then
+            echo "bootstrap=true" >> "$GITHUB_OUTPUT"
+            echo "blueshift-app absent — bootstrap deploy (serve 100%, skip traffic split)."
+          else
+            echo "::error::'gcloud run services describe blueshift-app' failed for a reason other than non-existence; failing closed to preserve --no-traffic protection. Details:"
+            printf '%s\n' "$out" | sed 's/^/    /'
+            exit 1
+          fi
+
       - name: Build & push image (app + worker in one image)
         run: |
           gcloud auth configure-docker "$REGION-docker.pkg.dev" -q
           docker build -t "$IMAGE:${{ github.sha }}" .
           docker push "$IMAGE:${{ github.sha }}"
 
-      - name: Deploy prod --no-traffic (tag candidate)
+      - name: Deploy candidate (tag candidate; --no-traffic in steady state)
+        env:
+          BOOTSTRAP: ${{ steps.detect.outputs.bootstrap }}
         run: |
+          # Steady state: deploy --no-traffic so the previous revision keeps serving
+          # until the candidate smoke passes. Bootstrap (first-ever deploy):
+          # --no-traffic is rejected when creating a service and there are no users
+          # or prior revision, so serve 100% immediately. --tag candidate is kept in
+          # both paths so the smoke can address the new revision.
+          NO_TRAFFIC="--no-traffic"
+          if [ "$BOOTSTRAP" = "true" ]; then
+            NO_TRAFFIC=""
+          fi
           gcloud run deploy blueshift-app \
             --image "$IMAGE:${{ github.sha }}" --region "$REGION" \
-            --no-traffic --tag candidate \
+            $NO_TRAFFIC --tag candidate \
             --service-account "$RUNTIME_SA" \
             --add-cloudsql-instances "$SQL_INSTANCE" \
             --set-env-vars "ENV=prod,AUTH_MODE=identity,BLOB_MODE=gcs,GCS_BUCKET=$BUCKET,WORKER_TRIGGER=cloudrun,WORKER_JOB_NAME=blueshift-worker,WORKER_JOB_REGION=$REGION,WORKER_JOB_PROJECT=$PROJECT" \
@@ -122,12 +161,23 @@ jobs:
         # harness (playwright.config.ts, from m0-demo-seed) always boots
         # `make demo` as its webServer and diffs baselines generated on that
         # seeded stack; running the whole suite against a deployed URL is an M1
-        # harness task, not wired here. The rollout gates on this smoke.
+        # harness task, not wired here. The rollout gates on this smoke — it runs
+        # in both the steady-state and bootstrap paths.
+        env:
+          BOOTSTRAP: ${{ steps.detect.outputs.bootstrap }}
         run: |
           set -euo pipefail
-          URL=$(gcloud run services describe blueshift-app --region "$REGION" --format=json \
-            | jq -r '.status.traffic[] | select(.tag=="candidate") | .url' | head -n1)
-          [ -n "$URL" ] || { echo "::error::could not resolve candidate tag url"; exit 1; }
+          if [ "$BOOTSTRAP" = "true" ]; then
+            # Bootstrap: the sole revision already serves 100% on the service base
+            # url (there is no prior revision to hide behind a tag), so smoke that.
+            URL=$(gcloud run services describe blueshift-app --region "$REGION" --format=json \
+              | jq -r '.status.url')
+            { [ -n "$URL" ] && [ "$URL" != "null" ]; } || { echo "::error::could not resolve service url"; exit 1; }
+          else
+            URL=$(gcloud run services describe blueshift-app --region "$REGION" --format=json \
+              | jq -r '.status.traffic[] | select(.tag=="candidate") | .url' | head -n1)
+            [ -n "$URL" ] || { echo "::error::could not resolve candidate tag url"; exit 1; }
+          fi
           echo "smoking candidate: $URL"
           code() { curl -s -o /dev/null -w '%{http_code}' "$1"; }
 
@@ -146,11 +196,16 @@ jobs:
           [ "$root_len" -gt 0 ] || { echo "::error::/ body was empty"; exit 1; }
 
       - name: Shift 10% traffic
+        # Steady state only: bootstrap has no stable revision to split against and
+        # already serves 100%. success() preserves the default gate that this step
+        # (and the watch/100% below) only run when every prior step passed.
+        if: ${{ success() && steps.detect.outputs.bootstrap == 'false' }}
         run: |
           gcloud run services update-traffic blueshift-app \
             --region "$REGION" --to-tags candidate=10 --quiet
 
       - name: Watch 10 minutes (healthz + Error Reporting)
+        if: ${{ success() && steps.detect.outputs.bootstrap == 'false' }}
         run: |
           set -euo pipefail
           # Probe the candidate's TAGGED url, not the service base: at 10% traffic
@@ -176,6 +231,7 @@ jobs:
           done
 
       - name: Shift 100% traffic
+        if: ${{ success() && steps.detect.outputs.bootstrap == 'false' }}
         run: |
           gcloud run services update-traffic blueshift-app \
             --region "$REGION" --to-tags candidate=100 --quiet

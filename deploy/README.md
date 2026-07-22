@@ -145,6 +145,19 @@ Every push to `main` runs one `rollout` job that follows the §7 safety order:
 
 There is no `docker build` outside step 1.
 
+**First-ever deploy (bootstrap).** The very first push creates `blueshift-app`
+from nothing, where the §7 order needs two tweaks Cloud Run forces: `--no-traffic`
+is rejected when *creating* a service, and there is no stable revision to split
+10/90 against. A `Detect first-ever deploy` step therefore probes
+`gcloud run services describe blueshift-app`; when the service is absent it sets
+`bootstrap=true`, the candidate is deployed **without** `--no-traffic` (still
+`--tag candidate`) so the sole revision serves 100% immediately, and the
+10% → watch → 100% steps skip via their `if:` conditions. Migrations and the
+candidate smoke still run and still gate the deploy (order: deploy → migrate →
+smoke → done); on bootstrap the smoke targets the service base url since the only
+revision already serves it. Every subsequent push takes the steady-state path
+above unchanged.
+
 **Rollback.** Re-point traffic to a known-good revision, either via the command
 printed at the end of a successful run:
 
