@@ -74,6 +74,12 @@ type EpisodeRow struct {
 // visible to the org, which the handlers turn into a 404.
 type EpisodeRepo interface {
 	CreateEpisode(ctx context.Context, orgPublicID string, in NewEpisode) (EpisodeRow, error)
+	// DeleteOrphanEpisode compensates a create that failed after the row was
+	// inserted but before an upload URL could be minted, hard-deleting the
+	// just-created row so a failed create leaves nothing behind. It is narrowly
+	// gated (org-scoped, still 'uploaded', no master key) so it can only ever
+	// remove a fresh orphan. It is a no-op (no error) when nothing matched.
+	DeleteOrphanEpisode(ctx context.Context, orgPublicID, episodePublicID string) error
 	GetEpisode(ctx context.Context, orgPublicID, episodePublicID string) (EpisodeRow, bool, error)
 	SetEpisodeMasterKey(ctx context.Context, orgPublicID, episodePublicID, key string) (EpisodeRow, bool, error)
 	// ListEpisodes returns the org's episodes newest-first, excluding
@@ -184,18 +190,38 @@ func (h *handler) createEpisode(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	key, err := blob.MasterKey(ids.Encode(ids.Org, row.OrgPublicID), ids.Encode(ids.Episode, row.PublicID), filename)
+	// From here on the row exists. Any failure before we return the upload URL
+	// leaves an unreachable orphan (the client got a 503 and never learned the
+	// id), so each such path rolls the row back before returning the 503 — a
+	// failed create is invisible.
+	episodeID := ids.Encode(ids.Episode, row.PublicID)
+	key, err := blob.MasterKey(ids.Encode(ids.Org, row.OrgPublicID), episodeID, filename)
 	if err != nil {
+		h.rollbackOrphanEpisode(r.Context(), p.OrgPublicID, episodeID)
 		h.unavailable(w, r, "master key build failed", err)
 		return
 	}
 	up, err := h.deps.Blob.InitResumableUpload(r.Context(), key, req.ContentType, req.SizeBytes)
 	if err != nil {
+		h.rollbackOrphanEpisode(r.Context(), p.OrgPublicID, episodeID)
 		h.unavailable(w, r, "init upload failed", err)
 		return
 	}
 
 	writeJSON(w, http.StatusCreated, createEpisodeResponse{Episode: episodeDTOFrom(row), Upload: up})
+}
+
+// rollbackOrphanEpisode best-effort deletes a just-created episode row when the
+// create failed before an upload URL was returned. A delete failure is logged
+// (neutrally, with a correlation id) and swallowed: the create already returns a
+// 503, and the store gate keeps this from touching any non-orphan row, so the
+// worst case is a stray orphan that the M1 reaper sweeps — never a wrong delete.
+func (h *handler) rollbackOrphanEpisode(ctx context.Context, orgPublicID, episodePublicID string) {
+	if err := h.deps.Episodes.DeleteOrphanEpisode(ctx, orgPublicID, episodePublicID); err != nil {
+		id := errorID()
+		h.deps.Logger.LogAttrs(ctx, slog.LevelError, "orphan episode rollback failed",
+			slog.String("error_id", id), slog.String("error", err.Error()))
+	}
 }
 
 // uploadComplete verifies the uploaded master exists and matches the declared

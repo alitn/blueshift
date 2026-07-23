@@ -26,6 +26,19 @@ WHERE public_id = $1
   AND org_id = $2
 RETURNING *;
 
+-- name: DeleteOrphanEpisode :execrows
+-- Compensating rollback for a create that failed AFTER the row was inserted but
+-- BEFORE an upload URL could be minted (e.g. signing unavailable). It hard-deletes
+-- the just-created row so a failed create leaves nothing behind. It is narrowly
+-- gated — org-scoped, status still 'uploaded', and no master key yet — so it can
+-- only ever remove a fresh orphan, never an episode that started uploading or
+-- advanced. Returns the affected-row count so a caller can log a no-op.
+DELETE FROM episodes
+WHERE public_id = $1
+  AND org_id = $2
+  AND status = 'uploaded'
+  AND master_object_key IS NULL;
+
 -- name: SetEpisodeMasterKey :one
 -- Record the verified master object key after the client confirms the upload
 -- landed. Org-scoped so a caller can only complete an upload for their own org's

@@ -46,6 +46,30 @@ func (s *Store) CreateEpisode(ctx context.Context, orgPublicID string, in api.Ne
 	return episodeRow(org.PublicID, ep), nil
 }
 
+// DeleteOrphanEpisode hard-deletes a just-created episode row when the create
+// failed before an upload URL could be minted. It is org-scoped and gated on the
+// fresh-orphan shape (status 'uploaded', no master key) in SQL, so it can only
+// ever remove an unreachable half-created row. A malformed id or a row that no
+// longer matches the gate is a silent no-op (nil error): there is nothing to
+// roll back and nothing to report.
+func (s *Store) DeleteOrphanEpisode(ctx context.Context, orgPublicID, episodePublicID string) error {
+	org, err := s.resolveOrg(ctx, orgPublicID)
+	if err != nil {
+		return err
+	}
+	epUUID, err := ids.Decode(ids.Episode, episodePublicID)
+	if err != nil {
+		return nil
+	}
+	if _, err := s.Queries.DeleteOrphanEpisode(ctx, db.DeleteOrphanEpisodeParams{
+		PublicID: pgUUID(epUUID),
+		OrgID:    org.ID,
+	}); err != nil {
+		return fmt.Errorf("store: delete orphan episode: %w", err)
+	}
+	return nil
+}
+
 // GetEpisode fetches an org-scoped episode by its public id. A malformed id or a
 // row belonging to another org both report found=false (a 404), so nothing about
 // another org's data is observable.

@@ -56,13 +56,22 @@ Created empty by `deploy/gcloud.sh`; values are filled by the human (see
 
 | SA                         | Roles                                                                                                                                              | Why                                                                          |
 | -------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------- | ---------------------------------------------------------------------------- |
-| `app-runtime@<project>`    | `cloudsql.client`, `storage.objectAdmin`, `aiplatform.user`, `speech.client`, `secretmanager.secretAccessor`, `logging.logWriter`, `errorreporting.writer`, **`run.invoker`** | DB, blob, AI, secrets, logs — and `run.invoker` so the app can execute the worker Job (`jobs/{job}:run`) |
+| `app-runtime@<project>`    | `cloudsql.client`, `storage.objectAdmin`, `aiplatform.user`, `speech.client`, `secretmanager.secretAccessor`, `logging.logWriter`, `errorreporting.writer`, **`run.invoker`** (project) + **`iam.serviceAccountTokenCreator` on _itself_** (SA-scoped) | DB, blob, AI, secrets, logs; `run.invoker` so the app can execute the worker Job (`jobs/{job}:run`); the self-scoped `serviceAccountTokenCreator` grants `iam.serviceAccounts.signBlob` so Cloud Run can mint V4 signed URLs (master upload, proxy playback) with no private key — without it `POST /api/episodes` 503s on a signing 403 |
 | `deployer@<project>`       | `run.admin`, `artifactregistry.writer`, `iam.serviceAccountUser`, `cloudsql.client`, **`errorreporting.viewer`**, + `secretmanager.secretAccessor` on **only** `database-url` | Build/deploy service+jobs, act as runtime SA, run `migrate up` via auth proxy, and read Error Reporting during the rollout watch |
 | `dev-experiments@<project>`| `aiplatform.user`, `speech.client` (project-scoped invocation) + `storage.objectAdmin` on **only** `<project>-media-dev` (bucket-scoped) | Local ASR/LLM fixture capture. **No Cloud SQL, no Cloud Run, no access to the prod bucket** — the storage binding is scoped to the dev bucket alone and no project-level storage role is granted. |
 
 The worker-Job execute permission is project-scoped `run.invoker` rather than a
 per-Job binding: the worker Jobs do not exist when `gcloud.sh` runs (deploy.yml
 creates them), so a job-scoped binding could not be applied idempotently there.
+
+The signing grant is deliberately **SA-scoped, not project-wide**: `gcloud.sh`
+adds `app-runtime` as a member with `roles/iam.serviceAccountTokenCreator` on the
+`app-runtime` SA's _own_ IAM policy (`gcloud iam service-accounts
+add-iam-policy-binding app-runtime@… --member=serviceAccount:app-runtime@…`), so
+only that SA can sign as itself and no other identity gains signing power. This is
+what lets the storage client produce V4 signatures via the IAM `signBlob` API
+without a downloaded key; the symptom when it is missing is a signing `403` in the
+runtime logs surfacing as a neutral `503` from `POST /api/episodes`.
 
 **Dev-SA isolation.** `dev-experiments@` exists only for laptop fixture capture
 and has **no WIF binding** (it is never used by CI). Developers mint short-lived

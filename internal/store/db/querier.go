@@ -17,6 +17,13 @@ type Querier interface {
 	// returned org_id is how the worker scopes every later write to the claimed
 	// tenant; it never takes an org from its arguments.
 	ClaimEpisodeForIngest(ctx context.Context, publicID pgtype.UUID) (Episode, error)
+	// Compensating rollback for a create that failed AFTER the row was inserted but
+	// BEFORE an upload URL could be minted (e.g. signing unavailable). It hard-deletes
+	// the just-created row so a failed create leaves nothing behind. It is narrowly
+	// gated — org-scoped, status still 'uploaded', and no master key yet — so it can
+	// only ever remove a fresh orphan, never an episode that started uploading or
+	// advanced. Returns the affected-row count so a caller can log a no-op.
+	DeleteOrphanEpisode(ctx context.Context, arg DeleteOrphanEpisodeParams) (int64, error)
 	// Resolve a seeded user's authentication context by email: their display name,
 	// their org (public id + name) and their role in that org. One membership per
 	// user in M0, so LIMIT 1 is exact. Soft-deleted users are excluded.

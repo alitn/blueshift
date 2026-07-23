@@ -51,6 +51,33 @@ func (q *Queries) ClaimEpisodeForIngest(ctx context.Context, publicID pgtype.UUI
 	return i, err
 }
 
+const deleteOrphanEpisode = `-- name: DeleteOrphanEpisode :execrows
+DELETE FROM episodes
+WHERE public_id = $1
+  AND org_id = $2
+  AND status = 'uploaded'
+  AND master_object_key IS NULL
+`
+
+type DeleteOrphanEpisodeParams struct {
+	PublicID pgtype.UUID
+	OrgID    int64
+}
+
+// Compensating rollback for a create that failed AFTER the row was inserted but
+// BEFORE an upload URL could be minted (e.g. signing unavailable). It hard-deletes
+// the just-created row so a failed create leaves nothing behind. It is narrowly
+// gated — org-scoped, status still 'uploaded', and no master key yet — so it can
+// only ever remove a fresh orphan, never an episode that started uploading or
+// advanced. Returns the affected-row count so a caller can log a no-op.
+func (q *Queries) DeleteOrphanEpisode(ctx context.Context, arg DeleteOrphanEpisodeParams) (int64, error) {
+	result, err := q.db.Exec(ctx, deleteOrphanEpisode, arg.PublicID, arg.OrgID)
+	if err != nil {
+		return 0, err
+	}
+	return result.RowsAffected(), nil
+}
+
 const getEpisodeByPublicID = `-- name: GetEpisodeByPublicID :one
 SELECT id, public_id, org_id, show_id, title, source_filename, language, status, duration_ms, master_object_key, proxy_object_key, error_id, created_at, updated_at, deleted_at, master_size_bytes FROM episodes
 WHERE public_id = $1

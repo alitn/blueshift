@@ -131,6 +131,16 @@ grant "$RUNTIME" roles/errorreporting.writer
 # exist until deploy.yml's first run, so this project-level grant is the
 # idempotent choice runnable before any image/job exists.
 grant "$RUNTIME" roles/run.invoker
+# V4 signed URLs (master upload, proxy playback) are signed on Cloud Run with NO
+# private key: the storage client calls the IAM Credentials signBlob API on the
+# runtime SA itself. That requires iam.serviceAccounts.signBlob ON THE SA (not a
+# project role) — without it, POST /api/episodes 503s on a signing 403. Grant it
+# SA-scoped (app-runtime as a member on its OWN policy) so the capability is
+# self-contained and no other identity gains it. add-iam-policy-binding is
+# idempotent, so this is safe to re-run.
+gcloud iam service-accounts add-iam-policy-binding "$RUNTIME" \
+  --member "serviceAccount:$RUNTIME" \
+  --role roles/iam.serviceAccountTokenCreator --condition=None >/dev/null
 # Deployer: push images, deploy Cloud Run service+jobs, act as the runtime SA,
 # run additive migrations from CI through the Cloud SQL Auth Proxy, and read
 # Error Reporting during the rollout watch.

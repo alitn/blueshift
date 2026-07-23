@@ -11,6 +11,7 @@ import (
 	"github.com/golang-migrate/migrate/v4"
 	_ "github.com/golang-migrate/migrate/v4/database/pgx/v5"
 	_ "github.com/golang-migrate/migrate/v4/source/file"
+	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgtype"
 
 	"blueshift/internal/store/db"
@@ -182,6 +183,109 @@ func TestMigrationsAndQueries(t *testing.T) {
 	}
 	if updated.Status != "processing" {
 		t.Errorf("updated status = %q, want processing", updated.Status)
+	}
+}
+
+// TestDeleteOrphanEpisode verifies the compensating-rollback query's narrow
+// gate: it removes only a fresh orphan (org-scoped, still 'uploaded', no master
+// key) and leaves any keyed, advanced, or other-org row untouched.
+func TestDeleteOrphanEpisode(t *testing.T) {
+	dsn := requireDB(t)
+	applyMigrations(t, dsn)
+
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	defer cancel()
+
+	st, err := Open(ctx, dsn)
+	if err != nil {
+		t.Fatalf("Open: %v", err)
+	}
+	defer st.Close()
+	applyDevSeed(t, st, ctx)
+
+	var orgID, showID int64
+	if err := st.Pool().QueryRow(ctx,
+		`SELECT id FROM orgs WHERE name = 'Blueshift Pilot'`).Scan(&orgID); err != nil {
+		t.Fatalf("find seed org: %v", err)
+	}
+	if err := st.Pool().QueryRow(ctx,
+		`SELECT id FROM shows WHERE org_id = $1 ORDER BY id LIMIT 1`, orgID).Scan(&showID); err != nil {
+		t.Fatalf("find show: %v", err)
+	}
+
+	insert := func(t *testing.T, key pgtype.Text) db.Episode {
+		t.Helper()
+		ep, err := st.InsertEpisode(ctx, db.InsertEpisodeParams{
+			OrgID: orgID, ShowID: showID, Title: "Orphan", SourceFilename: "o.mp4",
+			Language: "fa", MasterObjectKey: key,
+		})
+		if err != nil {
+			t.Fatalf("InsertEpisode: %v", err)
+		}
+		return ep
+	}
+	deleteOrphan := func(t *testing.T, pub pgtype.UUID, org int64) int64 {
+		t.Helper()
+		// Call the generated query explicitly: the org-scoped Store method of the
+		// same name shadows the promoted db.Queries.DeleteOrphanEpisode.
+		n, err := st.Queries.DeleteOrphanEpisode(ctx, db.DeleteOrphanEpisodeParams{PublicID: pub, OrgID: org})
+		if err != nil {
+			t.Fatalf("DeleteOrphanEpisode: %v", err)
+		}
+		return n
+	}
+	exists := func(t *testing.T, pub pgtype.UUID) bool {
+		t.Helper()
+		_, err := st.GetEpisodeByPublicID(ctx, db.GetEpisodeByPublicIDParams{PublicID: pub, OrgID: orgID})
+		if err == nil {
+			return true
+		}
+		if errors.Is(err, pgx.ErrNoRows) {
+			return false
+		}
+		t.Fatalf("GetEpisodeByPublicID: %v", err)
+		return false
+	}
+
+	// Fresh orphan (no key, still 'uploaded') -> removed.
+	orphan := insert(t, pgtype.Text{})
+	if n := deleteOrphan(t, orphan.PublicID, orgID); n != 1 {
+		t.Fatalf("delete fresh orphan rows = %d, want 1", n)
+	}
+	if exists(t, orphan.PublicID) {
+		t.Error("fresh orphan survived the rollback")
+	}
+
+	// Keyed row (upload started) -> untouched.
+	keyed := insert(t, pgtype.Text{String: "k/masters/o.mp4", Valid: true})
+	if n := deleteOrphan(t, keyed.PublicID, orgID); n != 0 {
+		t.Errorf("delete keyed row rows = %d, want 0 (must not touch a started upload)", n)
+	}
+	if !exists(t, keyed.PublicID) {
+		t.Error("keyed row was wrongly deleted")
+	}
+
+	// Advanced row (no longer 'uploaded') -> untouched.
+	advanced := insert(t, pgtype.Text{})
+	if _, err := st.UpdateEpisodeStatus(ctx, db.UpdateEpisodeStatusParams{
+		PublicID: advanced.PublicID, OrgID: orgID, Status: "processing",
+	}); err != nil {
+		t.Fatalf("UpdateEpisodeStatus: %v", err)
+	}
+	if n := deleteOrphan(t, advanced.PublicID, orgID); n != 0 {
+		t.Errorf("delete advanced row rows = %d, want 0", n)
+	}
+	if !exists(t, advanced.PublicID) {
+		t.Error("advanced row was wrongly deleted")
+	}
+
+	// Org scoping: a fresh orphan is invisible to another org id.
+	other := insert(t, pgtype.Text{})
+	if n := deleteOrphan(t, other.PublicID, orgID+100000); n != 0 {
+		t.Errorf("cross-org delete rows = %d, want 0", n)
+	}
+	if !exists(t, other.PublicID) {
+		t.Error("cross-org delete removed the org's own orphan")
 	}
 }
 

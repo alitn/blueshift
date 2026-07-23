@@ -35,6 +35,7 @@ type fakeRepo struct {
 	counter    byte
 	failCreate error
 	failList   error
+	failDelete error
 }
 
 func newFakeRepo() *fakeRepo { return &fakeRepo{eps: map[string]storedEpisode{}} }
@@ -67,6 +68,22 @@ func (f *fakeRepo) CreateEpisode(_ context.Context, orgPublicID string, in NewEp
 	}
 	f.eps[ids.Encode(ids.Episode, pid)] = storedEpisode{row: row, owner: orgPublicID}
 	return row, nil
+}
+
+// DeleteOrphanEpisode removes a fresh-orphan row (org-scoped, still 'uploaded',
+// no master key), mirroring the store's SQL gate. A no-match is a silent no-op.
+func (f *fakeRepo) DeleteOrphanEpisode(_ context.Context, orgPublicID, episodePublicID string) error {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	if f.failDelete != nil {
+		return f.failDelete
+	}
+	s, ok := f.eps[episodePublicID]
+	if !ok || s.owner != orgPublicID || s.row.Status != "uploaded" || s.row.MasterKey != "" {
+		return nil
+	}
+	delete(f.eps, episodePublicID)
+	return nil
 }
 
 func (f *fakeRepo) GetEpisode(_ context.Context, orgPublicID, episodePublicID string) (EpisodeRow, bool, error) {
@@ -123,6 +140,14 @@ func (f *fakeRepo) RetryEpisode(_ context.Context, orgPublicID, episodePublicID 
 	return s.row, true, nil
 }
 
+// count returns the number of rows currently held (across all orgs) so a test
+// can assert a failed create left nothing behind.
+func (f *fakeRepo) count() int {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	return len(f.eps)
+}
+
 // setStatus is a test helper to move a stored row into a given status/state so
 // the proxy and retry guards can be exercised without a worker.
 func (f *fakeRepo) setStatus(epID, status, proxyKey string) {
@@ -158,6 +183,38 @@ func (f *fakeTrigger) count() int {
 	f.mu.Lock()
 	defer f.mu.Unlock()
 	return len(f.calls)
+}
+
+// errInitUpload is the failure initErrBlob returns from InitResumableUpload,
+// standing in for the prod signing outage (V4 signBlob unavailable).
+var errInitUpload = errors.New("sign upload url unavailable")
+
+// initErrBlob is a blob.Store whose InitResumableUpload always fails, so the
+// create handler's post-insert rollback path is exercised without a real signer.
+// Stat/SignedGetURL are unused by the create flow.
+type initErrBlob struct{}
+
+func (initErrBlob) InitResumableUpload(context.Context, string, string, int64) (blob.Upload, error) {
+	return blob.Upload{}, errInitUpload
+}
+func (initErrBlob) Stat(context.Context, string) (int64, error) { return 0, blob.ErrNotFound }
+func (initErrBlob) SignedGetURL(context.Context, string, time.Duration) (string, error) {
+	return "", blob.ErrNotFound
+}
+
+// newEpisodeRouterWithBlob wires an arbitrary blob.Store into an otherwise
+// standard episode router (no on-disk local blob, no HTTP blob server).
+func newEpisodeRouterWithBlob(t *testing.T, repo EpisodeRepo, store blob.Store) http.Handler {
+	t.Helper()
+	return NewRouter(Deps{
+		Authenticator: stubAuth{},
+		Directory:     stubDir{},
+		Codec:         auth.NewCodec("test-secret"),
+		Logger:        discard(),
+		Now:           func() time.Time { return time.Unix(1_700_000_000, 0) },
+		Episodes:      repo,
+		Blob:          store,
+	})
 }
 
 // --- harness ----------------------------------------------------------------
@@ -343,6 +400,49 @@ func TestCreateUploadCompleteRoundTrip(t *testing.T) {
 	}
 	if !strings.HasPrefix(stored.row.MasterKey, "org_") {
 		t.Errorf("master key not org-prefixed: %q", stored.row.MasterKey)
+	}
+}
+
+// TestCreateRollsBackOrphanOnInitFailure reproduces the prod signing outage: the
+// row is inserted, InitResumableUpload then fails, and the client gets a 503. The
+// just-created row must not linger (the "stuck uploaded rows" bug) — a failed
+// create is invisible.
+func TestCreateRollsBackOrphanOnInitFailure(t *testing.T) {
+	repo := newFakeRepo()
+	router := newEpisodeRouterWithBlob(t, repo, initErrBlob{})
+
+	rec := doAs(router, orgA, createReq(`{"title":"Ep","source_filename":"a.mp4","size_bytes":10,"content_type":"video/mp4"}`))
+	if rec.Code != http.StatusServiceUnavailable {
+		t.Fatalf("create status = %d, want 503 (body %s)", rec.Code, rec.Body.String())
+	}
+	// The error envelope stays neutral (no provider/signing detail leaks).
+	if body := rec.Body.String(); strings.Contains(body, "sign") || strings.Contains(body, "upload url") {
+		t.Errorf("503 body leaks internal cause: %s", body)
+	}
+	// No row survived the failed create.
+	if n := repo.count(); n != 0 {
+		t.Fatalf("orphan rows after failed create = %d, want 0", n)
+	}
+	// And a subsequent list shows nothing for the org.
+	lrec := doAs(router, orgA, httptest.NewRequest(http.MethodGet, "/api/episodes", nil))
+	var resp listEpisodesResponse
+	_ = json.Unmarshal(lrec.Body.Bytes(), &resp)
+	if len(resp.Episodes) != 0 {
+		t.Fatalf("list after failed create = %d episodes, want 0", len(resp.Episodes))
+	}
+}
+
+// TestCreateFailedRollbackStillReturns503 asserts that even if the rollback
+// delete itself fails (logged, best-effort), the create still returns the 503 —
+// the client outcome never depends on the compensating cleanup succeeding.
+func TestCreateFailedRollbackStillReturns503(t *testing.T) {
+	repo := newFakeRepo()
+	repo.failDelete = errors.New("delete unavailable")
+	router := newEpisodeRouterWithBlob(t, repo, initErrBlob{})
+
+	rec := doAs(router, orgA, createReq(`{"title":"Ep","source_filename":"a.mp4","size_bytes":10,"content_type":"video/mp4"}`))
+	if rec.Code != http.StatusServiceUnavailable {
+		t.Fatalf("create status = %d, want 503", rec.Code)
 	}
 }
 

@@ -53,6 +53,14 @@ export function createEpisodesStore(opts: PollOptions = {}): EpisodesStore {
   // Whether the last known state still has work to watch. Kept true on error so
   // a transient failure retries rather than silently freezing the view.
   let pending = false;
+  // True while a fetch is awaiting. It is the concurrency guard that keeps the
+  // loop a single logical timeline: a redundant start()/refresh() or a
+  // visibility resume that lands while a fetch is in flight collapses into the
+  // running fetch instead of firing a second, overlapping request. Combined with
+  // the single `handle` (always cleared before it is reassigned), the store holds
+  // at most one in-flight fetch and one scheduled tick no matter how many times
+  // polling is (re)started.
+  let inFlight = false;
 
   function clearHandle() {
     if (handle !== null) {
@@ -69,7 +77,9 @@ export function createEpisodesStore(opts: PollOptions = {}): EpisodesStore {
   }
 
   async function poll() {
+    if (inFlight) return; // a fetch is already running; don't stack another
     clearHandle();
+    inFlight = true;
     try {
       const episodes = await fetcher();
       pending = episodes.some((e) => !isTerminal(e.status));
@@ -77,6 +87,8 @@ export function createEpisodesStore(opts: PollOptions = {}): EpisodesStore {
     } catch {
       pending = true; // retry on the next tick
       store.update((s) => ({ ...s, loaded: true, error: true }));
+    } finally {
+      inFlight = false;
     }
     schedule();
   }
@@ -94,8 +106,15 @@ export function createEpisodesStore(opts: PollOptions = {}): EpisodesStore {
     if (!running) {
       running = true;
       doc?.addEventListener('visibilitychange', onVisibility);
+      void poll();
+      return;
     }
-    void poll();
+    // Already polling. Re-ignite only when the loop has gone idle — no tick
+    // scheduled and no fetch in flight — which is exactly the case a new
+    // upload/retry needs restarted after every episode reached a terminal state.
+    // A start() while the loop is live is a no-op, so repeated (re)starts can
+    // never accelerate the cadence past the single intervalMs timer.
+    if (handle === null && !inFlight) void poll();
   }
 
   function stop() {

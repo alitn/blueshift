@@ -56,6 +56,79 @@ describe('createEpisodesStore', () => {
     store.stop();
   });
 
+  it('repeated start() never stacks: one immediate fetch, one timer, 3s cadence', async () => {
+    // Mirrors the Library page calling start() from onMount and again from every
+    // onUploaded/onRetry. A redundant start() must not add an overlapping poll or
+    // reset the interval — exactly one active timer, at intervalMs, throughout.
+    const fetcher = vi.fn(async () => [ep('ep_a', 'processing')]);
+    const store = createEpisodesStore({ fetcher, intervalMs: 3000, doc: fakeDoc() });
+
+    store.start();
+    store.start();
+    store.start();
+    await vi.advanceTimersByTimeAsync(0);
+    // Three starts, still a single immediate fetch and a single scheduled tick.
+    expect(fetcher).toHaveBeenCalledTimes(1);
+    expect(vi.getTimerCount()).toBe(1);
+
+    // Starting again mid-loop stays a no-op — the cadence is unchanged.
+    store.start();
+    store.start();
+    await vi.advanceTimersByTimeAsync(0);
+    expect(fetcher).toHaveBeenCalledTimes(1);
+    expect(vi.getTimerCount()).toBe(1);
+
+    // Steady 3s cadence: one poll per interval, not faster.
+    await vi.advanceTimersByTimeAsync(3000);
+    expect(fetcher).toHaveBeenCalledTimes(2);
+    await vi.advanceTimersByTimeAsync(3000);
+    expect(fetcher).toHaveBeenCalledTimes(3);
+
+    store.stop();
+  });
+
+  it('refresh()+start() together (the onUploaded path) fire a single fetch', async () => {
+    // The Library's onUploaded does `void refresh(); start();`. The two must
+    // collapse into one request, not two concurrent /api/episodes calls.
+    const fetcher = vi.fn(async () => [ep('ep_a', 'processing')]);
+    const store = createEpisodesStore({ fetcher, intervalMs: 3000, doc: fakeDoc() });
+
+    store.start();
+    await vi.advanceTimersByTimeAsync(0);
+    expect(fetcher).toHaveBeenCalledTimes(1);
+
+    fetcher.mockClear();
+    void store.refresh();
+    store.start();
+    await vi.advanceTimersByTimeAsync(0);
+    expect(fetcher).toHaveBeenCalledTimes(1); // collapsed, not doubled
+    expect(vi.getTimerCount()).toBe(1);
+
+    store.stop();
+  });
+
+  it('start() re-ignites a single poll after the loop idled (all terminal)', async () => {
+    // Once every episode is terminal the loop parks (no scheduled tick). A later
+    // upload/retry calls start() again, which must resume exactly one poll.
+    const fetcher = vi
+      .fn<() => Promise<Episode[]>>()
+      .mockResolvedValueOnce([ep('ep_a', 'ready')]) // terminal -> loop idles
+      .mockResolvedValue([ep('ep_a', 'processing')]);
+    const store = createEpisodesStore({ fetcher, intervalMs: 3000, doc: fakeDoc() });
+
+    store.start();
+    await vi.advanceTimersByTimeAsync(0);
+    expect(fetcher).toHaveBeenCalledTimes(1);
+    expect(vi.getTimerCount()).toBe(0); // idle: nothing scheduled
+
+    store.start(); // a new upload/retry resumes polling
+    await vi.advanceTimersByTimeAsync(0);
+    expect(fetcher).toHaveBeenCalledTimes(2);
+    expect(vi.getTimerCount()).toBe(1);
+
+    store.stop();
+  });
+
   it('stops polling once every episode is terminal', async () => {
     const fetcher = vi
       .fn<() => Promise<Episode[]>>()
