@@ -12,6 +12,12 @@ SHELL := /bin/bash
 # arch bun installed them for — this is portable and immune to a host node whose
 # arch differs from bun's. Playwright is the one exception: it has a hard Node
 # runtime dependency, so `make e2e` pins it to node via `bunx --bun=false`.
+#
+# `svelte-kit sync` runs explicitly before svelte-check: bun blocks lifecycle
+# scripts by design (ADR 0001), so SvelteKit's postinstall never fires and
+# nothing generates .svelte-kit/tsconfig.json on a fresh checkout. sync is the
+# SvelteKit step that generates it; it's idempotent and fast, and being explicit
+# beats re-enabling postinstall (keeps the no-lifecycle-scripts security posture).
 # ------------------------------------------------------------------------------
 check: vendor-gate hex-gate
 	@set -e; \
@@ -28,7 +34,8 @@ check: vendor-gate hex-gate
 	fi
 	@set -e; \
 	if [ -f web/package.json ]; then \
-		echo "--> svelte-check"; cd web && bunx --bun svelte-check --fail-on-warnings && \
+		echo "--> svelte-kit sync"; cd web && bunx --bun svelte-kit sync && \
+		echo "--> svelte-check" && bunx --bun svelte-check --fail-on-warnings && \
 		echo "--> eslint" && bunx --bun eslint . && \
 		echo "--> vitest" && bunx --bun vitest run; \
 	else \
