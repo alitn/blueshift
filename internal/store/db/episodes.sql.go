@@ -395,6 +395,30 @@ func (q *Queries) SetEpisodeMasterKey(ctx context.Context, arg SetEpisodeMasterK
 	return i, err
 }
 
+const sweepAbandonedEpisodes = `-- name: SweepAbandonedEpisodes :execrows
+DELETE FROM episodes
+WHERE status = 'uploaded'
+  AND master_object_key IS NULL
+  AND created_at < now() - $1::interval
+`
+
+// System-level TTL sweep of abandoned uploads: a create can succeed
+// server-side and then the CLIENT abandons the upload (CORS failure, closed tab,
+// lost network), leaving a row stuck at 'uploaded' with no master key that no
+// future PUT will ever complete. Across ALL orgs (this is a system maintenance
+// sweep, not a tenant action, so it is deliberately not org-scoped) hard-delete
+// rows older than the TTL whose upload never landed. The gate is the same narrow
+// orphan shape as the create-time rollback (status 'uploaded', no master key)
+// plus an age floor, so it can only ever remove a long-abandoned half-created
+// row — never an episode that started uploading or advanced. Returns the count.
+func (q *Queries) SweepAbandonedEpisodes(ctx context.Context, ttl pgtype.Interval) (int64, error) {
+	result, err := q.db.Exec(ctx, sweepAbandonedEpisodes, ttl)
+	if err != nil {
+		return 0, err
+	}
+	return result.RowsAffected(), nil
+}
+
 const updateEpisodeStatus = `-- name: UpdateEpisodeStatus :one
 UPDATE episodes
 SET status = $3,

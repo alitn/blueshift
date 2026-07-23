@@ -3,10 +3,10 @@
   // mono 10.5px stage label below, colored to state. The status->bars mapping is
   // the M0 ruling in $lib/pipeline.
   import { pipelineView, STEP_BG, TONE_TEXT } from '$lib/pipeline';
-  import type { EpisodeStatus } from '$lib/episodes';
+  import type { DisplayState } from '$lib/episodes';
 
-  let { status }: { status: EpisodeStatus } = $props();
-  const view = $derived(pipelineView(status));
+  let { state }: { state: DisplayState } = $props();
+  const view = $derived(pipelineView(state));
 </script>
 
 <div>

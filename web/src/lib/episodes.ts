@@ -15,6 +15,10 @@ export type Episode = {
   sourceFilename: string;
   language: string;
   status: EpisodeStatus;
+  /** Whether the master upload actually landed. A row still 'uploaded' with
+   *  hasMaster=false is one whose client abandoned the upload — the Library
+   *  shows it as "awaiting upload" rather than "queued". */
+  hasMaster: boolean;
   durationMs?: number;
   sizeBytes?: number;
   uploadedAt: string;
@@ -27,6 +31,7 @@ type EpisodeDTO = {
   source_filename: string;
   language: string;
   status: EpisodeStatus;
+  has_master: boolean;
   duration_ms?: number;
   size_bytes?: number;
   uploaded_at: string;
@@ -41,10 +46,25 @@ function fromDTO(d: EpisodeDTO): Episode {
     sourceFilename: d.source_filename,
     language: d.language,
     status: d.status,
+    hasMaster: d.has_master,
     durationMs: d.duration_ms,
     sizeBytes: d.size_bytes,
     uploadedAt: d.uploaded_at
   };
+}
+
+/**
+ * DisplayState is the Library's honest view of an episode: the raw status,
+ * except a row that is still 'uploaded' with no master is 'awaiting_upload'
+ * (the client never finished the upload). It exists only for rendering; the
+ * server's status is untouched.
+ */
+export type DisplayState = EpisodeStatus | 'awaiting_upload';
+
+/** displayState derives the render state from an episode's status + hasMaster. */
+export function displayState(ep: Pick<Episode, 'status' | 'hasMaster'>): DisplayState {
+  if (ep.status === 'uploaded' && !ep.hasMaster) return 'awaiting_upload';
+  return ep.status;
 }
 
 /** listEpisodes fetches the org's episodes newest-first. Throws on failure. */

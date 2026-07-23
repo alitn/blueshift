@@ -20,6 +20,7 @@ import (
 	"blueshift/internal/pipeline"
 	"blueshift/internal/server"
 	"blueshift/internal/store"
+	"blueshift/internal/sweep"
 	"blueshift/internal/webembed"
 )
 
@@ -73,6 +74,17 @@ func run() error {
 
 	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 	defer stop()
+
+	// The abandoned-upload sweep is a system-level TTL reaper: a create can
+	// succeed server-side and then the client abandons the upload, leaving a row
+	// stuck at 'uploaded' with no master key. It runs only when a database is
+	// configured (st != nil) and is bound to the app's lifecycle ctx, so it drains
+	// cleanly on shutdown.
+	if st != nil {
+		go sweep.Run(ctx, st, logger, cfg.SweepInterval, cfg.UploadTTL)
+		logger.Info("abandoned-upload sweep enabled",
+			"interval", cfg.SweepInterval.String(), "ttl", cfg.UploadTTL.String())
+	}
 
 	return server.Run(ctx, srv, logger)
 }

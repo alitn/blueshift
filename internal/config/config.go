@@ -101,6 +101,14 @@ type Config struct {
 
 	// IngestTimeout bounds a single ingest stage attempt in the worker.
 	IngestTimeout time.Duration
+
+	// SweepInterval is the cadence of the abandoned-upload sweep (the app-side
+	// TTL reaper). Defaults to 1h. The sweep only runs when a database is
+	// configured (DATABASE_URL set).
+	SweepInterval time.Duration
+	// UploadTTL is how long a created-but-never-uploaded episode may sit at
+	// 'uploaded' with no master key before the sweep removes it. Defaults to 6h.
+	UploadTTL time.Duration
 }
 
 // Addr returns the listen address (":<port>") for http.Server.
@@ -126,6 +134,13 @@ const (
 	// defaultIngestTimeout bounds a single ingest stage attempt when
 	// INGEST_TIMEOUT is unset.
 	defaultIngestTimeout = 30 * time.Minute
+
+	// defaultSweepInterval is the cadence of the abandoned-upload sweep when
+	// SWEEP_INTERVAL is unset.
+	defaultSweepInterval = time.Hour
+	// defaultUploadTTL is how long an abandoned (created-but-never-uploaded)
+	// episode may linger before the sweep removes it, when UPLOAD_TTL is unset.
+	defaultUploadTTL = 6 * time.Hour
 )
 
 // Load reads configuration from the process environment.
@@ -183,7 +198,43 @@ func load(getenv func(string) string) (Config, error) {
 		return Config{}, err
 	}
 
+	if err := loadSweep(&cfg, getenv); err != nil {
+		return Config{}, err
+	}
+
 	return cfg, nil
+}
+
+// loadSweep resolves the abandoned-upload sweep cadence and TTL. Both default to
+// production-safe values (1h cadence, 6h TTL) and accept any positive Go
+// duration (e.g. "2s", "90m") so a transient env can drive a fast sweep for
+// verification. The sweep itself is wired only when a database is configured.
+func loadSweep(cfg *Config, getenv func(string) string) error {
+	cfg.SweepInterval = defaultSweepInterval
+	if v := strings.TrimSpace(getenv("SWEEP_INTERVAL")); v != "" {
+		d, err := time.ParseDuration(v)
+		if err != nil {
+			return fmt.Errorf("config: invalid SWEEP_INTERVAL %q: %w", v, err)
+		}
+		if d <= 0 {
+			return fmt.Errorf("config: SWEEP_INTERVAL must be positive, got %q", v)
+		}
+		cfg.SweepInterval = d
+	}
+
+	cfg.UploadTTL = defaultUploadTTL
+	if v := strings.TrimSpace(getenv("UPLOAD_TTL")); v != "" {
+		d, err := time.ParseDuration(v)
+		if err != nil {
+			return fmt.Errorf("config: invalid UPLOAD_TTL %q: %w", v, err)
+		}
+		if d <= 0 {
+			return fmt.Errorf("config: UPLOAD_TTL must be positive, got %q", v)
+		}
+		cfg.UploadTTL = d
+	}
+
+	return nil
 }
 
 // loadWorker resolves the pipeline trigger and worker-stage settings. The

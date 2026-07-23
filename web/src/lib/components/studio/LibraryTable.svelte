@@ -4,7 +4,7 @@
   // ZWNJ preserved verbatim (Svelte text nodes are byte-exact). CLIPS/COST show
   // an em dash until M1. Ready rows are keyboard-openable; failed rows expose a
   // danger RETRY. All colors/spacing come from tokens.
-  import type { Episode } from '$lib/episodes';
+  import { displayState, type Episode } from '$lib/episodes';
   import { formatDuration, formatSize, formatUploaded } from '$lib/pipeline';
   import PipelineSteps from './PipelineSteps.svelte';
 
@@ -91,7 +91,7 @@
     {formatDuration(ep.durationMs)}
   </div>
   <div class="w-[250px] flex-none">
-    <PipelineSteps status={ep.status} />
+    <PipelineSteps state={displayState(ep)} />
   </div>
   <div class="w-[60px] flex-none text-right font-mono text-[11px] text-text-primary">—</div>
   <div class="w-[80px] flex-none text-right font-mono text-[11px] tabular-nums text-text-muted">—</div>

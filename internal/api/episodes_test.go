@@ -647,6 +647,29 @@ func TestListEpisodesDTONeutral(t *testing.T) {
 	if _, present := ep["uploaded_at"]; !present {
 		t.Error("uploaded_at missing from list DTO")
 	}
+	// has_master is a neutral boolean the Library uses to tell an abandoned
+	// upload (still 'uploaded', no master) from a queued one. It is always
+	// present, and false for a freshly-seeded row whose upload never completed.
+	hm, present := ep["has_master"]
+	if !present {
+		t.Error("has_master missing from list DTO")
+	} else if hm != false {
+		t.Errorf("has_master = %v, want false for a not-yet-uploaded episode", hm)
+	}
+}
+
+// TestEpisodeDTOHasMaster asserts has_master tracks whether the master upload
+// landed: false while the row is a bare 'uploaded' orphan, true once the master
+// key is recorded — driving the Library's "awaiting upload" vs "queued" split.
+func TestEpisodeDTOHasMaster(t *testing.T) {
+	base := EpisodeRow{Status: "uploaded"}
+	if got := episodeDTOFrom(base); got.HasMaster {
+		t.Error("has_master = true for a row with no master key, want false")
+	}
+	base.MasterKey = "org_x/ep_y/masters/m.mp4"
+	if got := episodeDTOFrom(base); !got.HasMaster {
+		t.Error("has_master = false once the master key is set, want true")
+	}
 }
 
 func TestProxy404BeforeReady(t *testing.T) {

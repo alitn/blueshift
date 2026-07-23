@@ -104,13 +104,17 @@ type createEpisodeRequest struct {
 // episodeDTO is the neutral episode projection returned to clients: prefixed
 // public id, no internal ids, no storage key. DurationMs and SizeBytes are
 // pointers so an unknown value serializes as absent (the UI renders "—") rather
-// than a misleading zero.
+// than a misleading zero. HasMaster reports whether the master upload actually
+// landed: an episode still 'uploaded' with HasMaster=false is one whose client
+// abandoned the upload, which the Library renders honestly as "awaiting upload"
+// rather than "queued". It exposes only a boolean — never the storage key.
 type episodeDTO struct {
 	ID             string `json:"id"`
 	Title          string `json:"title"`
 	SourceFilename string `json:"source_filename"`
 	Language       string `json:"language"`
 	Status         string `json:"status"`
+	HasMaster      bool   `json:"has_master"`
 	DurationMs     *int64 `json:"duration_ms,omitempty"`
 	SizeBytes      *int64 `json:"size_bytes,omitempty"`
 	UploadedAt     string `json:"uploaded_at"`
@@ -123,6 +127,7 @@ func episodeDTOFrom(row EpisodeRow) episodeDTO {
 		SourceFilename: row.SourceFilename,
 		Language:       row.Language,
 		Status:         row.Status,
+		HasMaster:      row.MasterKey != "",
 		UploadedAt:     row.CreatedAt.UTC().Format(time.RFC3339),
 	}
 	if row.DurationMs > 0 {

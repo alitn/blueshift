@@ -1,6 +1,7 @@
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import {
   contentTypeFor,
+  displayState,
   isTerminal,
   listEpisodes,
   retryEpisode,
@@ -46,6 +47,16 @@ function mockFetch(handler: (url: string) => { ok: boolean; status?: number; bod
   );
 }
 
+describe('displayState', () => {
+  it('reports awaiting_upload only for an uploaded row with no master', () => {
+    expect(displayState({ status: 'uploaded', hasMaster: false })).toBe('awaiting_upload');
+    expect(displayState({ status: 'uploaded', hasMaster: true })).toBe('uploaded');
+    expect(displayState({ status: 'processing', hasMaster: false })).toBe('processing');
+    expect(displayState({ status: 'ready', hasMaster: true })).toBe('ready');
+    expect(displayState({ status: 'failed', hasMaster: true })).toBe('failed');
+  });
+});
+
 describe('listEpisodes', () => {
   it('maps the snake_case DTO to the camelCase Episode', async () => {
     mockFetch(() => ({
@@ -58,6 +69,7 @@ describe('listEpisodes', () => {
             source_filename: 'a.mp4',
             language: 'fa',
             status: 'ready',
+            has_master: true,
             duration_ms: 1000,
             size_bytes: 2048,
             uploaded_at: '2026-07-01T00:00:00Z'
@@ -72,6 +84,7 @@ describe('listEpisodes', () => {
       sourceFilename: 'a.mp4',
       language: 'fa',
       status: 'ready',
+      hasMaster: true,
       durationMs: 1000,
       sizeBytes: 2048,
       uploadedAt: '2026-07-01T00:00:00Z'

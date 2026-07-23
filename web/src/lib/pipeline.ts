@@ -5,7 +5,7 @@
  * token classes, resolved by DESIGN.md's pipeline-step spec:
  *   done -> step-done · active -> accent · pending -> border-default · failed -> danger
  */
-import type { EpisodeStatus } from './episodes';
+import type { DisplayState } from './episodes';
 
 export type StepState = 'done' | 'active' | 'pending' | 'failed';
 export type LabelTone = 'ok' | 'accent' | 'danger' | 'muted';
@@ -21,9 +21,13 @@ const A: StepState = 'active';
 const P: StepState = 'pending';
 const F: StepState = 'failed';
 
-/** pipelineView maps an episode status to its five bars, stage label, and tone. */
-export function pipelineView(status: EpisodeStatus): PipelineView {
-  switch (status) {
+/** pipelineView maps a display state to its five bars, stage label, and tone. */
+export function pipelineView(state: DisplayState): PipelineView {
+  switch (state) {
+    case 'awaiting_upload':
+      // Upload never completed: step 1 (upload) is still pending, not done, so
+      // the row reads honestly as awaiting the master rather than queued.
+      return { steps: [P, P, P, P, P], label: 'AWAITING UPLOAD', tone: 'muted' };
     case 'uploaded':
       return { steps: [D, P, P, P, P], label: 'QUEUED', tone: 'muted' };
     case 'processing':

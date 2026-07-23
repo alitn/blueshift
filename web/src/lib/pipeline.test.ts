@@ -9,6 +9,13 @@ import {
 } from './pipeline';
 
 describe('pipelineView (M0 status -> 5 bars)', () => {
+  it('awaiting_upload = all pending + AWAITING UPLOAD (upload step 1 not done)', () => {
+    const v = pipelineView('awaiting_upload');
+    expect(v.steps).toEqual(['pending', 'pending', 'pending', 'pending', 'pending']);
+    expect(v.label).toBe('AWAITING UPLOAD');
+    expect(v.tone).toBe('muted');
+  });
+
   it('uploaded = 1 done + QUEUED', () => {
     const v = pipelineView('uploaded');
     expect(v.steps).toEqual(['done', 'pending', 'pending', 'pending', 'pending']);

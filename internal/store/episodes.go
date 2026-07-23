@@ -6,6 +6,7 @@ import (
 	"errors"
 	"fmt"
 	"strings"
+	"time"
 
 	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgtype"
@@ -68,6 +69,26 @@ func (s *Store) DeleteOrphanEpisode(ctx context.Context, orgPublicID, episodePub
 		return fmt.Errorf("store: delete orphan episode: %w", err)
 	}
 	return nil
+}
+
+// SweepAbandonedEpisodes hard-deletes abandoned uploads across ALL orgs: rows a
+// create left at 'uploaded' with no master key whose client never completed the
+// PUT, older than ttl. This is a system-level maintenance sweep (not a tenant
+// action), so it is deliberately NOT org-scoped — the narrow orphan gate
+// (status 'uploaded', no master key) plus the age floor, enforced in SQL, is
+// what keeps it from ever removing a live or advanced episode. It returns the
+// number of rows removed so the caller can log a non-zero sweep. This method
+// shadows the promoted db.Queries.SweepAbandonedEpisodes, adapting the TTL from
+// a Go duration to the interval the query expects.
+func (s *Store) SweepAbandonedEpisodes(ctx context.Context, ttl time.Duration) (int64, error) {
+	n, err := s.Queries.SweepAbandonedEpisodes(ctx, pgtype.Interval{
+		Microseconds: ttl.Microseconds(),
+		Valid:        true,
+	})
+	if err != nil {
+		return 0, fmt.Errorf("store: sweep abandoned episodes: %w", err)
+	}
+	return n, nil
 }
 
 // GetEpisode fetches an org-scoped episode by its public id. A malformed id or a

@@ -237,6 +237,52 @@ func TestLoadWorkerInvalid(t *testing.T) {
 	}
 }
 
+func TestLoadSweepDefaults(t *testing.T) {
+	cfg, err := load(env(nil))
+	if err != nil {
+		t.Fatalf("load: %v", err)
+	}
+	if cfg.SweepInterval != defaultSweepInterval {
+		t.Errorf("SweepInterval = %v, want %v", cfg.SweepInterval, defaultSweepInterval)
+	}
+	if cfg.UploadTTL != defaultUploadTTL {
+		t.Errorf("UploadTTL = %v, want %v", cfg.UploadTTL, defaultUploadTTL)
+	}
+}
+
+func TestLoadSweepOverrides(t *testing.T) {
+	cfg, err := load(env(map[string]string{
+		"SWEEP_INTERVAL": "2s",
+		"UPLOAD_TTL":     "1s",
+	}))
+	if err != nil {
+		t.Fatalf("load: %v", err)
+	}
+	if cfg.SweepInterval != 2*time.Second {
+		t.Errorf("SweepInterval = %v, want 2s", cfg.SweepInterval)
+	}
+	if cfg.UploadTTL != time.Second {
+		t.Errorf("UploadTTL = %v, want 1s", cfg.UploadTTL)
+	}
+}
+
+func TestLoadSweepInvalid(t *testing.T) {
+	cases := map[string]map[string]string{
+		"bad sweep interval":     {"SWEEP_INTERVAL": "often"},
+		"nonpositive interval":   {"SWEEP_INTERVAL": "0s"},
+		"negative interval":      {"SWEEP_INTERVAL": "-1h"},
+		"bad upload ttl":         {"UPLOAD_TTL": "forever"},
+		"nonpositive upload ttl": {"UPLOAD_TTL": "0s"},
+	}
+	for name, m := range cases {
+		t.Run(name, func(t *testing.T) {
+			if _, err := load(env(m)); err == nil {
+				t.Fatalf("load(%v): expected error, got nil", m)
+			}
+		})
+	}
+}
+
 func TestParseLevel(t *testing.T) {
 	cases := map[string]slog.Level{
 		"debug":   slog.LevelDebug,

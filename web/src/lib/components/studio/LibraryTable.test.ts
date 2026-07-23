@@ -13,6 +13,9 @@ function ep(id: string, status: Episode['status'], title: string): Episode {
     sourceFilename: `${id}_master.mp4`,
     language: 'fa',
     status,
+    // A row that reached 'uploaded' or beyond in these fixtures has a master;
+    // the abandoned-upload case is constructed explicitly in its own test.
+    hasMaster: true,
     durationMs: status === 'ready' ? 2468000 : undefined,
     sizeBytes: 6_100_000_000,
     uploadedAt: '2026-07-21T00:00:00Z'
@@ -35,6 +38,20 @@ describe('LibraryTable status -> pipeline mapping', () => {
     expect(screen.getByText('INGEST…')).toBeInTheDocument();
     expect(screen.getByText('READY')).toBeInTheDocument();
     expect(screen.getByText('FAILED — INGEST')).toBeInTheDocument();
+  });
+
+  it('an uploaded row whose master never landed reads AWAITING UPLOAD, not QUEUED', () => {
+    const abandoned: Episode = { ...ep('EP-AB', 'uploaded', 'رها شده'), hasMaster: false };
+    render(LibraryTable, {
+      props: { episodes: [abandoned], onOpen: vi.fn(), onRetry: vi.fn() }
+    });
+    expect(screen.getByText('AWAITING UPLOAD')).toBeInTheDocument();
+    expect(screen.queryByText('QUEUED')).not.toBeInTheDocument();
+    // It is not openable and exposes no RETRY (still a plain 'uploaded' row).
+    const row = screen.getByTestId('episode-row');
+    expect(row.getAttribute('role')).toBeNull();
+    expect(within(row).queryByText('RETRY')).not.toBeInTheDocument();
+    expect(within(row).queryByText('OPEN')).not.toBeInTheDocument();
   });
 
   it('only Ready rows are keyboard-openable; Failed rows expose RETRY', () => {

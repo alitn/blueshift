@@ -3,7 +3,15 @@ import { applyFilter, counts } from './filter';
 import type { Episode } from '$lib/episodes';
 
 function ep(id: string, status: Episode['status'], title: string, file: string): Episode {
-  return { id, title, sourceFilename: file, language: 'fa', status, uploadedAt: '2026-07-01T00:00:00Z' };
+  return {
+    id,
+    title,
+    sourceFilename: file,
+    language: 'fa',
+    status,
+    hasMaster: status !== 'uploaded',
+    uploadedAt: '2026-07-01T00:00:00Z'
+  };
 }
 
 const list: Episode[] = [

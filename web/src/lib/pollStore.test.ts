@@ -10,6 +10,7 @@ function ep(id: string, status: Episode['status']): Episode {
     sourceFilename: 'f.mp4',
     language: 'fa',
     status,
+    hasMaster: status !== 'uploaded',
     uploadedAt: '2026-07-01T00:00:00Z'
   };
 }
