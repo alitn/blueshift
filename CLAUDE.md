@@ -73,6 +73,13 @@ Hierarchy: **Org → Show → Episode → Moment → Clip**. There is no "projec
 
 **Occam with teeth:** no new dependency, service, or abstraction without a human-approved ADR.
 
+**Research before solving (human-directed 2026-07-23).** For any non-trivial problem —
+especially anything touching an external system, provider API, protocol, or unfamiliar
+domain — do extensive online research first (official docs, issue trackers, community
+patterns) before diagnosing, speccing, or designing. Never guess; never invent a custom
+protocol or mechanism where a documented one exists. Specs and ADRs for such work cite
+the sources they are based on.
+
 **No personal data in the repo — ever.** Real names, personal emails, or any other personal data of the human (or anyone else) must never appear in code, migrations, seeds, tests, fixtures, docs, or commits. Dev/demo identities are generic (`dev-approver@blueshift.local`, `dev-editor@blueshift.local`, display names "Dev Approver"/"Dev Editor"). Production users are created manually per `docs/RUNBOOK.md` — values supplied at run time, never committed.
 
 **Never touch the human's running processes.** Agents must never kill, restart, or reuse the human's applications (browsers especially). Headless captures use an isolated browser instance with a dedicated temporary `--user-data-dir`, and terminate only the PID they spawned. Prefer the Playwright-bundled Chromium once the harness exists.

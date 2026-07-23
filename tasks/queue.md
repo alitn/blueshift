@@ -45,9 +45,51 @@ spec file `tasks/<slug>.md` = one Implementer dispatch = one Reviewer verdict = 
 | m0-upload-protocol | server-initiated upload session (AC1 blocker) | committed | tasks/m0-upload-protocol.md |
 | m0-cors-both-origins | both run.app CORS origins + PUBLIC_BASE_URL env | spec-ready | tasks/m0-cors-both-origins.md |
 
+## M1 — the demo that sells (decomposed 2026-07-23; human pre-authorized proceeding)
+
+Order is dependency-driven; each ≤1 day; every task through the full loop. Additive-only
+migrations land inside the feature task that needs them. Per the research-first standing
+rule, every task touching an external system or unfamiliar domain includes researched,
+cited patterns in its spec. "Staging" in SPEC-M1's gate = the PoC prod service
+(single-project mode, docs/ENVIRONMENTS.md).
+
+| # | slug | scope kernel | status |
+|---|------|--------------|--------|
+| 1 | m1-lang-registry | /internal/lang registry + lang/fa normalization (ZWNJ, yeh/kaf, digits) + make eval scaffold | committed |
+| 2 | m1-llm-interface | /internal/llm: schema-validated calls, retry, llm_calls audit, two engine impls, record/replay | committed |
+| 2b | m1-pipeline-robustness | AC1 BLOCKER: worker 4vCPU/4h timeout, SIGTERM→failed, stale-claim sweeper | committed |
+| 3 | m1-asr-interface | /internal/asr engine interface (words+timestamps, glossary biasing), neutral labels, fixtures | queued |
+| 4 | m1-asr-impl | chirp_2@asia-southeast1 (fa word-timestamps live-verified); 20-min batch-cap experiment in-task | spec-ready |
+| 5 | m1-transcribe-stage | worker stage: audio → segments+words rows + per-segment embeddings (migration: segments) | queued |
+| 6 | m1-diarize-stage | text-anchored LLM diarization, anchor-merge + golden stability tests in make eval | queued |
+| 7 | m1-speaker-naming | naming evidence (intro quote + lower-third crop), speaker_directory merge (migration: speakers) | queued |
+| 8 | m1-shots-stage | scdet shot boundaries + per-shot 9:16 bbox proposals stored (migration: shots) | queued |
+| 9 | m1-moments-stage | LLM moment candidates (span+word offsets), ranking, rationale + verbatim quote (migration: moments) | queued |
+| 10 | m1-segments-api | transcript/moments/speakers endpoints, org-scoped, neutral DTOs | queued |
+| 11 | m1-transcript-ui | transcript pane: RTL, ZWNJ-preserving DOM, tokens, axe | queued |
+| 12 | m1-moment-rail | ranked cards; Approve-as-is/Adjust/Dismiss; single-key approve; audit events | queued |
+| 13 | m1-editor-trim | sentence-selection trim on segment/word data; J/K/L transport | queued |
+| 14 | m1-editor-filmstrip | ±3s filmstrip at cut points; flash-frame warning from shots | queued |
+| 15 | m1-caption-preview | live Persian caption preview (RTL, ZWNJ, token-styled) | queued |
+| 16 | m1-reframe | per-shot 9:16 preview from stored bboxes; editable crop offset | queued |
+| 17 | m1-fidelity-checker | caption == ASR words byte-for-byte post-normalization; blocks approval (server + UI); seeded mismatches in eval | queued |
+| 18 | m1-render-stage | ffmpeg cut/crop/libass burn; .ass byte-identical goldens; fidelity-gated ready (migration: clips) | queued |
+| 19 | m1-render-drawer | Reels + Telegram presets (config rows); progress; scoped signed download | queued |
+| 20 | m1-corrections | segment edit rewrites words + correction_log (PG18 OLD/NEW RETURNING); glossary suggestions recorded | queued |
+| 21 | m1-first-run-seed | pre-processed sample episode fixture on first login | queued |
+| 22 | m1-demo-hardening | docs/DEMO.md end-to-end <15 min, zero live-processing waits | queued |
+
 ## Backlog
 
-M1 decomposition happens after the M0 gate (see docs/SPEC-M1.md §Task decomposition).
+- Flaky test (pre-existing, Reviewer-flagged 2026-07-23): internal/pipeline
+  trigger_test.go TestExecTriggerSpawnsBinary — async child-process poll with 3s
+  deadline flaked once under load, passed 3/3 rerun. Harden the poll or extend deadline.
+- Test hygiene: DB-backed Go tests leaked 38 rows into the shared dev DB (titles
+  Orphan/Sweep/Ingest/Smoke Episode; purged operationally 2026-07-23). Tests must run in
+  rolled-back transactions, a dedicated scratch database, or clean up on exit.
+- Revert WATCH_MINUTES to 5–10 when real users exist.
+- M2+: processing-stuck reaper, LISTEN/NOTIFY status push, updated_at trigger, remote
+  staging e2e, self-hosted CI runner if GitHub minutes bite.
 
 ## Log
 
@@ -171,3 +213,24 @@ M1 decomposition happens after the M0 gate (see docs/SPEC-M1.md §Task decomposi
   mock-vs-real contract gap that let this pass demo/e2e/curl smoke.
   m0-abandoned-uploads committed (a04722b): sweep gate race-safe vs concurrent
   master-key set; AWAITING UPLOAD chip; APPROVE first pass, no findings.
+- 2026-07-23 — Human's first successful prod upload exposed the stuck-processing
+  incident: worker Job was 1 vCPU/512Mi with 1h per-attempt timeout; a 44-min master
+  was SIGKILLed mid-ffmpeg; the retry attempt no-op'd on the standing claim and exited 0
+  (execution "succeeded", episode stuck, retry API rejects non-failed). Fixed through
+  the loop (m1-pipeline-robustness): 4 vCPU/2Gi/4h per-attempt, SIGTERM → detached
+  bounded MarkFailed (context.WithoutCancel, 5s, inside the 10s grace), additive
+  episodes.claimed_at with atomic claim+stamp, stale-claim sub-sweep (PROCESSING_TTL 5h;
+  NULL claimed_at = legacy stuck row → auto-unsticks the two prod episodes post-deploy).
+  Human directive recorded permanently (memory + CLAUDE.md standing rule): research
+  online before solving — never guess, never reinvent solved wheels.
+- 2026-07-23 — ASR engine decision de-risked empirically before spec: chirp_3 REJECTED
+  (no word timestamps at all; fa preview-only). chirp_2 fa-IR is served only from
+  asia-southeast1; Architect ran a live sync recognize on real Persian broadcast audio:
+  full transcript + 82 words with sane monotonic start/end offsets. m1-asr-impl specced
+  with the remaining unknown (possible 20-min batch cap with word timestamps) as a
+  mandatory in-task experiment with a chunk-and-stitch fallback design.
+- 2026-07-23 — M1 wave 1: m1-lang-registry committed (ccb00dd; 1 review cycle — citation
+  + fixture-note findings fixed; UCD data embedded and independently verified).
+  m1-llm-interface committed (2748508; APPROVE first pass; Claude structured outputs
+  verified GA as output_config.format, no beta header; llm_calls gains additive status
+  column, migration 0004). Dev DB purged of 38 test-residue rows (operational).
