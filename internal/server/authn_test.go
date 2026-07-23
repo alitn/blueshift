@@ -6,6 +6,7 @@ import (
 	"testing"
 	"time"
 
+	"blueshift/internal/api"
 	"blueshift/internal/auth"
 )
 
@@ -60,6 +61,33 @@ func TestAuthGateLoginIsPublic(t *testing.T) {
 	gate.ServeHTTP(rec, req)
 	if !reached {
 		t.Fatal("POST login did not pass through the gate unauthenticated")
+	}
+}
+
+func TestAuthGateClientErrorsIsPublic(t *testing.T) {
+	codec := auth.NewCodec("k")
+	reached := false
+	next := http.HandlerFunc(func(http.ResponseWriter, *http.Request) { reached = true })
+	gate := AuthGate(codec, discardLogger(), next)
+
+	req := httptest.NewRequest(http.MethodPost, api.ClientErrorsPath, nil)
+	rec := httptest.NewRecorder()
+	gate.ServeHTTP(rec, req)
+	if !reached {
+		t.Fatal("POST client-errors did not pass through the gate unauthenticated")
+	}
+}
+
+func TestAuthGateClientErrorsGetStillGated(t *testing.T) {
+	// Only POST is whitelisted; a GET to the same path must still be denied.
+	codec := auth.NewCodec("k")
+	gate := AuthGate(codec, discardLogger(), echoPrincipal())
+
+	req := httptest.NewRequest(http.MethodGet, api.ClientErrorsPath, nil)
+	rec := httptest.NewRecorder()
+	gate.ServeHTTP(rec, req)
+	if rec.Code != http.StatusUnauthorized {
+		t.Fatalf("GET client-errors -> %d, want 401 (only POST is public)", rec.Code)
 	}
 }
 

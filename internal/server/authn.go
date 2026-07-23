@@ -4,19 +4,30 @@ import (
 	"log/slog"
 	"net/http"
 
+	"blueshift/internal/api"
 	"blueshift/internal/auth"
 )
 
+// publicPost holds the POST paths that bypass authentication: login (errors on
+// the way in matter) and client-error reporting (which must work on /login too,
+// before any session exists). Everything else under /api is deny-by-default.
+var publicPost = map[string]struct{}{
+	auth.LoginPath:       {},
+	api.ClientErrorsPath: {},
+}
+
 // AuthGate is the deny-by-default authn middleware for the /api subtree. It
-// wraps the api handler: POST /api/auth/login passes through unauthenticated;
+// wraps the api handler: the publicPost paths pass through unauthenticated;
 // every other request must carry a valid session cookie or gets a 401 JSON
 // (never a redirect — the SPA decides where to send the user). On success the
 // resolved Principal is placed in the request context for downstream handlers.
 func AuthGate(codec *auth.Codec, logger *slog.Logger, next http.Handler) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		if r.Method == http.MethodPost && r.URL.Path == auth.LoginPath {
-			next.ServeHTTP(w, r)
-			return
+		if r.Method == http.MethodPost {
+			if _, ok := publicPost[r.URL.Path]; ok {
+				next.ServeHTTP(w, r)
+				return
+			}
 		}
 
 		c, err := r.Cookie(auth.CookieName)

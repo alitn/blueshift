@@ -57,8 +57,9 @@ type StageTrigger interface {
 
 // handler holds resolved dependencies for the auth endpoints.
 type handler struct {
-	deps    Deps
-	limiter *rateLimiter
+	deps             Deps
+	limiter          *rateLimiter
+	clientErrLimiter *rateLimiter
 }
 
 // NewRouter builds the /api mux with the auth routes registered. The returned
@@ -76,13 +77,16 @@ func NewRouter(d Deps) http.Handler {
 		d.RatePerMin = 5
 	}
 	h := &handler{
-		deps:    d,
-		limiter: newRateLimiter(float64(d.RatePerMin), time.Minute, d.Now),
+		deps:             d,
+		limiter:          newRateLimiter(float64(d.RatePerMin), time.Minute, d.Now),
+		clientErrLimiter: newClientErrLimiter(d.Now),
 	}
 	mux := http.NewServeMux()
 	mux.HandleFunc("POST "+auth.LoginPath, h.login)
 	mux.HandleFunc("POST "+auth.LogoutPath, h.logout)
 	mux.HandleFunc("GET "+auth.MePath, h.me)
+	// Public observability endpoint (whitelisted alongside login by the gate).
+	mux.HandleFunc("POST "+ClientErrorsPath, h.clientError)
 	if d.Episodes != nil && d.Blob != nil {
 		mux.HandleFunc("GET /api/episodes", h.listEpisodes)
 		mux.HandleFunc("POST /api/episodes", h.createEpisode)

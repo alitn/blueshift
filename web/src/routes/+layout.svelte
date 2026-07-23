@@ -7,8 +7,13 @@
   import AppShell from '$lib/components/studio/AppShell.svelte';
   import { Toaster } from '$lib/components/ui/toast';
   import { ensureSession, postLogout } from '$lib/auth';
+  import { registerErrorReporting } from '$lib/errorReporter';
 
   let { children }: { children?: Snippet } = $props();
+
+  // Forward uncaught errors to our own API (Cloud Logging). Registered once,
+  // for every route including /login, and torn down when the app unmounts.
+  onMount(() => registerErrorReporting());
 
   // The login route renders bare (no app chrome, no guard). Every other route
   // is gated: the shell calls /api/auth/me on mount and redirects to /login on
