@@ -1,5 +1,18 @@
 # Task queue
 
+> **RESUME HERE (2026-07-23 night).** Milestone: M1 pipeline build-out. **Done + live in
+> prod:** M0 gate closed (AC1 verified by real upload); M1 foundations committed —
+> lang-registry, llm-interface, asr-interface+impl, stage-machine, transcribe-stage (code
+> present but PARKED), ingest-fastpath, test-hygiene, tool-pinning, e2e-gates-trunk.
+> **A regression was found + fixed:** transcribe shipped without prod ASR config and broke
+> uploads + e2e → mitigated by `m1-stages-config-gate` (PIPELINE_STAGES default ingest-only;
+> prod re-verified green). **BLOCKED ON HUMAN:** `m1-transcribe-reenable` needs a decision
+> on running paid Cloud Speech in prod before transcription turns back on. **NEXT (no human
+> needed):** dispatch `m1-diarize-stage` (spec TBD) and the rest of the M1 chain
+> (speaker-naming → shots → moments → API → studio UI → fidelity → render). To resume: read
+> this block + the `## Log` (newest entries at bottom of the log section), then continue the
+> loop. HEAD should be at/after commit `6199a02`.
+
 Single source of truth for task state. Only the Architect edits this file. One task = one
 spec file `tasks/<slug>.md` = one Implementer dispatch = one Reviewer verdict = one commit.
 
@@ -67,7 +80,7 @@ cited patterns in its spec. "Staging" in SPEC-M1's gate = the PoC prod service
 | 5 | m1-transcribe-stage | worker stage: audio → verbatim word-timed segments (migration 0007) | committed |
 | 5b | m1-tool-pinning | pin migrate CLI via `go run -tags postgres` (go tool infeasible) | committed |
 | 5c | m1-stages-config-gate | REGRESSION MITIGATION: PIPELINE_STAGES config, default ingest-only; prod-verified fixed | committed |
-| 5d | m1-e2e-gates-trunk | Playwright e2e gates push-to-main rollout, fail-closed (process fix) | spec-ready (next) |
+| 5d | m1-e2e-gates-trunk | Playwright e2e gates push-to-main rollout, fail-closed (process fix) | committed |
 | 5e | m1-transcribe-reenable | re-enable transcribe: demo env fix + two-stage e2e + (gated) prod ASR | spec-ready (human-gated) |
 | 6 | m1-diarize-stage | text-anchored LLM diarization, anchor-merge + golden stability tests in make eval | queued |
 | 7 | m1-speaker-naming | naming evidence (intro quote + lower-third crop), speaker_directory merge (migration: speakers) | queued |
