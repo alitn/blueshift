@@ -62,7 +62,8 @@ cited patterns in its spec. "Staging" in SPEC-M1's gate = the PoC prod service
 | 4 | m1-asr-impl | batch speech engine, chunk-stitch, gated live smoke; region us-central1 (live-verified) | committed |
 | 4b | m1-pipeline-bars-fix | pipeline bars per-stage truth (human-found; design-faithful two greys) | committed |
 | 4c | m1-ingest-fastpath | probe→remux fastpath (compatible masters ingest in seconds) | committed |
-| 4d | m1-test-hygiene | scratch-DB isolation for DB tests; residue-tolerant asserts | spec-ready |
+| 4d | m1-test-hygiene | scratch-DB isolation for DB tests; residue-tolerant asserts | committed |
+| 5a | m1-stage-machine | multi-stage worker: current_stage, registry, auto-advance chaining | spec-ready (next) |
 | 5 | m1-transcribe-stage | worker stage: audio → segments+words rows + per-segment embeddings (migration: segments) | queued |
 | 6 | m1-diarize-stage | text-anchored LLM diarization, anchor-merge + golden stability tests in make eval | queued |
 | 7 | m1-speaker-naming | naming evidence (intro quote + lower-third crop), speaker_directory merge (migration: speakers) | queued |
@@ -243,7 +244,14 @@ cited patterns in its spec. "Staging" in SPEC-M1's gate = the PoC prod service
   m1-test-hygiene specced (per-run scratch DB + tolerant asserts). Human directives:
   probe-first ingest fastpath (remux compatible masters in seconds; veryfast preset for
   transcodes) specced as m1-ingest-fastpath.
-- 2026-07-23 — ASR engine decision de-risked empirically before spec: chirp_3 REJECTED
+- 2026-07-23 (evening) — Fastpath wave deployed green (rollout of 40fdb42+2e857e8+8127b0b
+  +81bbc1d): compatible masters now remux in seconds (the human's 170MB/44-min file
+  class); pipeline bars honest per design. Visual baselines: 2 library PNGs regenerated
+  via the baselines workflow under explicit Architect authorization and committed by the
+  Architect (login PNGs verified byte-identical). m1-test-hygiene committed (d343e53;
+  APPROVE first pass; per-run scratch DBs, dirty-server proof) — DB tests can no longer
+  litter or read the named database; final residue purge performed (34 rows, the last
+  one needed). Next: m1-stage-machine → m1-transcribe-stage (specs written).
   (no word timestamps at all; fa preview-only). chirp_2 fa-IR is served only from
   asia-southeast1; Architect ran a live sync recognize on real Persian broadcast audio:
   full transcript + 82 words with sane monotonic start/end offsets. m1-asr-impl specced
