@@ -68,10 +68,22 @@ jobs:
           sudo mv migrate /usr/local/bin/migrate
           migrate -version
 
+      # Pinned to the exact version we run locally (`golangci-lint version` =>
+      # 2.12.2) so CI lints identically to dev. We do NOT use
+      # golangci/golangci-lint-action: it always runs `golangci-lint run`, but
+      # the make check step below already invokes it — that is the single source
+      # of lint truth (CLAUDE.md), and it also runs locally. The action would
+      # double-lint. So we install-only via the official installer, pinned:
+      # fetch install.sh from the v2.12.2 tag (its baked-in checksums match that
+      # release) AND request v2.12.2 explicitly. The prior `master` + unpinned
+      # latest drifted — a mid-release binary bump broke hash_sha256_verify and
+      # reddened every PR. Pinning both makes the checksum deterministic. The
+      # binary lands on GOPATH/bin, added to PATH so `make check`'s
+      # `command -v golangci-lint` guard finds it.
       - name: Install golangci-lint
         run: |
           if [ -f go.mod ]; then
-            curl -sSfL https://raw.githubusercontent.com/golangci/golangci-lint/master/install.sh | sh -s -- -b "$(go env GOPATH)/bin"
+            curl -sSfL https://raw.githubusercontent.com/golangci/golangci-lint/v2.12.2/install.sh | sh -s -- -b "$(go env GOPATH)/bin" v2.12.2
             echo "$(go env GOPATH)/bin" >> "$GITHUB_PATH"
           fi
 
