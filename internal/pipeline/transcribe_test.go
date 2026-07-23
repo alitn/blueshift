@@ -18,6 +18,14 @@ import (
 	_ "blueshift/internal/lang/fa"
 )
 
+// twoStageActive returns the [ingest, transcribe] active chain the transcribe
+// stage tests run under. Transcribe is registered but out of the default
+// (ingest-only) active chain, so these tests activate it explicitly; transcribe
+// is the chain's terminal stage, claimed as a continuation from ingest.
+func twoStageActive() []stageDef {
+	return mustResolveActiveStages([]Stage{StageIngest, StageTranscribe})
+}
+
 // --- transcribe test doubles -------------------------------------------------
 
 // fakeASR returns a fixed engine (or a scripted error) regardless of language, so
@@ -141,6 +149,10 @@ func TestTranscribeSingleChunkVerbatim(t *testing.T) {
 		Config:   Config{Retries: 2},
 		ASR:      fakeASR{engine: engine},
 		Segments: segs,
+		// Transcribe is out of the default (ingest-only) active chain now, so wire
+		// the [ingest, transcribe] chain explicitly — transcribe is its terminal
+		// stage, claimed as a continuation from processing-at-ingest.
+		stages: twoStageActive(),
 	}
 
 	if err := r.Run(context.Background(), epA, "transcribe"); err != nil {
@@ -218,6 +230,10 @@ func TestTranscribeMultiChunkOffsets(t *testing.T) {
 		Config:   Config{Retries: 2, TranscribeChunkMs: 1000},
 		ASR:      fakeASR{engine: engine},
 		Segments: segs,
+		// Transcribe is out of the default (ingest-only) active chain now, so wire
+		// the [ingest, transcribe] chain explicitly — transcribe is its terminal
+		// stage, claimed as a continuation from processing-at-ingest.
+		stages: twoStageActive(),
 	}
 
 	if err := r.Run(context.Background(), epA, "transcribe"); err != nil {
@@ -270,6 +286,10 @@ func TestTranscribeEngineFailureMarksFailedNeutral(t *testing.T) {
 		Config:   Config{Retries: 2},
 		ASR:      fakeASR{engine: engine},
 		Segments: segs,
+		// Transcribe is out of the default (ingest-only) active chain now, so wire
+		// the [ingest, transcribe] chain explicitly — transcribe is its terminal
+		// stage, claimed as a continuation from processing-at-ingest.
+		stages: twoStageActive(),
 	}
 
 	err := r.Run(context.Background(), epA, "transcribe")
@@ -309,6 +329,7 @@ func TestTranscribeNoDurationFails(t *testing.T) {
 		Config:   Config{Retries: 2},
 		ASR:      fakeASR{engine: scriptedEngine{label: "bs-asr-1", byKey: map[string]asr.Transcript{}}},
 		Segments: segs,
+		stages:   twoStageActive(),
 	}
 	if err := r.Run(context.Background(), epA, "transcribe"); !errors.Is(err, ErrStageFailed) {
 		t.Fatalf("Run err = %v, want ErrStageFailed (no measured duration)", err)

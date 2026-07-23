@@ -24,23 +24,27 @@ import (
 
 // Stage names a unit of pipeline work. The M1 pipeline is ingest -> transcribe
 // -> diarize -> moments -> render; these constants name the whole set (they match
-// the episodes.current_stage CHECK and the Library's five bars). Only the stages
-// registered in defaultStages are actually *runnable* by the worker — M1 wires
-// ingest then transcribe; the rest register as they land. Stage names are neutral
-// product terms, never provider names.
+// the episodes.current_stage CHECK and the Library's five bars). A stage is
+// *runnable* once it is in the stage registry (stageRegistry) — M1 registers
+// ingest and transcribe; the rest register as they land. Which registered stages
+// actually run, and in what order, is the config-driven *active chain*
+// (PIPELINE_STAGES, default ingest-only — see defaultActiveStages). Stage names
+// are neutral product terms, never provider names.
 type Stage string
 
 const (
 	// StageIngest extracts audio and renders a browser proxy from the master.
 	StageIngest Stage = "ingest"
 	// StageTranscribe turns the ingest audio into word-timed transcript segments
-	// (internal/asr). It is registered after ingest, so ingest auto-advances into
-	// it and transcribe is the terminal stage in this M1-partial pipeline.
+	// (internal/asr). It is registered (runnable) but joins the active chain only
+	// when PIPELINE_STAGES names it; under the default ingest-only chain it stays
+	// out of the chain — so a worker with no ASR config is ingest-terminal — with
+	// its code and tests intact for the moment it is re-enabled.
 	StageTranscribe Stage = "transcribe"
 	// StageDiarize, StageMoments, StageRender name the remaining downstream stages.
-	// They are declared here (and allowed by the DB CHECK) but are not yet
-	// registered in defaultStages, so the worker refuses to run them until their
-	// implementations land.
+	// They are declared here (and allowed by the DB CHECK) but are not yet in the
+	// stage registry, so the worker refuses to run them until their implementations
+	// land.
 	StageDiarize Stage = "diarize"
 	StageMoments Stage = "moments"
 	StageRender  Stage = "render"
@@ -67,27 +71,87 @@ type stageOutput struct {
 	DurationMs int64
 }
 
-// defaultStages is the ordered registry of runnable stages. M1 registers ingest
-// then transcribe: ingest is now an intermediate stage that auto-advances into
-// transcribe, and transcribe is the terminal stage whose success flips the
-// episode to 'ready' (the new M1-partial behaviour — the episode is Ready once it
-// has a proxy AND a transcript). diarize/moments/render append here (in order) as
-// they land, at which point transcribe becomes intermediate too.
-var defaultStages = []stageDef{
+// stageRegistry is the full set of runnable stages the worker knows how to
+// execute, in declaration order. Membership here makes a stage *registered* —
+// its code exists and ValidStage(name) is true — independent of whether it is in
+// the active chain. M1 registers ingest and transcribe; diarize/moments/render
+// append as they land. Which of these actually run, and in what order, is the
+// config-driven active chain (see defaultActiveStages / (*Runner).SetActiveStages).
+var stageRegistry = []stageDef{
 	{name: StageIngest, run: (*Runner).runIngest},
 	{name: StageTranscribe, run: (*Runner).runTranscribe},
 }
 
-// ValidStage reports whether s names a stage the worker can run (i.e. one
-// registered in defaultStages). cmd/worker validates its argument against this,
-// so a not-yet-implemented stage name is rejected up front.
-func ValidStage(s string) bool {
-	for _, st := range defaultStages {
-		if st.name == Stage(s) {
-			return true
+// defaultActiveStages is the active chain when PIPELINE_STAGES is unset: ingest
+// only, which makes ingest terminal (its success flips the episode to 'ready').
+// Transcribe stays registered but out of the chain until PIPELINE_STAGES names
+// it — the reversible gate that keeps a prod worker without ASR config, and the
+// offline demo/e2e upload->ready flow, ingest-terminal without deleting the
+// transcribe stage.
+var defaultActiveStages = []Stage{StageIngest}
+
+// defaultActiveDefs is the resolved default active chain, used by a Runner whose
+// active chain was not set explicitly (via SetActiveStages) — tests, and any
+// wiring that leaves PIPELINE_STAGES at its default.
+var defaultActiveDefs = mustResolveActiveStages(defaultActiveStages)
+
+// lookupRegistered finds a registered stage by name in the registry.
+func lookupRegistered(name Stage) (stageDef, bool) {
+	for _, st := range stageRegistry {
+		if st.name == name {
+			return st, true
 		}
 	}
-	return false
+	return stageDef{}, false
+}
+
+// ValidStage reports whether s names a registered stage the worker knows how to
+// run (ingest or transcribe in M1) — regardless of whether it is in the active
+// chain. cmd/worker validates its stage argument against this, so a
+// not-yet-implemented stage name is rejected up front while a
+// registered-but-inactive stage stays a legal argument.
+func ValidStage(s string) bool {
+	_, ok := lookupRegistered(Stage(s))
+	return ok
+}
+
+// resolveActiveStages validates an ordered active-stage chain (from
+// PIPELINE_STAGES) against the registry and returns the resolved, ordered defs.
+// An empty list yields the default ingest-only chain; a non-empty list must
+// start with ingest and name only registered, non-duplicate stages, or it
+// returns an error so cmd/worker can fail fast at startup rather than stall an
+// episode mid-pipeline later.
+func resolveActiveStages(names []Stage) ([]stageDef, error) {
+	if len(names) == 0 {
+		names = defaultActiveStages
+	}
+	if names[0] != StageIngest {
+		return nil, fmt.Errorf("pipeline: active stage chain must start with %q, got %q", StageIngest, names[0])
+	}
+	defs := make([]stageDef, 0, len(names))
+	seen := make(map[Stage]bool, len(names))
+	for _, n := range names {
+		if seen[n] {
+			return nil, fmt.Errorf("pipeline: duplicate stage %q in active chain", n)
+		}
+		seen[n] = true
+		def, ok := lookupRegistered(n)
+		if !ok {
+			return nil, fmt.Errorf("pipeline: unknown stage %q in active chain", n)
+		}
+		defs = append(defs, def)
+	}
+	return defs, nil
+}
+
+// mustResolveActiveStages resolves a known-good default chain at package init and
+// panics on a misconfiguration (a programming error, caught immediately).
+func mustResolveActiveStages(names []Stage) []stageDef {
+	defs, err := resolveActiveStages(names)
+	if err != nil {
+		panic(err)
+	}
+	return defs
 }
 
 // Episode is the claimed subject of a pipeline run: the identifiers needed to
@@ -267,20 +331,47 @@ type Runner struct {
 	// Segments persists an episode's transcript (idempotent, org-scoped). Only the
 	// transcribe stage consults it; nil for an ingest-only worker.
 	Segments SegmentStore
-	// stages overrides the default stage registry. Nil uses defaultStages
-	// (production). It exists so tests can register fake multi-stage pipelines to
-	// exercise auto-advance without a real downstream stage; it is never set in
-	// production wiring.
+	// stages is the runner's active stage chain (ordered). Nil falls back to the
+	// default ingest-only chain (defaultActiveDefs). cmd/worker installs the
+	// config-driven chain via SetActiveStages (PIPELINE_STAGES); tests either call
+	// SetActiveStages or inject a fake chain here directly to exercise auto-advance
+	// without a real downstream stage.
 	stages []stageDef
 }
 
-// registry returns the runner's effective, ordered stage registry: the injected
-// override for tests, else the package default.
+// registry returns the runner's effective, ordered active stage chain: the
+// injected/configured override, else the package default (ingest-only).
 func (r *Runner) registry() []stageDef {
 	if r.stages != nil {
 		return r.stages
 	}
-	return defaultStages
+	return defaultActiveDefs
+}
+
+// SetActiveStages installs the runner's ordered active stage chain from a list
+// of stage names (PIPELINE_STAGES, empty = the default ingest-only chain). It
+// validates the list against the registry — every name must be registered, the
+// chain must start with ingest, and no stage may repeat — and returns an error
+// so cmd/worker fails fast at startup on a bad list. The resolved chain drives
+// auto-advance, the continuation-claim predecessor guard, and terminal detection
+// exactly as the default does.
+func (r *Runner) SetActiveStages(names []Stage) error {
+	defs, err := resolveActiveStages(names)
+	if err != nil {
+		return err
+	}
+	r.stages = defs
+	return nil
+}
+
+// HasStage reports whether stage s is part of the runner's active chain (after
+// SetActiveStages, else the default ingest-only chain). cmd/worker uses it to
+// build only the dependencies the active chain needs — the speech engine and
+// segment store are constructed only for a chain that includes transcribe, so an
+// ingest-only worker needs no ASR configuration.
+func (r *Runner) HasStage(s Stage) bool {
+	_, _, ok := r.lookupStage(s)
+	return ok
 }
 
 // lookupStage finds a stage by name in the runner's registry, returning its
@@ -405,9 +496,10 @@ func (r *Runner) Run(ctx context.Context, episodePublicID, stage string) error {
 }
 
 // finalizeSuccess records a stage's success and drives the transition. If the
-// stage is terminal (the last registered stage — ingest today), it flips the
-// episode to 'ready' via MarkReady, exactly the M0 single-stage behaviour. If a
-// next stage is registered it is a non-terminal stage: AdvanceStage records the
+// stage is terminal (the last stage of the active chain — ingest under the
+// default ingest-only chain), it flips the episode to 'ready' via MarkReady,
+// exactly the M0 single-stage behaviour. If a next stage is in the active chain
+// it is a non-terminal stage: AdvanceStage records the
 // outputs and hands off while the episode stays 'processing', then — only when
 // Config.AutoAdvance is set — the next stage is launched via the Trigger seam.
 // Auto-advance can never loop or skip: the trigger is fired for exactly the next

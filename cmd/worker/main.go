@@ -81,11 +81,6 @@ func run(args []string) error {
 		return fmt.Errorf("worker: blob: %w", err)
 	}
 
-	asrRegistry, err := buildASRRegistry(cfg, logger)
-	if err != nil {
-		return fmt.Errorf("worker: asr: %w", err)
-	}
-
 	runner := &pipeline.Runner{
 		Repo:  st,
 		Blob:  bs,
@@ -99,13 +94,31 @@ func run(args []string) error {
 		},
 		// The worker launches the next stage on auto-advance through the same
 		// neutral trigger the API server uses (its SA already holds the runner
-		// role). Ingest now auto-advances into transcribe.
+		// role). Dormant under the default ingest-only chain (ingest is terminal);
+		// active once PIPELINE_STAGES adds a downstream stage.
 		Trigger: buildTrigger(cfg, logger),
-		// The transcribe stage resolves an episode's language to its asr engine via
-		// the lang registry declaration + the neutral label bound to the registry,
-		// and persists the transcript through the store (org-scoped, idempotent).
-		ASR:      pipeline.LangEngineResolver{Registry: asrRegistry, Label: cfg.ASREngineLabel},
-		Segments: st,
+	}
+
+	// Install the config-driven active stage chain (PIPELINE_STAGES, default
+	// ingest-only). Validate at startup so a misconfigured chain fails fast before
+	// any claim, never stalling an episode mid-pipeline.
+	if err := runner.SetActiveStages(toStages(cfg.PipelineStages)); err != nil {
+		return fmt.Errorf("worker: pipeline stages: %w", err)
+	}
+
+	// Only the transcribe stage consults the speech engine and the segment store,
+	// so build them just for a chain that includes transcribe. An ingest-only
+	// worker (the default, and a prod worker without ASR config) needs no ASR
+	// configuration and stays ingest-terminal — matching the runner's nil-ASR
+	// contract. The lang registry declaration + neutral label bind the engine to a
+	// language; the transcript persists org-scoped and idempotent.
+	if runner.HasStage(pipeline.StageTranscribe) {
+		asrRegistry, err := buildASRRegistry(cfg, logger)
+		if err != nil {
+			return fmt.Errorf("worker: asr: %w", err)
+		}
+		runner.ASR = pipeline.LangEngineResolver{Registry: asrRegistry, Label: cfg.ASREngineLabel}
+		runner.Segments = st
 	}
 
 	if err := runner.Run(ctx, episodeID, stage); err != nil {
@@ -116,6 +129,20 @@ func run(args []string) error {
 	}
 	logger.Info("worker done", "episode", episodeID, "stage", stage)
 	return nil
+}
+
+// toStages converts the configured stage-name list (PIPELINE_STAGES) to the
+// pipeline's Stage type. An empty list returns nil, leaving the runner on its
+// default ingest-only chain.
+func toStages(names []string) []pipeline.Stage {
+	if len(names) == 0 {
+		return nil
+	}
+	out := make([]pipeline.Stage, len(names))
+	for i, n := range names {
+		out[i] = pipeline.Stage(n)
+	}
+	return out
 }
 
 // shutdownContext returns a context cancelled on the first SIGINT or SIGTERM.

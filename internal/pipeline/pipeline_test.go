@@ -358,10 +358,10 @@ func TestIngestHappyPathRemote(t *testing.T) {
 		t.Fatalf("Run: %v", err)
 	}
 	e := repo.get(epA)
-	// Ingest is now an intermediate stage: it hands off (records outputs, stays
-	// 'processing' at ingest) rather than marking ready — transcribe is terminal.
-	if e.status != "processing" || e.stage != "ingest" {
-		t.Errorf("state = (%q,%q), want (processing,ingest) after the ingest handoff", e.status, e.stage)
+	// Under the default ingest-only active chain ingest is terminal: its success
+	// marks the episode ready with the proxy + measured duration recorded.
+	if e.status != "ready" {
+		t.Errorf("status = %q, want ready", e.status)
 	}
 	if e.durationMs != 2000 {
 		t.Errorf("duration_ms = %d, want 2000", e.durationMs)
@@ -394,8 +394,8 @@ func TestIngestHappyPathLocalDirect(t *testing.T) {
 		t.Fatalf("Run: %v", err)
 	}
 	e := repo.get(epA)
-	if e.status != "processing" || e.stage != "ingest" {
-		t.Errorf("state = (%q,%q), want (processing,ingest) after the ingest handoff", e.status, e.stage)
+	if e.status != "ready" {
+		t.Errorf("status = %q, want ready", e.status)
 	}
 	// The proxy render was written in place under the store root.
 	proxyPath := filepath.Join(blob.root, e.proxyKey)
@@ -417,8 +417,8 @@ func TestIngestRemuxPathForCompatibleMaster(t *testing.T) {
 	if err := r.Run(context.Background(), epA, "ingest"); err != nil {
 		t.Fatalf("Run: %v", err)
 	}
-	if e := repo.get(epA); e.status != "processing" || e.stage != "ingest" {
-		t.Errorf("state = (%q,%q), want (processing,ingest) after the ingest handoff", e.status, e.stage)
+	if e := repo.get(epA); e.status != "ready" {
+		t.Errorf("status = %q, want ready", e.status)
 	}
 	if got := md.remuxes.Load(); got != 1 {
 		t.Errorf("remux calls = %d, want 1 (compatible master)", got)
@@ -553,8 +553,8 @@ func TestIngestRetryThenSuccess(t *testing.T) {
 	if err := r.Run(context.Background(), epA, "ingest"); err != nil {
 		t.Fatalf("Run: %v", err)
 	}
-	if e := repo.get(epA); e.status != "processing" || e.stage != "ingest" {
-		t.Errorf("state = (%q,%q), want (processing,ingest) after retry then handoff", e.status, e.stage)
+	if e := repo.get(epA); e.status != "ready" {
+		t.Errorf("status = %q, want ready after retry", e.status)
 	}
 	if got := md.renders.Load(); got != 2 {
 		t.Errorf("render attempts = %d, want 2 (fail then success)", got)
@@ -649,8 +649,8 @@ func TestConcurrentClaimNoOp(t *testing.T) {
 	if e.claims != 1 {
 		t.Errorf("claims = %d, want exactly 1 (compare-and-set)", e.claims)
 	}
-	if e.status != "processing" || e.stage != "ingest" {
-		t.Errorf("state = (%q,%q), want (processing,ingest) — one winner hands off", e.status, e.stage)
+	if e.status != "ready" {
+		t.Errorf("status = %q, want ready", e.status)
 	}
 	if got := md.renders.Load(); got != 1 {
 		t.Errorf("render calls = %d, want 1 (stage ran once)", got)
@@ -670,8 +670,8 @@ func TestCrossOrgIsolation(t *testing.T) {
 		t.Fatalf("Run(epA): %v", err)
 	}
 	// Only org A's episode advanced; org B's identical-status episode is untouched.
-	if a := repo.get(epA); a.status != "processing" || a.stage != "ingest" {
-		t.Errorf("epA state = (%q,%q), want (processing,ingest)", a.status, a.stage)
+	if a := repo.get(epA); a.status != "ready" {
+		t.Errorf("epA status = %q, want ready", a.status)
 	}
 	if b := repo.get(epB); b.status != "uploaded" {
 		t.Errorf("epB status = %q, want uploaded (untouched)", b.status)
@@ -683,8 +683,9 @@ func TestCrossOrgIsolation(t *testing.T) {
 }
 
 func TestUnknownStageErrors(t *testing.T) {
-	// diarize is a declared Stage but not registered in defaultStages, so the worker
-	// must refuse it (transcribe is now registered and therefore a valid stage).
+	// diarize is a declared Stage but not in the stage registry, so the worker must
+	// refuse it (transcribe is registered — a valid stage — but out of the default
+	// active chain, so running it on a default runner is likewise refused).
 	r := newRunner(newFakeRepo(), newRemoteBlob(t), &fakeMedia{}, Config{})
 	if err := r.Run(context.Background(), epA, "diarize"); err == nil {
 		t.Fatal("Run with unregistered stage: want error, got nil")
@@ -758,15 +759,15 @@ func TestNotClaimableLogsWarnWithBlockingStatus(t *testing.T) {
 		Log:    slog.New(slog.NewJSONHandler(&buf, nil)),
 		Config: Config{Retries: 2}}
 
-	// First run claims and completes ingest (episode -> processing, handed off to
-	// transcribe).
+	// First run claims and completes (ingest is terminal under the default chain,
+	// so the episode -> ready).
 	if err := r.Run(context.Background(), epA, "ingest"); err != nil {
 		t.Fatalf("first Run: %v", err)
 	}
 	buf.reset()
 
-	// Second entry claim cannot take it (the episode left 'uploaded'): expect a WARN
-	// naming the blocking status.
+	// Second run cannot claim (the episode is 'ready'): expect a WARN naming the
+	// blocking status.
 	if err := r.Run(context.Background(), epA, "ingest"); err != nil {
 		t.Fatalf("second Run: %v", err)
 	}
@@ -780,8 +781,8 @@ func TestNotClaimableLogsWarnWithBlockingStatus(t *testing.T) {
 	if entry["msg"] != "episode not claimable; no-op" {
 		t.Errorf("log msg = %v", entry["msg"])
 	}
-	if entry["blocking_status"] != "processing" {
-		t.Errorf("blocking_status = %v, want processing", entry["blocking_status"])
+	if entry["blocking_status"] != "ready" {
+		t.Errorf("blocking_status = %v, want ready", entry["blocking_status"])
 	}
 }
 

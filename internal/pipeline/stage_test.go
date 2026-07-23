@@ -217,17 +217,50 @@ func TestAutoAdvanceNoTriggerConfigured(t *testing.T) {
 	}
 }
 
-// TestDefaultRegistryIsIngestThenTranscribe locks in the deployed M1-partial
-// behaviour: the real (default) registry is [ingest, transcribe], so ingest is an
-// intermediate stage that hands off and auto-advances into transcribe (rather
-// than marking ready), and transcribe is terminal. The transcribe body itself is
-// exercised by the dedicated transcribe stage test; here we assert only the
-// registry shape and the ingest handoff + trigger.
-func TestDefaultRegistryIsIngestThenTranscribe(t *testing.T) {
-	got := stageNames(defaultStages)
-	if len(defaultStages) != 2 || defaultStages[0].name != StageIngest || defaultStages[1].name != StageTranscribe {
-		t.Fatalf("defaultStages = %v, want [ingest transcribe] in M1", got)
+// TestDefaultActiveChainIsIngestOnlyTerminal locks in the reversible ingest-only
+// default: with PIPELINE_STAGES unset the active chain is just [ingest], so
+// ingest is terminal — its success marks the episode ready and fires no
+// auto-advance trigger — even though transcribe stays registered (a valid but
+// inactive stage). This is the last-known-good state the config gate restores.
+func TestDefaultActiveChainIsIngestOnlyTerminal(t *testing.T) {
+	if got := stageNames(defaultActiveDefs); len(defaultActiveDefs) != 1 || defaultActiveDefs[0].name != StageIngest {
+		t.Fatalf("defaultActiveDefs = %v, want exactly [ingest]", got)
 	}
+	// Transcribe is still registered (runnable, a valid stage argument) — it is
+	// only out of the *active* chain.
+	if !ValidStage("transcribe") {
+		t.Error("ValidStage(transcribe) = false, want true (transcribe stays registered)")
+	}
+	repo := newFakeRepo()
+	repo.add(epA, orgA, orgA+"/"+epA+"/masters/m.mp4")
+	tr := &fakeTrigger{}
+	r := &Runner{
+		Repo: repo, Blob: newRemoteBlob(t), Media: &fakeMedia{}, Log: discard(),
+		Config:  Config{Retries: 2, AutoAdvance: true}, // on, but there is no next stage
+		Trigger: tr,
+		// stages nil -> default ingest-only active chain.
+	}
+	if !r.HasStage(StageIngest) || r.HasStage(StageTranscribe) {
+		t.Errorf("default active chain HasStage(ingest)=%v HasStage(transcribe)=%v, want true/false",
+			r.HasStage(StageIngest), r.HasStage(StageTranscribe))
+	}
+	if err := r.Run(context.Background(), epA, "ingest"); err != nil {
+		t.Fatalf("Run(ingest): %v", err)
+	}
+	if e := repo.get(epA); e.status != "ready" {
+		t.Errorf("status = %q, want ready (ingest is terminal under the default chain)", e.status)
+	}
+	if len(tr.snapshot()) != 0 {
+		t.Errorf("terminal ingest fired a trigger %v, want none", tr.snapshot())
+	}
+}
+
+// TestActiveChainWithTranscribeAutoAdvances proves the gate opens the other way:
+// SetActiveStages([ingest, transcribe]) makes ingest intermediate again, so it
+// hands off (records outputs, stays 'processing') and auto-advances into
+// transcribe — the multi-stage machinery preserved, driven by the real registry
+// defs rather than the default.
+func TestActiveChainWithTranscribeAutoAdvances(t *testing.T) {
 	repo := newFakeRepo()
 	repo.add(epA, orgA, orgA+"/"+epA+"/masters/m.mp4")
 	tr := &fakeTrigger{}
@@ -235,7 +268,12 @@ func TestDefaultRegistryIsIngestThenTranscribe(t *testing.T) {
 		Repo: repo, Blob: newRemoteBlob(t), Media: &fakeMedia{}, Log: discard(),
 		Config:  Config{Retries: 2, AutoAdvance: true},
 		Trigger: tr,
-		// stages nil -> defaultStages.
+	}
+	if err := r.SetActiveStages([]Stage{StageIngest, StageTranscribe}); err != nil {
+		t.Fatalf("SetActiveStages: %v", err)
+	}
+	if !r.HasStage(StageTranscribe) {
+		t.Fatal("HasStage(transcribe) = false after activating it")
 	}
 	if err := r.Run(context.Background(), epA, "ingest"); err != nil {
 		t.Fatalf("Run(ingest): %v", err)
@@ -246,6 +284,59 @@ func TestDefaultRegistryIsIngestThenTranscribe(t *testing.T) {
 	if calls := tr.snapshot(); len(calls) != 1 || calls[0] != [2]string{epA, "transcribe"} {
 		t.Errorf("trigger calls = %v, want exactly [[%s transcribe]]", calls, epA)
 	}
+}
+
+// TestSetActiveStagesValidation covers the startup fail-fast: an empty list is
+// the default ingest-only chain; a valid multi-stage list resolves; and a list
+// that names an unregistered stage, does not start with ingest, or repeats a
+// stage is rejected so cmd/worker never boots a misconfigured chain.
+func TestSetActiveStagesValidation(t *testing.T) {
+	ok := []struct {
+		name  string
+		in    []Stage
+		chain []string
+	}{
+		{"empty -> default ingest-only", nil, []string{"ingest"}},
+		{"ingest only", []Stage{StageIngest}, []string{"ingest"}},
+		{"ingest then transcribe", []Stage{StageIngest, StageTranscribe}, []string{"ingest", "transcribe"}},
+	}
+	for _, c := range ok {
+		var r Runner
+		if err := r.SetActiveStages(c.in); err != nil {
+			t.Errorf("%s: SetActiveStages(%v) = %v, want nil", c.name, c.in, err)
+			continue
+		}
+		if got := stageNames(r.registry()); !equalStrings(got, c.chain) {
+			t.Errorf("%s: active chain = %v, want %v", c.name, got, c.chain)
+		}
+	}
+
+	bad := []struct {
+		name string
+		in   []Stage
+	}{
+		{"unregistered stage", []Stage{StageIngest, StageDiarize}},
+		{"must start with ingest", []Stage{StageTranscribe}},
+		{"duplicate stage", []Stage{StageIngest, StageTranscribe, StageTranscribe}},
+	}
+	for _, c := range bad {
+		var r Runner
+		if err := r.SetActiveStages(c.in); err == nil {
+			t.Errorf("%s: SetActiveStages(%v) = nil, want error", c.name, c.in)
+		}
+	}
+}
+
+func equalStrings(a, b []string) bool {
+	if len(a) != len(b) {
+		return false
+	}
+	for i := range a {
+		if a[i] != b[i] {
+			return false
+		}
+	}
+	return true
 }
 
 func stageNames(defs []stageDef) []string {

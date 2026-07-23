@@ -147,6 +147,17 @@ type Config struct {
 	// through to the engine verbatim.
 	ASRLanguageCodes map[string]string
 
+	// PipelineStages is the ordered active stage chain the worker runs and
+	// auto-advances through, from PIPELINE_STAGES (comma-separated). Empty (the
+	// default) means the pipeline's default chain — ingest only, which makes ingest
+	// terminal. This package only splits the list; the worker validates the names
+	// against the stage registry at startup (an unknown stage, or a chain not
+	// starting with ingest, fails fast), keeping the registry the single source of
+	// stage truth. Transcribe (and later stages) join the active chain only when
+	// named here — the reversible gate that keeps a worker without ASR config, and
+	// the offline demo/e2e flow, ingest-terminal.
+	PipelineStages []string
+
 	// PipelineAutoAdvance controls whether a worker, on a non-terminal stage's
 	// success, launches the next registered stage (via the same trigger the API
 	// server uses). Maps to PIPELINE_AUTO_ADVANCE and defaults to true. When false
@@ -447,6 +458,17 @@ func loadWorker(cfg *Config, getenv func(string) string) error {
 			return fmt.Errorf("config: INGEST_TIMEOUT must be positive, got %q", v)
 		}
 		cfg.IngestTimeout = d
+	}
+
+	// PIPELINE_STAGES is an ordered, comma-separated active stage chain. Unset (or
+	// all-empty) means the pipeline default (ingest only); the worker validates the
+	// names against the stage registry at startup.
+	if v := strings.TrimSpace(getenv("PIPELINE_STAGES")); v != "" {
+		for _, p := range strings.Split(v, ",") {
+			if s := strings.TrimSpace(p); s != "" {
+				cfg.PipelineStages = append(cfg.PipelineStages, s)
+			}
+		}
 	}
 
 	// PIPELINE_AUTO_ADVANCE defaults to true; an explicit value must be a boolean.

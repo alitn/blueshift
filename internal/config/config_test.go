@@ -261,6 +261,34 @@ func TestLoadPipelineAutoAdvance(t *testing.T) {
 	}
 }
 
+func TestLoadPipelineStages(t *testing.T) {
+	// Default: unset -> empty, meaning the pipeline's default (ingest-only) chain.
+	cfg, err := load(env(nil))
+	if err != nil {
+		t.Fatalf("load: %v", err)
+	}
+	if len(cfg.PipelineStages) != 0 {
+		t.Errorf("PipelineStages default = %v, want empty (pipeline default)", cfg.PipelineStages)
+	}
+	// Comma-separated, trimmed, empty tokens dropped.
+	cfg, err = load(env(map[string]string{"PIPELINE_STAGES": " ingest , transcribe ,"}))
+	if err != nil {
+		t.Fatalf("load: %v", err)
+	}
+	if got := cfg.PipelineStages; len(got) != 2 || got[0] != "ingest" || got[1] != "transcribe" {
+		t.Errorf("PipelineStages = %v, want [ingest transcribe]", got)
+	}
+	// All-empty tokens -> empty (pipeline default). Config only splits; the worker
+	// validates names against the stage registry at startup.
+	cfg, err = load(env(map[string]string{"PIPELINE_STAGES": " , ,"}))
+	if err != nil {
+		t.Fatalf("load: %v", err)
+	}
+	if len(cfg.PipelineStages) != 0 {
+		t.Errorf("PipelineStages = %v, want empty for an all-empty list", cfg.PipelineStages)
+	}
+}
+
 func TestLoadWorkerCloudRun(t *testing.T) {
 	cfg, err := load(env(map[string]string{
 		"WORKER_TRIGGER":     "cloudrun",
