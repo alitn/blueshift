@@ -133,3 +133,74 @@ func TestPipelineClaimFinalize(t *testing.T) {
 		t.Errorf("after MarkFailed: status=%q error_id=%q", fin.Status, fin.ErrorID.String)
 	}
 }
+
+// TestClaimStampsClaimedAt verifies the claim stamps claimed_at (the stale-claim
+// sweep's backstop signal) and the terminal finalizers clear it, so a non-NULL
+// claimed_at means exactly "a fresh claim is currently being processed".
+func TestClaimStampsClaimedAt(t *testing.T) {
+	dsn := requireDB(t)
+	applyMigrations(t, dsn)
+
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	defer cancel()
+
+	st, err := Open(ctx, dsn)
+	if err != nil {
+		t.Fatalf("Open: %v", err)
+	}
+	defer st.Close()
+	applyDevSeed(t, st, ctx)
+
+	var orgID, showID int64
+	if err := st.Pool().QueryRow(ctx, `SELECT id FROM orgs WHERE name = 'Blueshift Pilot'`).Scan(&orgID); err != nil {
+		t.Fatalf("find org: %v", err)
+	}
+	if err := st.Pool().QueryRow(ctx, `SELECT id FROM shows WHERE org_id = $1 ORDER BY id LIMIT 1`, orgID).Scan(&showID); err != nil {
+		t.Fatalf("find show: %v", err)
+	}
+	org, err := st.GetOrg(ctx, orgID)
+	if err != nil {
+		t.Fatalf("GetOrg: %v", err)
+	}
+	orgEncoded := ids.Encode(ids.Org, org.PublicID.Bytes)
+
+	ep, err := st.InsertEpisode(ctx, db.InsertEpisodeParams{
+		OrgID: orgID, ShowID: showID, Title: "Claim", SourceFilename: "m.mp4", Language: "fa",
+		MasterObjectKey: pgtype.Text{String: "k/masters/m.mp4", Valid: true},
+	})
+	if err != nil {
+		t.Fatalf("InsertEpisode: %v", err)
+	}
+	epEncoded := ids.Encode(ids.Episode, ep.PublicID.Bytes)
+
+	// Freshly created: not yet claimed.
+	if claimedAtNull(t, st, ctx, ep.PublicID) != true {
+		t.Fatal("new episode has a non-NULL claimed_at before any claim")
+	}
+
+	// Claim stamps claimed_at.
+	if _, ok, err := st.Claim(ctx, epEncoded); err != nil || !ok {
+		t.Fatalf("Claim: ok=%v err=%v", ok, err)
+	}
+	if claimedAtNull(t, st, ctx, ep.PublicID) {
+		t.Error("claimed_at is NULL after Claim; the stale-claim sweep would fail this row prematurely as a legacy claim")
+	}
+
+	// A successful finalize clears claimed_at.
+	if err := st.MarkReady(ctx, orgEncoded, epEncoded, "k/proxies/p.mp4", 2000); err != nil {
+		t.Fatalf("MarkReady: %v", err)
+	}
+	if !claimedAtNull(t, st, ctx, ep.PublicID) {
+		t.Error("claimed_at not cleared after MarkReady")
+	}
+}
+
+func claimedAtNull(t *testing.T, st *Store, ctx context.Context, pub pgtype.UUID) bool {
+	t.Helper()
+	var isNull bool
+	if err := st.Pool().QueryRow(ctx,
+		`SELECT claimed_at IS NULL FROM episodes WHERE public_id = $1`, pub).Scan(&isNull); err != nil {
+		t.Fatalf("read claimed_at: %v", err)
+	}
+	return isNull
+}

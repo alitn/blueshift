@@ -175,6 +175,18 @@ jobs:
           # Same image; ENTRYPOINT overridden to the worker. It never
           # authenticates, but config.Load() validates the auth env in a
           # prod-like ENV, so it carries the same secrets as the service.
+          #
+          # Sizing (ADR 0002 math): 4 vCPU runs x264 at ~3-4x realtime, so a 2h
+          # master ingests in ~45-75 min, well inside the 4h task-timeout with
+          # margin; cost stays ~cents at PoC volume. The 1 vCPU / 512Mi / 1h
+          # config could never ingest a real episode and caused the mid-ffmpeg
+          # SIGKILL that wedged episodes in 'processing'. --task-timeout is the
+          # per-attempt deadline (verified via `gcloud run jobs deploy --help`:
+          # "in the case of retries, this deadline applies to each attempt"; it
+          # accepts a duration string, "4h" = 4 hours, and defaults to seconds
+          # when unitless — so the prior "3600" meant 1h). --max-retries stays 2
+          # (1 + 2 = 3 attempts). On timeout Cloud Run sends SIGTERM (~10s grace)
+          # before SIGKILL; the worker traps it and marks the episode failed.
           gcloud run jobs deploy blueshift-worker \
             --image "$IMAGE:${{ github.sha }}" --region "$REGION" \
             --command /app/worker \
@@ -182,7 +194,8 @@ jobs:
             --set-cloudsql-instances "$SQL_INSTANCE" \
             --set-env-vars "ENV=prod,AUTH_MODE=identity,BLOB_MODE=gcs,GCS_BUCKET=$BUCKET" \
             --set-secrets "DATABASE_URL=database-url:latest,SESSION_SECRET=session-signing-key:latest,IDP_API_KEY=identity-platform-config:latest" \
-            --max-retries 2 --task-timeout 3600 --quiet
+            --cpu 4 --memory 2Gi \
+            --max-retries 2 --task-timeout 4h --quiet
 
       - name: Run migrations (additive-only) via Cloud SQL Auth Proxy
         run: |

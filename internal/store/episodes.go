@@ -2,6 +2,7 @@ package store
 
 import (
 	"context"
+	"crypto/rand"
 	"encoding/hex"
 	"errors"
 	"fmt"
@@ -89,6 +90,63 @@ func (s *Store) SweepAbandonedEpisodes(ctx context.Context, ttl time.Duration) (
 		return 0, fmt.Errorf("store: sweep abandoned episodes: %w", err)
 	}
 	return n, nil
+}
+
+// SweepStuckProcessingEpisodes force-fails, across ALL orgs, episodes stuck in
+// 'processing' whose claim is older than ttl (or whose claimed_at is NULL — a
+// legacy claim, including the currently-stuck prod rows). It is the backstop for
+// a worker that claimed an episode and then died (SIGKILL/OOM/crash) without
+// finalizing it: Cloud Run reports that execution "succeeded", so nothing else
+// ever moves the row off 'processing' and the retry API (which only accepts
+// 'failed') cannot rescue it. Like SweepAbandonedEpisodes this is a system-level
+// maintenance sweep, deliberately NOT org-scoped; its safety comes from the
+// narrow gate ('processing' + the claim-age floor) enforced in SQL. Each swept
+// row is stamped a neutral error_id (server-side correlation only, never a client
+// surface). Returns the number of rows failed so the caller can WARN.
+func (s *Store) SweepStuckProcessingEpisodes(ctx context.Context, ttl time.Duration) (int64, error) {
+	n, err := s.Queries.SweepStuckProcessingEpisodes(ctx, db.SweepStuckProcessingEpisodesParams{
+		ErrorID: pgtype.Text{String: neutralErrorID(), Valid: true},
+		Ttl: pgtype.Interval{
+			Microseconds: ttl.Microseconds(),
+			Valid:        true,
+		},
+	})
+	if err != nil {
+		return 0, fmt.Errorf("store: sweep stuck processing episodes: %w", err)
+	}
+	return n, nil
+}
+
+// EpisodeStatus returns an episode's current status by public id, not org-scoped
+// (the worker has no org before it claims, exactly like ClaimEpisodeForIngest).
+// It exists only to annotate the server-side WARN a worker logs when it cannot
+// take a claim — the blocking status is *why* the claim was refused. A malformed
+// id or a missing/soft-deleted row yields ("", nil): a clean "nothing to claim",
+// not a fault. Server-log-only; the status string never reaches a client.
+func (s *Store) EpisodeStatus(ctx context.Context, episodePublicID string) (string, error) {
+	epUUID, err := ids.Decode(ids.Episode, episodePublicID)
+	if err != nil {
+		return "", nil
+	}
+	status, err := s.GetEpisodeStatusByPublicID(ctx, pgUUID(epUUID))
+	if errors.Is(err, pgx.ErrNoRows) {
+		return "", nil
+	}
+	if err != nil {
+		return "", fmt.Errorf("store: episode status: %w", err)
+	}
+	return status, nil
+}
+
+// neutralErrorID returns a short random hex id that correlates a server-side
+// failure with the log line that recorded it. It names nothing — no provider,
+// no tool, no cause. It mirrors the pipeline's own error-id shape (16 hex chars).
+func neutralErrorID() string {
+	var b [8]byte
+	if _, err := rand.Read(b[:]); err != nil {
+		return "unknown"
+	}
+	return hex.EncodeToString(b[:])
 }
 
 // GetEpisode fetches an org-scoped episode by its public id. A malformed id or a

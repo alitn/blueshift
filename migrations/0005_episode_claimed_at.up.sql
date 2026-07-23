@@ -1,0 +1,13 @@
+-- 0005_episode_claimed_at — additive: record when a worker claims an episode for
+-- processing. A new NULLABLE column, so it is additive-only and safe on the
+-- existing episodes table (pre-existing rows are simply NULL).
+--
+-- The claim (uploaded -> processing) stamps claimed_at = now(); the terminal and
+-- re-claim transitions (ready / failed / retried) clear it, so a non-NULL
+-- claimed_at means "a fresh claim is currently being processed". The app-side
+-- stale-claim sweeper reads it: a row stuck at 'processing' whose claimed_at is
+-- older than PROCESSING_TTL (a killed/OOM/crashed worker) is force-failed so it
+-- becomes retryable. A NULL claimed_at on a 'processing' row is a legacy claim
+-- taken before this column existed (the two currently-stuck prod episodes); the
+-- sweeper treats those as stale too and unsticks them on the next pass.
+ALTER TABLE episodes ADD COLUMN claimed_at timestamptz;

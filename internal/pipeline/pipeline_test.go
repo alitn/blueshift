@@ -1,7 +1,9 @@
 package pipeline
 
 import (
+	"bytes"
 	"context"
+	"encoding/json"
 	"errors"
 	"io"
 	"log/slog"
@@ -30,8 +32,13 @@ type fakeEp struct {
 }
 
 type fakeRepo struct {
-	mu  sync.Mutex
-	eps map[string]*fakeEp // key: encoded ep_ id
+	mu sync.Mutex
+	// markRespectsCtx makes MarkFailed honor context cancellation (return
+	// ctx.Err() when the passed ctx is already done). The real store does exactly
+	// this via pgx, so it lets a test prove the shutdown path finalizes on a
+	// *detached* context — a cancelled ctx would leave the episode stuck.
+	markRespectsCtx bool
+	eps             map[string]*fakeEp // key: encoded ep_ id
 }
 
 func newFakeRepo() *fakeRepo { return &fakeRepo{eps: map[string]*fakeEp{}} }
@@ -76,7 +83,12 @@ func (f *fakeRepo) MarkReady(_ context.Context, org, epID, proxyKey string, dura
 	return nil
 }
 
-func (f *fakeRepo) MarkFailed(_ context.Context, org, epID, errorID string) error {
+func (f *fakeRepo) MarkFailed(ctx context.Context, org, epID, errorID string) error {
+	if f.markRespectsCtx && ctx.Err() != nil {
+		// Mirror pgx: a cancelled context aborts the write. The shutdown path must
+		// hand us a live (detached) context or the episode stays 'processing'.
+		return ctx.Err()
+	}
 	f.mu.Lock()
 	defer f.mu.Unlock()
 	e, ok := f.eps[epID]
@@ -86,6 +98,17 @@ func (f *fakeRepo) MarkFailed(_ context.Context, org, epID, errorID string) erro
 	e.status = "failed"
 	e.errorID = errorID
 	return nil
+}
+
+// EpisodeStatus reports the current status by id (or "" when unknown), matching
+// the store's non-org-scoped lookup used only for the not-claimable WARN.
+func (f *fakeRepo) EpisodeStatus(_ context.Context, epID string) (string, error) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	if e, ok := f.eps[epID]; ok {
+		return e.status, nil
+	}
+	return "", nil
 }
 
 // --- fake media: scripted per-attempt behaviour ------------------------------
@@ -421,4 +444,115 @@ func TestMissingEpisodeNoOp(t *testing.T) {
 	if err := r.Run(context.Background(), "ep_missing", "ingest"); err != nil {
 		t.Fatalf("Run on unknown episode = %v, want nil no-op", err)
 	}
+}
+
+// TestRunShutdownMarksFailedBounded is the SIGTERM/shutdown path: the parent
+// context is cancelled mid-stage (as signal.NotifyContext does when Cloud Run
+// sends SIGTERM before SIGKILL). The run must still durably mark the claimed
+// episode 'failed' — on a detached, bounded context, since the run's own context
+// is now dead — and return promptly, well inside the ~10s grace window. The
+// repo is set to honor context cancellation (markRespectsCtx), so a regression
+// that finalized on the cancelled context would leave the episode 'processing'
+// and fail this test.
+func TestRunShutdownMarksFailedBounded(t *testing.T) {
+	repo := newFakeRepo()
+	repo.markRespectsCtx = true
+	repo.add(epA, orgA, orgA+"/"+epA+"/masters/m.mp4")
+	blob := newRemoteBlob(t)
+	media := &fakeMedia{blockOnCtx: true} // blocks until the context is cancelled
+	// A long per-attempt timeout so only the parent cancel ends the attempt.
+	r := newRunner(repo, blob, media, Config{StageTimeout: time.Minute, Retries: 2})
+
+	ctx, cancel := context.WithCancel(context.Background())
+	done := make(chan error, 1)
+	go func() { done <- r.Run(ctx, epA, "ingest") }()
+
+	// Let the stage reach the blocking render, then deliver the "SIGTERM".
+	time.Sleep(20 * time.Millisecond)
+	cancel()
+
+	select {
+	case err := <-done:
+		if !errors.Is(err, ErrStageFailed) {
+			t.Fatalf("Run err = %v, want ErrStageFailed", err)
+		}
+	case <-time.After(3 * time.Second):
+		t.Fatal("Run did not return within 3s of shutdown; grace-window bound violated")
+	}
+	if e := repo.get(epA); e.status != "failed" {
+		t.Errorf("status = %q, want failed (episode must never be left in processing)", e.status)
+	}
+	if e := repo.get(epA); !regexp.MustCompile(`^[0-9a-f]{16}$`).MatchString(e.errorID) {
+		t.Errorf("error_id = %q, want a neutral 16-hex id", e.errorID)
+	}
+	// The stage was cancelled once (no retry after parent cancel).
+	if got := media.cancelled.Load(); got != 1 {
+		t.Errorf("cancelled attempts = %d, want 1 (no retry after shutdown)", got)
+	}
+}
+
+// TestNotClaimableLogsWarnWithBlockingStatus asserts a refused claim logs at WARN
+// (not INFO) and names the blocking status, so a retry attempt that observes an
+// episode it cannot take is a visible signal rather than a silent success.
+func TestNotClaimableLogsWarnWithBlockingStatus(t *testing.T) {
+	repo := newFakeRepo()
+	repo.add(epA, orgA, orgA+"/"+epA+"/masters/m.mp4")
+	blob := newRemoteBlob(t)
+	media := &fakeMedia{duration: 2 * time.Second}
+
+	var buf syncBuffer
+	r := &Runner{Repo: repo, Blob: blob, Media: media,
+		Log:    slog.New(slog.NewJSONHandler(&buf, nil)),
+		Config: Config{Retries: 2}}
+
+	// First run claims and completes (episode -> ready).
+	if err := r.Run(context.Background(), epA, "ingest"); err != nil {
+		t.Fatalf("first Run: %v", err)
+	}
+	buf.reset()
+
+	// Second run cannot claim (episode is 'ready'): expect a WARN naming the status.
+	if err := r.Run(context.Background(), epA, "ingest"); err != nil {
+		t.Fatalf("second Run: %v", err)
+	}
+	entry := map[string]any{}
+	if err := json.Unmarshal(bytes.TrimSpace(buf.Bytes()), &entry); err != nil {
+		t.Fatalf("unmarshal log line: %v (line=%q)", err, buf.String())
+	}
+	if entry["level"] != "WARN" {
+		t.Errorf("log level = %v, want WARN", entry["level"])
+	}
+	if entry["msg"] != "episode not claimable; no-op" {
+		t.Errorf("log msg = %v", entry["msg"])
+	}
+	if entry["blocking_status"] != "ready" {
+		t.Errorf("blocking_status = %v, want ready", entry["blocking_status"])
+	}
+}
+
+// syncBuffer is a concurrency-safe buffer for capturing a logger's output while
+// the runner writes to it.
+type syncBuffer struct {
+	mu  sync.Mutex
+	buf bytes.Buffer
+}
+
+func (s *syncBuffer) Write(p []byte) (int, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return s.buf.Write(p)
+}
+
+func (s *syncBuffer) Bytes() []byte {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return append([]byte(nil), s.buf.Bytes()...)
+}
+
+func (s *syncBuffer) String() string { return string(s.Bytes()) }
+
+func (s *syncBuffer) reset() {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.buf.Reset()
 }

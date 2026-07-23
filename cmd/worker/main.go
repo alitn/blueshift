@@ -1,8 +1,11 @@
 // Command worker is the pipeline entrypoint for Cloud Run Jobs. It runs one
 // stage for one episode and exits: 0 on success or a clean no-op (a concurrent
 // worker already claimed the episode), 1 on a stage failure or a setup fault —
-// the exit code the Jobs runtime uses to mark the execution. All logic lives in
-// internal/pipeline; this main is wiring only.
+// the exit code the Jobs runtime uses to mark the execution. On SIGTERM (the
+// stop signal Cloud Run sends before force-killing a task) it cancels the run,
+// lets the pipeline mark the claimed episode 'failed' within the grace window,
+// and exits non-zero — never leaving the episode stuck in 'processing'. All logic
+// lives in internal/pipeline; this main is wiring only.
 //
 //	worker <episode_public_id> <stage>
 package main
@@ -11,6 +14,8 @@ import (
 	"context"
 	"fmt"
 	"os"
+	"os/signal"
+	"syscall"
 
 	"blueshift/internal/blob"
 	"blueshift/internal/config"
@@ -47,7 +52,16 @@ func run(args []string) error {
 		return fmt.Errorf("worker: DATABASE_URL is required")
 	}
 
-	ctx := context.Background()
+	// Trap the stop signals Cloud Run sends a task before it force-kills the
+	// container (SIGTERM, ~10s grace) so the whole run — the stage context and the
+	// ffmpeg child under internal/media — is cancelled cleanly. The pipeline then
+	// marks the claimed episode 'failed' on a detached, bounded context inside that
+	// grace window, so a timed-out/pre-empted attempt never leaves the episode
+	// stuck in 'processing'. cancel() is deferred so the signal handler is released
+	// on exit.
+	ctx, cancel := shutdownContext()
+	defer cancel()
+
 	st, err := store.Open(ctx, cfg.DatabaseURL)
 	if err != nil {
 		return fmt.Errorf("worker: store: %w", err)
@@ -78,6 +92,15 @@ func run(args []string) error {
 	}
 	logger.Info("worker done", "episode", episodeID, "stage", stage)
 	return nil
+}
+
+// shutdownContext returns a context cancelled on the first SIGINT or SIGTERM.
+// SIGTERM is what Cloud Run sends a task attempt when it hits its task-timeout or
+// is otherwise pre-empted, ~10s before SIGKILL (container runtime contract); the
+// returned cancel releases the signal handler. Extracted so the signal wiring is
+// unit-testable without booting the full worker.
+func shutdownContext() (context.Context, context.CancelFunc) {
+	return signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 }
 
 // buildBlob constructs the object-storage backend for the configured mode,

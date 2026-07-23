@@ -75,15 +75,19 @@ func run() error {
 	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 	defer stop()
 
-	// The abandoned-upload sweep is a system-level TTL reaper: a create can
-	// succeed server-side and then the client abandons the upload, leaving a row
-	// stuck at 'uploaded' with no master key. It runs only when a database is
-	// configured (st != nil) and is bound to the app's lifecycle ctx, so it drains
-	// cleanly on shutdown.
+	// The maintenance sweep is a system-level reaper with two jobs: reap abandoned
+	// uploads (a create that succeeded server-side then the client abandoned the
+	// upload, leaving a row at 'uploaded' with no master key), and force-fail
+	// stale 'processing' claims (a worker killed mid-stage, which would otherwise
+	// wedge the episode forever). It runs only when a database is configured
+	// (st != nil) and is bound to the app's lifecycle ctx, so it drains cleanly on
+	// shutdown.
 	if st != nil {
-		go sweep.Run(ctx, st, logger, cfg.SweepInterval, cfg.UploadTTL)
-		logger.Info("abandoned-upload sweep enabled",
-			"interval", cfg.SweepInterval.String(), "ttl", cfg.UploadTTL.String())
+		go sweep.Run(ctx, st, logger, cfg.SweepInterval, cfg.UploadTTL, cfg.ProcessingTTL)
+		logger.Info("maintenance sweep enabled",
+			"interval", cfg.SweepInterval.String(),
+			"upload_ttl", cfg.UploadTTL.String(),
+			"processing_ttl", cfg.ProcessingTTL.String())
 	}
 
 	return server.Run(ctx, srv, logger)

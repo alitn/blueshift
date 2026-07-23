@@ -46,6 +46,7 @@ type Episode struct {
 	UpdatedAt       pgtype.Timestamptz
 	DeletedAt       pgtype.Timestamptz
 	MasterSizeBytes pgtype.Int8
+	ClaimedAt       pgtype.Timestamptz
 }
 
 type LlmCall struct {

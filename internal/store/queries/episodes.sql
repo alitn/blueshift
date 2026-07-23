@@ -71,10 +71,12 @@ RETURNING *;
 -- 'uploaded' so the ingest trigger can re-run it, clearing the prior error_id.
 -- Org-scoped and gated on status = 'failed', so a caller can only retry their
 -- own org's failed episode and a row in any other state is left untouched
--- (pgx.ErrNoRows, which the handler maps to 409).
+-- (pgx.ErrNoRows, which the handler maps to 409). claimed_at is cleared: the row
+-- returns to the unclaimed 'uploaded' state and the next claim stamps it fresh.
 UPDATE episodes
 SET status = 'uploaded',
     error_id = NULL,
+    claimed_at = NULL,
     updated_at = now()
 WHERE public_id = $1
   AND org_id = $2
@@ -84,12 +86,15 @@ RETURNING *;
 
 -- name: ClaimEpisodeForIngest :one
 -- Compare-and-set claim: atomically move a single 'uploaded' episode to
--- 'processing'. The status predicate is the concurrency guard — a second
--- concurrent worker finds no matching row and no-ops (pgx.ErrNoRows). The
--- returned org_id is how the worker scopes every later write to the claimed
--- tenant; it never takes an org from its arguments.
+-- 'processing' and stamp claimed_at = now(). The status predicate is the
+-- concurrency guard — a second concurrent worker finds no matching row and
+-- no-ops (pgx.ErrNoRows). The returned org_id is how the worker scopes every
+-- later write to the claimed tenant; it never takes an org from its arguments.
+-- claimed_at is the backstop signal the stale-claim sweeper reads to force-fail a
+-- 'processing' row whose worker died without finalizing it.
 UPDATE episodes
 SET status = 'processing',
+    claimed_at = now(),
     error_id = NULL,
     updated_at = now()
 WHERE public_id = $1
@@ -97,15 +102,27 @@ WHERE public_id = $1
   AND deleted_at IS NULL
 RETURNING *;
 
+-- name: GetEpisodeStatusByPublicID :one
+-- Look up an episode's current status by public id alone (not org-scoped, like
+-- ClaimEpisodeForIngest: the worker has no org until it claims). Used only to
+-- annotate the server-side WARN a worker logs when it cannot take a claim — the
+-- blocking status is why the claim was refused. Server-log-only, never client
+-- surface.
+SELECT status FROM episodes
+WHERE public_id = $1
+  AND deleted_at IS NULL;
+
 -- name: MarkEpisodeReady :one
 -- Finalize a successful stage: record the proxy key and measured duration and
 -- flip to 'ready'. Org-scoped and gated on 'processing' so it only ever
--- completes the run this worker claimed (idempotent no-op otherwise).
+-- completes the run this worker claimed (idempotent no-op otherwise). claimed_at
+-- is cleared: the run is done, no claim is in flight.
 UPDATE episodes
 SET status = 'ready',
     proxy_object_key = $3,
     duration_ms = $4,
     error_id = NULL,
+    claimed_at = NULL,
     updated_at = now()
 WHERE public_id = $1
   AND org_id = $2
@@ -116,12 +133,36 @@ RETURNING *;
 -- name: MarkEpisodeFailed :one
 -- Finalize an exhausted stage: record a neutral error_id and flip to 'failed'.
 -- Org-scoped and gated on 'processing' for the same reason as MarkEpisodeReady.
+-- claimed_at is cleared: the run is done, no claim is in flight.
 UPDATE episodes
 SET status = 'failed',
     error_id = $3,
+    claimed_at = NULL,
     updated_at = now()
 WHERE public_id = $1
   AND org_id = $2
   AND status = 'processing'
   AND deleted_at IS NULL
 RETURNING *;
+
+-- name: SweepStuckProcessingEpisodes :execrows
+-- System-level stale-claim sweep: the backstop for a worker that entered
+-- 'processing' (Claim) but was SIGKILLed / OOM-killed / crashed before it could
+-- finalize the episode ready or failed. Cloud Run reports such an execution
+-- "succeeded" (the retry attempt sees 'processing' and cleanly no-ops), so the
+-- row would otherwise sit in 'processing' forever and the retry API — which only
+-- accepts 'failed' — could never rescue it. Across ALL orgs (system maintenance,
+-- deliberately not org-scoped) force-fail rows stuck in 'processing' whose claim
+-- is older than the TTL, OR whose claimed_at is NULL. A NULL claimed_at is a
+-- legacy claim taken before the claimed_at column existed (the currently-stuck
+-- prod episodes): treated as stale so the sweep unsticks them on the first pass.
+-- A neutral error_id is recorded (server-side correlation only, never client
+-- surface) and claimed_at cleared. Returns the count so the caller can WARN.
+UPDATE episodes
+SET status = 'failed',
+    error_id = sqlc.arg(error_id),
+    claimed_at = NULL,
+    updated_at = now()
+WHERE status = 'processing'
+  AND (claimed_at IS NULL OR claimed_at < now() - sqlc.arg(ttl)::interval)
+  AND deleted_at IS NULL;

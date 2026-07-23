@@ -57,6 +57,10 @@ type Repo interface {
 	Claim(ctx context.Context, episodePublicID string) (ep Episode, claimed bool, err error)
 	MarkReady(ctx context.Context, orgID, episodePublicID, proxyObjectKey string, durationMs int64) error
 	MarkFailed(ctx context.Context, orgID, episodePublicID, errorID string) error
+	// EpisodeStatus reports an episode's current status, used only to annotate the
+	// WARN logged when a claim is refused (the blocking status). "" means the id
+	// names no episode. It never scopes by org (the worker has no org pre-claim).
+	EpisodeStatus(ctx context.Context, episodePublicID string) (status string, err error)
 }
 
 // Blob is the byte-movement contract the pipeline needs. The remote (GCS)
@@ -97,6 +101,11 @@ const (
 	// DefaultRetries is the number of *additional* attempts after the first, per
 	// the ruling (total attempts = 1 + retries = 3). cmd/worker applies it.
 	DefaultRetries = 2
+	// shutdownFinalizeTimeout bounds the detached mark-failed write performed when
+	// the run's context is already cancelled (SIGTERM shutdown / deadline). It must
+	// stay well under Cloud Run's ~10s SIGTERM-to-SIGKILL grace so the episode is
+	// durably marked 'failed' before the container is force-killed.
+	shutdownFinalizeTimeout = 5 * time.Second
 )
 
 func (c Config) stageTimeout() time.Duration {
@@ -142,13 +151,24 @@ func (r *Runner) Run(ctx context.Context, episodePublicID, stage string) error {
 		return fmt.Errorf("pipeline: stage %q not runnable in this milestone", stage)
 	}
 
+	started := time.Now()
 	ep, claimed, err := r.Repo.Claim(ctx, episodePublicID)
 	if err != nil {
 		return fmt.Errorf("pipeline: claim: %w", err)
 	}
 	if !claimed {
-		log.InfoContext(ctx, "episode not claimable; no-op",
-			slog.String("episode", episodePublicID), slog.String("stage", stage))
+		// A refused claim is a signal, not a success: a retry attempt (or a killed
+		// attempt's automatic re-run) observing an episode it cannot take must not
+		// masquerade as a clean no-op. Log it at WARN with the blocking status so
+		// the "stuck in processing" failure mode is visible in the logs, not
+		// silent. The status lookup is best-effort (server-log-only).
+		blocking, serr := r.Repo.EpisodeStatus(ctx, episodePublicID)
+		if serr != nil || blocking == "" {
+			blocking = "unknown"
+		}
+		log.WarnContext(ctx, "episode not claimable; no-op",
+			slog.String("episode", episodePublicID), slog.String("stage", stage),
+			slog.String("blocking_status", blocking))
 		return nil
 	}
 	log.InfoContext(ctx, "stage claimed",
@@ -181,13 +201,37 @@ func (r *Runner) Run(ctx context.Context, episodePublicID, stage string) error {
 	}
 
 	errID := newErrorID()
-	if err := r.Repo.MarkFailed(ctx, ep.OrgID, ep.PublicID, errID); err != nil {
+	elapsed := time.Since(started)
+	// Record the failure durably. When the run's context is already done — a
+	// SIGTERM shutdown (Cloud Run's ~10s grace before SIGKILL) or a whole-run
+	// deadline — the DB write must NOT ride that dead context, or it aborts and
+	// leaves the episode stuck in 'processing' forever: exactly the live incident
+	// this task fixes. Detach a fresh, bounded context so the mark-failed lands
+	// well inside the grace window.
+	shutdown := ctx.Err() != nil
+	finCtx := ctx
+	if shutdown {
+		var cancel context.CancelFunc
+		finCtx, cancel = context.WithTimeout(context.WithoutCancel(ctx), shutdownFinalizeTimeout)
+		defer cancel()
+	}
+	if err := r.Repo.MarkFailed(finCtx, ep.OrgID, ep.PublicID, errID); err != nil {
 		return fmt.Errorf("pipeline: mark failed: %w", err)
 	}
-	log.ErrorContext(ctx, "stage failed after retries",
-		slog.String("episode", ep.PublicID), slog.String("stage", stage),
-		slog.String("error_id", errID), slog.Int("attempts", attempts),
-		slog.String("error", errString(lastErr)))
+	if shutdown {
+		// A shutdown/timeout is operationally distinct from a stage that exhausted
+		// its retries — log it as such (WARN, with the cause and elapsed) so the
+		// two are not conflated in the logs.
+		log.WarnContext(finCtx, "run aborted; episode marked failed",
+			slog.String("episode", ep.PublicID), slog.String("stage", stage),
+			slog.String("error_id", errID), slog.String("elapsed", elapsed.String()),
+			slog.String("reason", ctx.Err().Error()))
+	} else {
+		log.ErrorContext(ctx, "stage failed after retries",
+			slog.String("episode", ep.PublicID), slog.String("stage", stage),
+			slog.String("error_id", errID), slog.Int("attempts", attempts),
+			slog.String("elapsed", elapsed.String()), slog.String("error", errString(lastErr)))
+	}
 	return fmt.Errorf("%w (error_id=%s)", ErrStageFailed, errID)
 }
 

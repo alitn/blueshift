@@ -117,6 +117,11 @@ type Config struct {
 	// UploadTTL is how long a created-but-never-uploaded episode may sit at
 	// 'uploaded' with no master key before the sweep removes it. Defaults to 6h.
 	UploadTTL time.Duration
+	// ProcessingTTL is how long an episode may sit at 'processing' (a live claim)
+	// before the stale-claim sweep force-fails it — the backstop for a worker
+	// killed mid-stage. Defaults to 5h (> the worker Job task-timeout plus slack)
+	// so a legitimately long ingest is never failed out from under a live worker.
+	ProcessingTTL time.Duration
 }
 
 // Addr returns the listen address (":<port>") for http.Server.
@@ -149,6 +154,11 @@ const (
 	// defaultUploadTTL is how long an abandoned (created-but-never-uploaded)
 	// episode may linger before the sweep removes it, when UPLOAD_TTL is unset.
 	defaultUploadTTL = 6 * time.Hour
+	// defaultProcessingTTL is how long a 'processing' claim may age before the
+	// stale-claim sweep force-fails it, when PROCESSING_TTL is unset. It is longer
+	// than the worker Job's task-timeout (4h) plus slack so only a genuinely dead
+	// claim is reaped, never a live long-running ingest.
+	defaultProcessingTTL = 5 * time.Hour
 )
 
 // Load reads configuration from the process environment.
@@ -217,10 +227,12 @@ func load(getenv func(string) string) (Config, error) {
 	return cfg, nil
 }
 
-// loadSweep resolves the abandoned-upload sweep cadence and TTL. Both default to
-// production-safe values (1h cadence, 6h TTL) and accept any positive Go
-// duration (e.g. "2s", "90m") so a transient env can drive a fast sweep for
-// verification. The sweep itself is wired only when a database is configured.
+// loadSweep resolves the sweep cadence and the two TTLs it enforces: the
+// abandoned-upload TTL and the stale-'processing'-claim TTL. All default to
+// production-safe values (1h cadence, 6h upload TTL, 5h processing TTL) and
+// accept any positive Go duration (e.g. "2s", "90m") so a transient env can
+// drive a fast sweep for verification. The sweep itself is wired only when a
+// database is configured.
 func loadSweep(cfg *Config, getenv func(string) string) error {
 	cfg.SweepInterval = defaultSweepInterval
 	if v := strings.TrimSpace(getenv("SWEEP_INTERVAL")); v != "" {
@@ -244,6 +256,18 @@ func loadSweep(cfg *Config, getenv func(string) string) error {
 			return fmt.Errorf("config: UPLOAD_TTL must be positive, got %q", v)
 		}
 		cfg.UploadTTL = d
+	}
+
+	cfg.ProcessingTTL = defaultProcessingTTL
+	if v := strings.TrimSpace(getenv("PROCESSING_TTL")); v != "" {
+		d, err := time.ParseDuration(v)
+		if err != nil {
+			return fmt.Errorf("config: invalid PROCESSING_TTL %q: %w", v, err)
+		}
+		if d <= 0 {
+			return fmt.Errorf("config: PROCESSING_TTL must be positive, got %q", v)
+		}
+		cfg.ProcessingTTL = d
 	}
 
 	return nil

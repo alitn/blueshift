@@ -14,19 +14,22 @@ import (
 const claimEpisodeForIngest = `-- name: ClaimEpisodeForIngest :one
 UPDATE episodes
 SET status = 'processing',
+    claimed_at = now(),
     error_id = NULL,
     updated_at = now()
 WHERE public_id = $1
   AND status = 'uploaded'
   AND deleted_at IS NULL
-RETURNING id, public_id, org_id, show_id, title, source_filename, language, status, duration_ms, master_object_key, proxy_object_key, error_id, created_at, updated_at, deleted_at, master_size_bytes
+RETURNING id, public_id, org_id, show_id, title, source_filename, language, status, duration_ms, master_object_key, proxy_object_key, error_id, created_at, updated_at, deleted_at, master_size_bytes, claimed_at
 `
 
 // Compare-and-set claim: atomically move a single 'uploaded' episode to
-// 'processing'. The status predicate is the concurrency guard — a second
-// concurrent worker finds no matching row and no-ops (pgx.ErrNoRows). The
-// returned org_id is how the worker scopes every later write to the claimed
-// tenant; it never takes an org from its arguments.
+// 'processing' and stamp claimed_at = now(). The status predicate is the
+// concurrency guard — a second concurrent worker finds no matching row and
+// no-ops (pgx.ErrNoRows). The returned org_id is how the worker scopes every
+// later write to the claimed tenant; it never takes an org from its arguments.
+// claimed_at is the backstop signal the stale-claim sweeper reads to force-fail a
+// 'processing' row whose worker died without finalizing it.
 func (q *Queries) ClaimEpisodeForIngest(ctx context.Context, publicID pgtype.UUID) (Episode, error) {
 	row := q.db.QueryRow(ctx, claimEpisodeForIngest, publicID)
 	var i Episode
@@ -47,6 +50,7 @@ func (q *Queries) ClaimEpisodeForIngest(ctx context.Context, publicID pgtype.UUI
 		&i.UpdatedAt,
 		&i.DeletedAt,
 		&i.MasterSizeBytes,
+		&i.ClaimedAt,
 	)
 	return i, err
 }
@@ -79,7 +83,7 @@ func (q *Queries) DeleteOrphanEpisode(ctx context.Context, arg DeleteOrphanEpiso
 }
 
 const getEpisodeByPublicID = `-- name: GetEpisodeByPublicID :one
-SELECT id, public_id, org_id, show_id, title, source_filename, language, status, duration_ms, master_object_key, proxy_object_key, error_id, created_at, updated_at, deleted_at, master_size_bytes FROM episodes
+SELECT id, public_id, org_id, show_id, title, source_filename, language, status, duration_ms, master_object_key, proxy_object_key, error_id, created_at, updated_at, deleted_at, master_size_bytes, claimed_at FROM episodes
 WHERE public_id = $1
   AND org_id = $2
   AND deleted_at IS NULL
@@ -110,8 +114,27 @@ func (q *Queries) GetEpisodeByPublicID(ctx context.Context, arg GetEpisodeByPubl
 		&i.UpdatedAt,
 		&i.DeletedAt,
 		&i.MasterSizeBytes,
+		&i.ClaimedAt,
 	)
 	return i, err
+}
+
+const getEpisodeStatusByPublicID = `-- name: GetEpisodeStatusByPublicID :one
+SELECT status FROM episodes
+WHERE public_id = $1
+  AND deleted_at IS NULL
+`
+
+// Look up an episode's current status by public id alone (not org-scoped, like
+// ClaimEpisodeForIngest: the worker has no org until it claims). Used only to
+// annotate the server-side WARN a worker logs when it cannot take a claim — the
+// blocking status is why the claim was refused. Server-log-only, never client
+// surface.
+func (q *Queries) GetEpisodeStatusByPublicID(ctx context.Context, publicID pgtype.UUID) (string, error) {
+	row := q.db.QueryRow(ctx, getEpisodeStatusByPublicID, publicID)
+	var status string
+	err := row.Scan(&status)
+	return status, err
 }
 
 const insertEpisode = `-- name: InsertEpisode :one
@@ -120,7 +143,7 @@ INSERT INTO episodes (
 ) VALUES (
     $1, $2, $3, $4, $5, $6, $7
 )
-RETURNING id, public_id, org_id, show_id, title, source_filename, language, status, duration_ms, master_object_key, proxy_object_key, error_id, created_at, updated_at, deleted_at, master_size_bytes
+RETURNING id, public_id, org_id, show_id, title, source_filename, language, status, duration_ms, master_object_key, proxy_object_key, error_id, created_at, updated_at, deleted_at, master_size_bytes, claimed_at
 `
 
 type InsertEpisodeParams struct {
@@ -161,12 +184,13 @@ func (q *Queries) InsertEpisode(ctx context.Context, arg InsertEpisodeParams) (E
 		&i.UpdatedAt,
 		&i.DeletedAt,
 		&i.MasterSizeBytes,
+		&i.ClaimedAt,
 	)
 	return i, err
 }
 
 const listEpisodesByOrg = `-- name: ListEpisodesByOrg :many
-SELECT id, public_id, org_id, show_id, title, source_filename, language, status, duration_ms, master_object_key, proxy_object_key, error_id, created_at, updated_at, deleted_at, master_size_bytes FROM episodes
+SELECT id, public_id, org_id, show_id, title, source_filename, language, status, duration_ms, master_object_key, proxy_object_key, error_id, created_at, updated_at, deleted_at, master_size_bytes, claimed_at FROM episodes
 WHERE org_id = $1
   AND deleted_at IS NULL
 ORDER BY created_at DESC, id DESC
@@ -198,6 +222,7 @@ func (q *Queries) ListEpisodesByOrg(ctx context.Context, orgID int64) ([]Episode
 			&i.UpdatedAt,
 			&i.DeletedAt,
 			&i.MasterSizeBytes,
+			&i.ClaimedAt,
 		); err != nil {
 			return nil, err
 		}
@@ -213,12 +238,13 @@ const markEpisodeFailed = `-- name: MarkEpisodeFailed :one
 UPDATE episodes
 SET status = 'failed',
     error_id = $3,
+    claimed_at = NULL,
     updated_at = now()
 WHERE public_id = $1
   AND org_id = $2
   AND status = 'processing'
   AND deleted_at IS NULL
-RETURNING id, public_id, org_id, show_id, title, source_filename, language, status, duration_ms, master_object_key, proxy_object_key, error_id, created_at, updated_at, deleted_at, master_size_bytes
+RETURNING id, public_id, org_id, show_id, title, source_filename, language, status, duration_ms, master_object_key, proxy_object_key, error_id, created_at, updated_at, deleted_at, master_size_bytes, claimed_at
 `
 
 type MarkEpisodeFailedParams struct {
@@ -229,6 +255,7 @@ type MarkEpisodeFailedParams struct {
 
 // Finalize an exhausted stage: record a neutral error_id and flip to 'failed'.
 // Org-scoped and gated on 'processing' for the same reason as MarkEpisodeReady.
+// claimed_at is cleared: the run is done, no claim is in flight.
 func (q *Queries) MarkEpisodeFailed(ctx context.Context, arg MarkEpisodeFailedParams) (Episode, error) {
 	row := q.db.QueryRow(ctx, markEpisodeFailed, arg.PublicID, arg.OrgID, arg.ErrorID)
 	var i Episode
@@ -249,6 +276,7 @@ func (q *Queries) MarkEpisodeFailed(ctx context.Context, arg MarkEpisodeFailedPa
 		&i.UpdatedAt,
 		&i.DeletedAt,
 		&i.MasterSizeBytes,
+		&i.ClaimedAt,
 	)
 	return i, err
 }
@@ -259,12 +287,13 @@ SET status = 'ready',
     proxy_object_key = $3,
     duration_ms = $4,
     error_id = NULL,
+    claimed_at = NULL,
     updated_at = now()
 WHERE public_id = $1
   AND org_id = $2
   AND status = 'processing'
   AND deleted_at IS NULL
-RETURNING id, public_id, org_id, show_id, title, source_filename, language, status, duration_ms, master_object_key, proxy_object_key, error_id, created_at, updated_at, deleted_at, master_size_bytes
+RETURNING id, public_id, org_id, show_id, title, source_filename, language, status, duration_ms, master_object_key, proxy_object_key, error_id, created_at, updated_at, deleted_at, master_size_bytes, claimed_at
 `
 
 type MarkEpisodeReadyParams struct {
@@ -276,7 +305,8 @@ type MarkEpisodeReadyParams struct {
 
 // Finalize a successful stage: record the proxy key and measured duration and
 // flip to 'ready'. Org-scoped and gated on 'processing' so it only ever
-// completes the run this worker claimed (idempotent no-op otherwise).
+// completes the run this worker claimed (idempotent no-op otherwise). claimed_at
+// is cleared: the run is done, no claim is in flight.
 func (q *Queries) MarkEpisodeReady(ctx context.Context, arg MarkEpisodeReadyParams) (Episode, error) {
 	row := q.db.QueryRow(ctx, markEpisodeReady,
 		arg.PublicID,
@@ -302,6 +332,7 @@ func (q *Queries) MarkEpisodeReady(ctx context.Context, arg MarkEpisodeReadyPara
 		&i.UpdatedAt,
 		&i.DeletedAt,
 		&i.MasterSizeBytes,
+		&i.ClaimedAt,
 	)
 	return i, err
 }
@@ -310,12 +341,13 @@ const retryFailedEpisode = `-- name: RetryFailedEpisode :one
 UPDATE episodes
 SET status = 'uploaded',
     error_id = NULL,
+    claimed_at = NULL,
     updated_at = now()
 WHERE public_id = $1
   AND org_id = $2
   AND status = 'failed'
   AND deleted_at IS NULL
-RETURNING id, public_id, org_id, show_id, title, source_filename, language, status, duration_ms, master_object_key, proxy_object_key, error_id, created_at, updated_at, deleted_at, master_size_bytes
+RETURNING id, public_id, org_id, show_id, title, source_filename, language, status, duration_ms, master_object_key, proxy_object_key, error_id, created_at, updated_at, deleted_at, master_size_bytes, claimed_at
 `
 
 type RetryFailedEpisodeParams struct {
@@ -327,7 +359,8 @@ type RetryFailedEpisodeParams struct {
 // 'uploaded' so the ingest trigger can re-run it, clearing the prior error_id.
 // Org-scoped and gated on status = 'failed', so a caller can only retry their
 // own org's failed episode and a row in any other state is left untouched
-// (pgx.ErrNoRows, which the handler maps to 409).
+// (pgx.ErrNoRows, which the handler maps to 409). claimed_at is cleared: the row
+// returns to the unclaimed 'uploaded' state and the next claim stamps it fresh.
 func (q *Queries) RetryFailedEpisode(ctx context.Context, arg RetryFailedEpisodeParams) (Episode, error) {
 	row := q.db.QueryRow(ctx, retryFailedEpisode, arg.PublicID, arg.OrgID)
 	var i Episode
@@ -348,6 +381,7 @@ func (q *Queries) RetryFailedEpisode(ctx context.Context, arg RetryFailedEpisode
 		&i.UpdatedAt,
 		&i.DeletedAt,
 		&i.MasterSizeBytes,
+		&i.ClaimedAt,
 	)
 	return i, err
 }
@@ -359,7 +393,7 @@ SET master_object_key = $3,
 WHERE public_id = $1
   AND org_id = $2
   AND deleted_at IS NULL
-RETURNING id, public_id, org_id, show_id, title, source_filename, language, status, duration_ms, master_object_key, proxy_object_key, error_id, created_at, updated_at, deleted_at, master_size_bytes
+RETURNING id, public_id, org_id, show_id, title, source_filename, language, status, duration_ms, master_object_key, proxy_object_key, error_id, created_at, updated_at, deleted_at, master_size_bytes, claimed_at
 `
 
 type SetEpisodeMasterKeyParams struct {
@@ -391,6 +425,7 @@ func (q *Queries) SetEpisodeMasterKey(ctx context.Context, arg SetEpisodeMasterK
 		&i.UpdatedAt,
 		&i.DeletedAt,
 		&i.MasterSizeBytes,
+		&i.ClaimedAt,
 	)
 	return i, err
 }
@@ -419,13 +454,49 @@ func (q *Queries) SweepAbandonedEpisodes(ctx context.Context, ttl pgtype.Interva
 	return result.RowsAffected(), nil
 }
 
+const sweepStuckProcessingEpisodes = `-- name: SweepStuckProcessingEpisodes :execrows
+UPDATE episodes
+SET status = 'failed',
+    error_id = $1,
+    claimed_at = NULL,
+    updated_at = now()
+WHERE status = 'processing'
+  AND (claimed_at IS NULL OR claimed_at < now() - $2::interval)
+  AND deleted_at IS NULL
+`
+
+type SweepStuckProcessingEpisodesParams struct {
+	ErrorID pgtype.Text
+	Ttl     pgtype.Interval
+}
+
+// System-level stale-claim sweep: the backstop for a worker that entered
+// 'processing' (Claim) but was SIGKILLed / OOM-killed / crashed before it could
+// finalize the episode ready or failed. Cloud Run reports such an execution
+// "succeeded" (the retry attempt sees 'processing' and cleanly no-ops), so the
+// row would otherwise sit in 'processing' forever and the retry API — which only
+// accepts 'failed' — could never rescue it. Across ALL orgs (system maintenance,
+// deliberately not org-scoped) force-fail rows stuck in 'processing' whose claim
+// is older than the TTL, OR whose claimed_at is NULL. A NULL claimed_at is a
+// legacy claim taken before the claimed_at column existed (the currently-stuck
+// prod episodes): treated as stale so the sweep unsticks them on the first pass.
+// A neutral error_id is recorded (server-side correlation only, never client
+// surface) and claimed_at cleared. Returns the count so the caller can WARN.
+func (q *Queries) SweepStuckProcessingEpisodes(ctx context.Context, arg SweepStuckProcessingEpisodesParams) (int64, error) {
+	result, err := q.db.Exec(ctx, sweepStuckProcessingEpisodes, arg.ErrorID, arg.Ttl)
+	if err != nil {
+		return 0, err
+	}
+	return result.RowsAffected(), nil
+}
+
 const updateEpisodeStatus = `-- name: UpdateEpisodeStatus :one
 UPDATE episodes
 SET status = $3,
     updated_at = now()
 WHERE public_id = $1
   AND org_id = $2
-RETURNING id, public_id, org_id, show_id, title, source_filename, language, status, duration_ms, master_object_key, proxy_object_key, error_id, created_at, updated_at, deleted_at, master_size_bytes
+RETURNING id, public_id, org_id, show_id, title, source_filename, language, status, duration_ms, master_object_key, proxy_object_key, error_id, created_at, updated_at, deleted_at, master_size_bytes, claimed_at
 `
 
 type UpdateEpisodeStatusParams struct {
@@ -454,6 +525,7 @@ func (q *Queries) UpdateEpisodeStatus(ctx context.Context, arg UpdateEpisodeStat
 		&i.UpdatedAt,
 		&i.DeletedAt,
 		&i.MasterSizeBytes,
+		&i.ClaimedAt,
 	)
 	return i, err
 }
