@@ -1,0 +1,14 @@
+{
+  "id": "msg_test",
+  "type": "message",
+  "role": "assistant",
+  "model": "claude-opus-4-8",
+  "content": [
+    {
+      "type": "text",
+      "text": "{\"answer\":\"the capital is Lisbon\",\"count\":2}"
+    }
+  ],
+  "stop_reason": "end_turn",
+  "usage": { "input_tokens": 1200000, "output_tokens": 800000 }
+}

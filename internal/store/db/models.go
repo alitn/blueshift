@@ -60,6 +60,7 @@ type LlmCall struct {
 	LatencyMs     pgtype.Int4
 	CreatedAt     pgtype.Timestamptz
 	UpdatedAt     pgtype.Timestamptz
+	Status        pgtype.Text
 }
 
 type Membership struct {

@@ -1,0 +1,19 @@
+{
+  "candidates": [
+    {
+      "content": {
+        "role": "model",
+        "parts": [
+          { "text": "{\"answer\":\"the capital is Lisbon\",\"count\":2}" }
+        ]
+      },
+      "finishReason": "STOP"
+    }
+  ],
+  "usageMetadata": {
+    "promptTokenCount": 1200000,
+    "candidatesTokenCount": 800000,
+    "totalTokenCount": 2000000
+  },
+  "modelVersion": "gemini-3.6-flash"
+}

@@ -1,0 +1,19 @@
+{
+  "candidates": [
+    {
+      "content": {
+        "role": "model",
+        "parts": [
+          { "text": "{\"answer\":\"partial\",\"count\":1,\"unexpected\":true}" }
+        ]
+      },
+      "finishReason": "STOP"
+    }
+  ],
+  "usageMetadata": {
+    "promptTokenCount": 10,
+    "candidatesTokenCount": 5,
+    "totalTokenCount": 15
+  },
+  "modelVersion": "gemini-3.6-flash"
+}
