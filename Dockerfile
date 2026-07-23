@@ -56,8 +56,8 @@ RUN CGO_ENABLED=0 GOOS=linux go build -trimpath -o /out/app ./cmd/app \
 # (non-shared) build is a self-contained ffmpeg+ffprobe (all codec libs
 # statically linked; only glibc + libgcc_s dynamic) with libx264, native aac,
 # native flac, +faststart, and libass (+freetype/fribidi/harfbuzz for RTL/fa
-# caption shaping). LOCKSTEP with .github/workflows/{pr,baselines}.yml — bump
-# tag + asset + sha256 in all four places together.
+# caption shaping). LOCKSTEP with .github/workflows/{pr,baselines,deploy}.yml —
+# bump tag + asset + sha256 in all five places together.
 #   tag:    autobuild-2026-07-22-13-36
 #   asset:  ffmpeg-n8.1.2-30-g45f1910444-linux64-gpl-8.1.tar.xz
 #   sha256: 4ad0d6eb98bde796841050cf12bf9428e188446bd518b245fb4aa02f25b633a0

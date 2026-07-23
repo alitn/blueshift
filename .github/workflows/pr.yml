@@ -86,8 +86,9 @@ jobs:
       # NOT apt ffmpeg (bookworm ships 5.x/6.x). Pinned to an immutable dated
       # autobuild tag + sha256 (never the rolling `latest`); a wrong checksum
       # fails `sha256sum -c` here. LOCKSTEP: this run block is byte-identical in
-      # pr.yml (both jobs) and baselines.yml; the Dockerfile `ffmpeg` stage pins
-      # the same tag + asset + sha256 (different shell) — bump all four together.
+      # pr.yml (both jobs), baselines.yml, and deploy.yml's e2e job; the
+      # Dockerfile `ffmpeg` stage pins the same tag + asset + sha256 (different
+      # shell) — bump all five together.
       - name: Install ffmpeg (pinned 8.1.x, checksum-gated)
         run: |
           set -euo pipefail
@@ -252,8 +253,9 @@ jobs:
       # NOT apt ffmpeg (bookworm ships 5.x/6.x). Pinned to an immutable dated
       # autobuild tag + sha256 (never the rolling `latest`); a wrong checksum
       # fails `sha256sum -c` here. LOCKSTEP: this run block is byte-identical in
-      # pr.yml (both jobs) and baselines.yml; the Dockerfile `ffmpeg` stage pins
-      # the same tag + asset + sha256 (different shell) — bump all four together.
+      # pr.yml (both jobs), baselines.yml, and deploy.yml's e2e job; the
+      # Dockerfile `ffmpeg` stage pins the same tag + asset + sha256 (different
+      # shell) — bump all five together.
       - name: Install ffmpeg (pinned 8.1.x, checksum-gated)
         if: steps.decide.outputs.run == 'true'
         run: |
