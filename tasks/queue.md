@@ -37,6 +37,10 @@ spec file `tasks/<slug>.md` = one Implementer dispatch = one Reviewer verdict = 
 | m0-ci-speed | parallel jobs, caching, docs skip | committed | tasks/m0-ci-speed.md |
 | m0-deploy-triggers | deploy on runtime changes only, 5m watch | committed | tasks/m0-deploy-triggers.md |
 | m0-gate-proofs | Deliberate-failure proofs (AC 2/3/4/6) | done (evidence in log) | tasks/m0-gate-proofs.md |
+| m0-upload-fix | signBlob grant, orphan rollback, poll cadence | committed | tasks/m0-upload-fix.md |
+| m0-prod-hardening-2 | CORS + least-priv worker-runner role | committed | tasks/m0-prod-hardening-2.md |
+| m0-ffmpeg-pin | ffmpeg 8.1 static pin Docker+CI (ADR 0002) | committed | tasks/m0-ffmpeg-pin.md |
+| m0-client-errors | FE errors → own API → Cloud Logging | committed | tasks/m0-client-errors.md |
 
 ## Backlog
 
@@ -140,3 +144,15 @@ M1 decomposition happens after the M0 gate (see docs/SPEC-M1.md §Task decomposi
   calibration. CI wall-clock: ~13m (early, incl. deploys-on-every-push) → 2m54s measured
   (parallel check/e2e + caches). Deploys now fire only on runtime paths, 5m tunable watch,
   serialized. Ruleset requires check + e2e. PR #1 closed, proof branches deleted.
+- 2026-07-23 — AC1 live-demo findings, all fixed through the loop: signBlob 403 (SA
+  self-token-creator grant), orphan rows on failed create (rollback delete, SQL-gated),
+  ~1s poll storm (non-idempotent start(); now ≤1 in-flight + one 3s timer), bucket CORS
+  absent (codified with origin auto-resolve), trigger 403 runWithOverrides (custom role
+  blueshiftWorkerRunner, run.developer stopgap applied then revoked). Prod upload verified
+  E2E by Architect: uploaded→processing→ready→signed proxy URL. WATCH_MINUTES=0 for PoC
+  (REVERT to 5-10 when real users exist). ffmpeg 8.1 pinned (ADR 0002; GPU assessed:
+  cost-neutral, ~6x latency, deferred with revisit trigger). Client-error forwarding
+  shipped (window errors → /api/client-errors → Cloud Logging/Error Reporting).
+  M1 backlog adds: abandoned-upload TTL sweep + AWAITING UPLOAD state (human-found CORS
+  orphan class — no transaction can span browser+GCS), updated_at trigger, LISTEN/NOTIFY
+  for status push instead of polling.
