@@ -40,6 +40,10 @@ type Deps struct {
 	Episodes EpisodeRepo
 	// Blob mints upload URLs and stats uploaded objects.
 	Blob blob.Store
+	// PublicBaseURL is the app's public base URL, used only as the fallback
+	// Origin forwarded to the blob backend when a create request carried no
+	// Origin header (a non-browser caller). Empty means no fallback.
+	PublicBaseURL string
 	// Trigger launches the pipeline worker after an upload is verified. Optional:
 	// when nil, upload-complete records the master and returns without launching
 	// (e.g. a deployment where the worker is driven another way). Neutral by

@@ -66,6 +66,14 @@ type Config struct {
 	// the app still boots, and the /readyz "db" check is not registered.
 	DatabaseURL string
 
+	// PublicBaseURL is the app's public base URL (e.g. https://app.example.com).
+	// It is the fallback Origin the server forwards when it opens a
+	// direct-to-storage upload session and the create request carried no Origin
+	// header. Optional: browsers always send Origin on the create POST, so this
+	// only affects non-browser callers, for whom CORS does not apply. Unset means
+	// no fallback origin is forwarded.
+	PublicBaseURL string
+
 	// AuthMode selects the login backend (dev|identity).
 	AuthMode AuthMode
 	// SessionSecret keys the HMAC that signs session cookies.
@@ -185,6 +193,10 @@ func load(getenv func(string) string) (Config, error) {
 	// DATABASE_URL is optional in this milestone: unset is a valid state where
 	// the database readiness check is simply not wired up.
 	cfg.DatabaseURL = strings.TrimSpace(getenv("DATABASE_URL"))
+
+	// PUBLIC_BASE_URL is optional: it is only the fallback upload-session Origin
+	// for non-browser callers (browsers always send Origin on the create POST).
+	cfg.PublicBaseURL = strings.TrimSpace(getenv("PUBLIC_BASE_URL"))
 
 	if err := loadAuth(&cfg, getenv); err != nil {
 		return Config{}, err

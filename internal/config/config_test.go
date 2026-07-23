@@ -168,6 +168,25 @@ func TestDatabaseURLOptional(t *testing.T) {
 	}
 }
 
+func TestPublicBaseURL(t *testing.T) {
+	// Unset by default.
+	cfg, err := load(env(nil))
+	if err != nil {
+		t.Fatalf("load: %v", err)
+	}
+	if cfg.PublicBaseURL != "" {
+		t.Errorf("PublicBaseURL = %q, want empty when unset", cfg.PublicBaseURL)
+	}
+	// Explicit value is trimmed and carried through.
+	cfg, err = load(env(map[string]string{"PUBLIC_BASE_URL": "  https://app.example.com  "}))
+	if err != nil {
+		t.Fatalf("load: %v", err)
+	}
+	if cfg.PublicBaseURL != "https://app.example.com" {
+		t.Errorf("PublicBaseURL = %q, want the trimmed URL", cfg.PublicBaseURL)
+	}
+}
+
 func TestLoadInvalid(t *testing.T) {
 	cases := map[string]map[string]string{
 		"port not a number": {"PORT": "abc"},

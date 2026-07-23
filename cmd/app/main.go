@@ -155,6 +155,7 @@ func buildAPI(cfg config.Config, logger *slog.Logger, st *store.Store, bs blob.S
 		Cookie:        cookie,
 		Logger:        logger,
 		Blob:          bs,
+		PublicBaseURL: cfg.PublicBaseURL,
 	}
 	// Episode routes need both the store and the blob backend; without a
 	// database they stay off (the rest of /api still serves).

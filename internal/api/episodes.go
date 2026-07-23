@@ -7,6 +7,7 @@ import (
 	"io"
 	"log/slog"
 	"net/http"
+	"net/url"
 	"strings"
 	"time"
 
@@ -206,7 +207,7 @@ func (h *handler) createEpisode(w http.ResponseWriter, r *http.Request) {
 		h.unavailable(w, r, "master key build failed", err)
 		return
 	}
-	up, err := h.deps.Blob.InitResumableUpload(r.Context(), key, req.ContentType, req.SizeBytes)
+	up, err := h.deps.Blob.InitResumableUpload(r.Context(), key, req.ContentType, requestOrigin(r, h.deps.PublicBaseURL), req.SizeBytes)
 	if err != nil {
 		h.rollbackOrphanEpisode(r.Context(), p.OrgPublicID, episodeID)
 		h.unavailable(w, r, "init upload failed", err)
@@ -227,6 +228,36 @@ func (h *handler) rollbackOrphanEpisode(ctx context.Context, orgPublicID, episod
 		h.deps.Logger.LogAttrs(ctx, slog.LevelError, "orphan episode rollback failed",
 			slog.String("error_id", id), slog.String("error", err.Error()))
 	}
+}
+
+// requestOrigin returns the browser Origin the storage backend must forward when
+// it opens the upload session: the provider records it on the session so the
+// client's later cross-origin PUT to the returned URI receives matching CORS
+// headers. It prefers the request's Origin header (what the browser actually
+// sent) and falls back to the configured public origin when the header is absent
+// (a non-browser caller, where CORS does not apply anyway). The local backend
+// ignores the value; only the GCS backend uses it.
+func requestOrigin(r *http.Request, fallbackBaseURL string) string {
+	if o := strings.TrimSpace(r.Header.Get("Origin")); o != "" {
+		return o
+	}
+	return originOf(fallbackBaseURL)
+}
+
+// originOf reduces a configured public base URL to a bare origin
+// (scheme://host[:port]) suitable for an Origin header, tolerating a value that
+// carries a path or trailing slash. It returns "" when s is empty or not an
+// absolute URL.
+func originOf(s string) string {
+	s = strings.TrimSpace(s)
+	if s == "" {
+		return ""
+	}
+	u, err := url.Parse(s)
+	if err != nil || u.Scheme == "" || u.Host == "" {
+		return ""
+	}
+	return u.Scheme + "://" + u.Host
 }
 
 // uploadComplete verifies the uploaded master exists and matches the declared

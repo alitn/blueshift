@@ -53,7 +53,9 @@ func NewLocal(dir string, key []byte, now func() time.Time) (*Local, error) {
 
 // InitResumableUpload mints a PUT URL for key. The returned URL is same-origin
 // relative so the browser (or curl against the app host) uploads directly.
-func (l *Local) InitResumableUpload(_ context.Context, key, contentType string, _ int64) (Upload, error) {
+// origin is ignored: same-origin uploads need no forwarded CORS origin (it
+// exists only for the GCS backend's cross-origin session).
+func (l *Local) InitResumableUpload(_ context.Context, key, contentType, _ string, _ int64) (Upload, error) {
 	tok, err := l.signer.mint(key, opPut, localUploadTTL)
 	if err != nil {
 		return Upload{}, err

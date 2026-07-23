@@ -34,7 +34,7 @@ func TestLocalRoundTrip(t *testing.T) {
 	key := "org_a/ep_b/masters/clip.mp4"
 	body := []byte("the master bytes")
 
-	up, err := l.InitResumableUpload(ctx, key, "video/mp4", int64(len(body)))
+	up, err := l.InitResumableUpload(ctx, key, "video/mp4", "", int64(len(body)))
 	if err != nil {
 		t.Fatalf("InitResumableUpload: %v", err)
 	}

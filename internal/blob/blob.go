@@ -31,10 +31,11 @@ import (
 var ErrNotFound = errors.New("blob: object not found")
 
 // Upload is the instruction set the client follows to transfer the master
-// bytes. In GCS mode URL is an absolute, narrowly-scoped signed session URL; in
-// local mode it is a same-origin relative path served by the app itself. The
-// client issues a single request with Method to URL carrying Headers and the
-// object body — the shapes are compatible across both backends.
+// bytes. In GCS mode URL is an absolute, narrowly-scoped resumable session URI
+// (a bearer credential the backend opened server-side); in local mode it is a
+// same-origin relative path served by the app itself. The client issues a single
+// request with Method to URL carrying Headers and the object body — the shapes
+// are compatible across both backends.
 type Upload struct {
 	URL     string            `json:"url"`
 	Method  string            `json:"method"`
@@ -45,7 +46,11 @@ type Upload struct {
 type Store interface {
 	// InitResumableUpload prepares a direct-to-storage upload of key with the
 	// given content type and declared size, returning the client instructions.
-	InitResumableUpload(ctx context.Context, key, contentType string, sizeBytes int64) (Upload, error)
+	// origin is the requesting browser's Origin header: the GCS backend forwards
+	// it when it opens the resumable session so the browser's later cross-origin
+	// PUT to the returned URI receives matching CORS headers. It is "" for
+	// non-browser callers, and the same-origin local backend ignores it.
+	InitResumableUpload(ctx context.Context, key, contentType, origin string, sizeBytes int64) (Upload, error)
 	// Stat returns the stored object's size in bytes, or ErrNotFound.
 	Stat(ctx context.Context, key string) (int64, error)
 	// SignedGetURL returns a short-lived URL to read key, or ErrNotFound.

@@ -194,12 +194,41 @@ var errInitUpload = errors.New("sign upload url unavailable")
 // Stat/SignedGetURL are unused by the create flow.
 type initErrBlob struct{}
 
-func (initErrBlob) InitResumableUpload(context.Context, string, string, int64) (blob.Upload, error) {
+func (initErrBlob) InitResumableUpload(context.Context, string, string, string, int64) (blob.Upload, error) {
 	return blob.Upload{}, errInitUpload
 }
 func (initErrBlob) Stat(context.Context, string) (int64, error) { return 0, blob.ErrNotFound }
 func (initErrBlob) SignedGetURL(context.Context, string, time.Duration) (string, error) {
 	return "", blob.ErrNotFound
+}
+
+// originSpyBlob records the origin the create handler forwards to the blob layer,
+// so a test can prove the browser Origin (or the configured fallback) reaches the
+// backend that opens the upload session.
+type originSpyBlob struct {
+	mu     sync.Mutex
+	origin string
+}
+
+func (s *originSpyBlob) InitResumableUpload(_ context.Context, _, contentType, origin string, _ int64) (blob.Upload, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.origin = origin
+	headers := map[string]string{}
+	if contentType != "" {
+		headers["Content-Type"] = contentType
+	}
+	return blob.Upload{URL: "https://storage.example/session?u=1", Method: http.MethodPut, Headers: headers}, nil
+}
+func (*originSpyBlob) Stat(context.Context, string) (int64, error) { return 0, blob.ErrNotFound }
+func (*originSpyBlob) SignedGetURL(context.Context, string, time.Duration) (string, error) {
+	return "", blob.ErrNotFound
+}
+
+func (s *originSpyBlob) forwarded() string {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return s.origin
 }
 
 // newEpisodeRouterWithBlob wires an arbitrary blob.Store into an otherwise
@@ -443,6 +472,80 @@ func TestCreateFailedRollbackStillReturns503(t *testing.T) {
 	rec := doAs(router, orgA, createReq(`{"title":"Ep","source_filename":"a.mp4","size_bytes":10,"content_type":"video/mp4"}`))
 	if rec.Code != http.StatusServiceUnavailable {
 		t.Fatalf("create status = %d, want 503", rec.Code)
+	}
+}
+
+// TestCreateForwardsBrowserOrigin asserts the browser's Origin header reaches the
+// blob layer verbatim — it is what makes the provider attach correct CORS headers
+// to the client's later cross-origin PUT to the session URI.
+func TestCreateForwardsBrowserOrigin(t *testing.T) {
+	repo := newFakeRepo()
+	spy := &originSpyBlob{}
+	router := NewRouter(Deps{
+		Authenticator: stubAuth{},
+		Directory:     stubDir{},
+		Codec:         auth.NewCodec("test-secret"),
+		Logger:        discard(),
+		Now:           func() time.Time { return time.Unix(1_700_000_000, 0) },
+		Episodes:      repo,
+		Blob:          spy,
+		PublicBaseURL: "https://fallback.example.com",
+	})
+
+	req := createReq(`{"title":"Ep","source_filename":"a.mp4","size_bytes":10,"content_type":"video/mp4"}`)
+	req.Header.Set("Origin", "https://studio.example.com")
+	rec := doAs(router, orgA, req)
+	if rec.Code != http.StatusCreated {
+		t.Fatalf("create status = %d (body %s)", rec.Code, rec.Body.String())
+	}
+	if got := spy.forwarded(); got != "https://studio.example.com" {
+		t.Errorf("forwarded origin = %q, want the browser Origin", got)
+	}
+}
+
+// TestCreateFallsBackToConfiguredOrigin asserts that when the request carries no
+// Origin header (a non-browser caller), the create handler forwards the
+// configured public origin instead, normalized to a bare scheme://host even when
+// the config value carries a trailing slash.
+func TestCreateFallsBackToConfiguredOrigin(t *testing.T) {
+	repo := newFakeRepo()
+	spy := &originSpyBlob{}
+	router := NewRouter(Deps{
+		Authenticator: stubAuth{},
+		Directory:     stubDir{},
+		Codec:         auth.NewCodec("test-secret"),
+		Logger:        discard(),
+		Now:           func() time.Time { return time.Unix(1_700_000_000, 0) },
+		Episodes:      repo,
+		Blob:          spy,
+		PublicBaseURL: "https://app.example.com/",
+	})
+
+	// No Origin header set on the request.
+	rec := doAs(router, orgA, createReq(`{"title":"Ep","source_filename":"a.mp4","size_bytes":10,"content_type":"video/mp4"}`))
+	if rec.Code != http.StatusCreated {
+		t.Fatalf("create status = %d (body %s)", rec.Code, rec.Body.String())
+	}
+	if got := spy.forwarded(); got != "https://app.example.com" {
+		t.Errorf("forwarded origin = %q, want the normalized configured origin", got)
+	}
+}
+
+func TestOriginOf(t *testing.T) {
+	cases := map[string]string{
+		"https://app.example.com":          "https://app.example.com",
+		"https://app.example.com/":         "https://app.example.com",
+		"https://app.example.com/path?q=1": "https://app.example.com",
+		"http://localhost:5173":            "http://localhost:5173",
+		"":                                 "",
+		"   ":                              "",
+		"not-a-url":                        "",
+		"//no-scheme":                      "",
+	}
+	for in, want := range cases {
+		if got := originOf(in); got != want {
+			t.Errorf("originOf(%q) = %q, want %q", in, got, want)
+		}
 	}
 }
 
