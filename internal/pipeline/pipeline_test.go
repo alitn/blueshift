@@ -28,6 +28,7 @@ type fakeEp struct {
 	status     string
 	stage      string // current_stage: the stage running/next, "" until first claim
 	masterKey  string
+	language   string
 	proxyKey   string
 	durationMs int64
 	errorID    string
@@ -49,7 +50,18 @@ func newFakeRepo() *fakeRepo { return &fakeRepo{eps: map[string]*fakeEp{}} }
 func (f *fakeRepo) add(epID, org, masterKey string) {
 	f.mu.Lock()
 	defer f.mu.Unlock()
-	f.eps[epID] = &fakeEp{org: org, status: "uploaded", masterKey: masterKey}
+	f.eps[epID] = &fakeEp{org: org, status: "uploaded", masterKey: masterKey, language: "fa"}
+}
+
+// addAtStage seeds an episode already 'processing' at a given stage with ingest's
+// outputs recorded — the state a continuation stage (transcribe) claims from.
+func (f *fakeRepo) addAtStage(epID, org, stage, language string, durationMs int64) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	f.eps[epID] = &fakeEp{
+		org: org, status: "processing", stage: stage, language: language,
+		proxyKey: org + "/" + epID + "/proxies/" + proxyFilename, durationMs: durationMs,
+	}
 }
 
 func (f *fakeRepo) get(epID string) fakeEp {
@@ -83,7 +95,13 @@ func (f *fakeRepo) Claim(_ context.Context, epID, stage, prevStage string) (Epis
 	e.status = "processing"
 	e.stage = stage
 	e.claims++
-	return Episode{OrgID: e.org, PublicID: epID, MasterObjectKey: e.masterKey}, true, nil
+	return Episode{
+		OrgID:           e.org,
+		PublicID:        epID,
+		MasterObjectKey: e.masterKey,
+		Language:        e.language,
+		DurationMs:      e.durationMs,
+	}, true, nil
 }
 
 // AdvanceStage mirrors the intermediate finalize: gated on org + 'processing' +
@@ -107,7 +125,10 @@ func (f *fakeRepo) AdvanceStage(_ context.Context, org, epID, completedStage, pr
 	return nil
 }
 
-// MarkReady mirrors the org-scoped, 'processing'-gated finalizer.
+// MarkReady mirrors the org-scoped, 'processing'-gated finalizer. Like the real
+// store's MarkEpisodeReady it PRESERVES the proxy key / duration on an empty /
+// zero argument (COALESCE), so the terminal transcribe stage — which passes
+// neither — keeps the outputs ingest recorded rather than wiping them.
 func (f *fakeRepo) MarkReady(_ context.Context, org, epID, proxyKey string, durationMs int64) error {
 	f.mu.Lock()
 	defer f.mu.Unlock()
@@ -116,8 +137,12 @@ func (f *fakeRepo) MarkReady(_ context.Context, org, epID, proxyKey string, dura
 		return nil // no-op: cross-org or lost race
 	}
 	e.status = "ready"
-	e.proxyKey = proxyKey
-	e.durationMs = durationMs
+	if proxyKey != "" {
+		e.proxyKey = proxyKey
+	}
+	if durationMs > 0 {
+		e.durationMs = durationMs
+	}
 	e.errorID = ""
 	return nil
 }
@@ -170,6 +195,9 @@ type fakeMedia struct {
 	renders    atomic.Int32
 	remuxes    atomic.Int32
 	cancelled  atomic.Int32
+	// cuts records each CutAudio window ([startMs, durationMs]) in call order, so a
+	// transcribe test can assert the chunk boundaries the stage cut.
+	cuts [][2]int
 }
 
 func (m *fakeMedia) Probe(_ context.Context, _ string) (media.ProbeResult, error) {
@@ -214,6 +242,16 @@ func (m *fakeMedia) proxyOp(ctx context.Context, out string, n int, errs []error
 
 func (m *fakeMedia) ExtractAudio(_ context.Context, _, out string) error {
 	return os.WriteFile(out, []byte("audio"), 0o600)
+}
+
+// CutAudio records each requested window and writes a placeholder chunk, so a
+// transcribe test can assert the stage cut the planned windows without invoking
+// ffmpeg. The recorded windows are the [startMs, durationMs] pairs, in call order.
+func (m *fakeMedia) CutAudio(_ context.Context, _, out string, startMs, durationMs int) error {
+	m.mu.Lock()
+	m.cuts = append(m.cuts, [2]int{startMs, durationMs})
+	m.mu.Unlock()
+	return os.WriteFile(out, []byte("chunk"), 0o600)
 }
 
 // remuxEligibleProbe is a ProbeResult that passes EligibleForRemux, so a fake
@@ -320,8 +358,10 @@ func TestIngestHappyPathRemote(t *testing.T) {
 		t.Fatalf("Run: %v", err)
 	}
 	e := repo.get(epA)
-	if e.status != "ready" {
-		t.Errorf("status = %q, want ready", e.status)
+	// Ingest is now an intermediate stage: it hands off (records outputs, stays
+	// 'processing' at ingest) rather than marking ready — transcribe is terminal.
+	if e.status != "processing" || e.stage != "ingest" {
+		t.Errorf("state = (%q,%q), want (processing,ingest) after the ingest handoff", e.status, e.stage)
 	}
 	if e.durationMs != 2000 {
 		t.Errorf("duration_ms = %d, want 2000", e.durationMs)
@@ -354,8 +394,8 @@ func TestIngestHappyPathLocalDirect(t *testing.T) {
 		t.Fatalf("Run: %v", err)
 	}
 	e := repo.get(epA)
-	if e.status != "ready" {
-		t.Errorf("status = %q, want ready", e.status)
+	if e.status != "processing" || e.stage != "ingest" {
+		t.Errorf("state = (%q,%q), want (processing,ingest) after the ingest handoff", e.status, e.stage)
 	}
 	// The proxy render was written in place under the store root.
 	proxyPath := filepath.Join(blob.root, e.proxyKey)
@@ -377,8 +417,8 @@ func TestIngestRemuxPathForCompatibleMaster(t *testing.T) {
 	if err := r.Run(context.Background(), epA, "ingest"); err != nil {
 		t.Fatalf("Run: %v", err)
 	}
-	if e := repo.get(epA); e.status != "ready" {
-		t.Errorf("status = %q, want ready", e.status)
+	if e := repo.get(epA); e.status != "processing" || e.stage != "ingest" {
+		t.Errorf("state = (%q,%q), want (processing,ingest) after the ingest handoff", e.status, e.stage)
 	}
 	if got := md.remuxes.Load(); got != 1 {
 		t.Errorf("remux calls = %d, want 1 (compatible master)", got)
@@ -513,8 +553,8 @@ func TestIngestRetryThenSuccess(t *testing.T) {
 	if err := r.Run(context.Background(), epA, "ingest"); err != nil {
 		t.Fatalf("Run: %v", err)
 	}
-	if e := repo.get(epA); e.status != "ready" {
-		t.Errorf("status = %q, want ready after retry", e.status)
+	if e := repo.get(epA); e.status != "processing" || e.stage != "ingest" {
+		t.Errorf("state = (%q,%q), want (processing,ingest) after retry then handoff", e.status, e.stage)
 	}
 	if got := md.renders.Load(); got != 2 {
 		t.Errorf("render attempts = %d, want 2 (fail then success)", got)
@@ -609,8 +649,8 @@ func TestConcurrentClaimNoOp(t *testing.T) {
 	if e.claims != 1 {
 		t.Errorf("claims = %d, want exactly 1 (compare-and-set)", e.claims)
 	}
-	if e.status != "ready" {
-		t.Errorf("status = %q, want ready", e.status)
+	if e.status != "processing" || e.stage != "ingest" {
+		t.Errorf("state = (%q,%q), want (processing,ingest) — one winner hands off", e.status, e.stage)
 	}
 	if got := md.renders.Load(); got != 1 {
 		t.Errorf("render calls = %d, want 1 (stage ran once)", got)
@@ -630,8 +670,8 @@ func TestCrossOrgIsolation(t *testing.T) {
 		t.Fatalf("Run(epA): %v", err)
 	}
 	// Only org A's episode advanced; org B's identical-status episode is untouched.
-	if a := repo.get(epA); a.status != "ready" {
-		t.Errorf("epA status = %q, want ready", a.status)
+	if a := repo.get(epA); a.status != "processing" || a.stage != "ingest" {
+		t.Errorf("epA state = (%q,%q), want (processing,ingest)", a.status, a.stage)
 	}
 	if b := repo.get(epB); b.status != "uploaded" {
 		t.Errorf("epB status = %q, want uploaded (untouched)", b.status)
@@ -643,9 +683,11 @@ func TestCrossOrgIsolation(t *testing.T) {
 }
 
 func TestUnknownStageErrors(t *testing.T) {
+	// diarize is a declared Stage but not registered in defaultStages, so the worker
+	// must refuse it (transcribe is now registered and therefore a valid stage).
 	r := newRunner(newFakeRepo(), newRemoteBlob(t), &fakeMedia{}, Config{})
-	if err := r.Run(context.Background(), epA, "transcribe"); err == nil {
-		t.Fatal("Run with unknown stage: want error, got nil")
+	if err := r.Run(context.Background(), epA, "diarize"); err == nil {
+		t.Fatal("Run with unregistered stage: want error, got nil")
 	}
 }
 
@@ -716,13 +758,15 @@ func TestNotClaimableLogsWarnWithBlockingStatus(t *testing.T) {
 		Log:    slog.New(slog.NewJSONHandler(&buf, nil)),
 		Config: Config{Retries: 2}}
 
-	// First run claims and completes (episode -> ready).
+	// First run claims and completes ingest (episode -> processing, handed off to
+	// transcribe).
 	if err := r.Run(context.Background(), epA, "ingest"); err != nil {
 		t.Fatalf("first Run: %v", err)
 	}
 	buf.reset()
 
-	// Second run cannot claim (episode is 'ready'): expect a WARN naming the status.
+	// Second entry claim cannot take it (the episode left 'uploaded'): expect a WARN
+	// naming the blocking status.
 	if err := r.Run(context.Background(), epA, "ingest"); err != nil {
 		t.Fatalf("second Run: %v", err)
 	}
@@ -736,8 +780,8 @@ func TestNotClaimableLogsWarnWithBlockingStatus(t *testing.T) {
 	if entry["msg"] != "episode not claimable; no-op" {
 		t.Errorf("log msg = %v", entry["msg"])
 	}
-	if entry["blocking_status"] != "ready" {
-		t.Errorf("blocking_status = %v, want ready", entry["blocking_status"])
+	if entry["blocking_status"] != "processing" {
+		t.Errorf("blocking_status = %v, want processing", entry["blocking_status"])
 	}
 }
 

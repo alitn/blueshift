@@ -382,35 +382,40 @@ func (q *Queries) MarkEpisodeFailed(ctx context.Context, arg MarkEpisodeFailedPa
 const markEpisodeReady = `-- name: MarkEpisodeReady :one
 UPDATE episodes
 SET status = 'ready',
-    proxy_object_key = $3,
-    duration_ms = $4,
+    proxy_object_key = COALESCE($1, proxy_object_key),
+    duration_ms = COALESCE($2, duration_ms),
     error_id = NULL,
     claimed_at = NULL,
     updated_at = now()
-WHERE public_id = $1
-  AND org_id = $2
+WHERE public_id = $3
+  AND org_id = $4
   AND status = 'processing'
   AND deleted_at IS NULL
 RETURNING id, public_id, org_id, show_id, title, source_filename, language, status, duration_ms, master_object_key, proxy_object_key, error_id, created_at, updated_at, deleted_at, master_size_bytes, claimed_at, current_stage
 `
 
 type MarkEpisodeReadyParams struct {
-	PublicID       pgtype.UUID
-	OrgID          int64
 	ProxyObjectKey pgtype.Text
 	DurationMs     pgtype.Int8
+	PublicID       pgtype.UUID
+	OrgID          int64
 }
 
-// Finalize a successful stage: record the proxy key and measured duration and
-// flip to 'ready'. Org-scoped and gated on 'processing' so it only ever
-// completes the run this worker claimed (idempotent no-op otherwise). claimed_at
-// is cleared: the run is done, no claim is in flight.
+// Finalize a successful run: flip to 'ready', preserving the outputs earlier
+// stages recorded. proxy_object_key/duration_ms are COALESCEd (a NULL arg leaves
+// the existing value untouched), so the terminal stage — which today is
+// transcribe, and produces no proxy or duration of its own — does not wipe the
+// proxy key and measured duration ingest recorded. A stage that DOES produce them
+// (a single-stage pipeline where ingest is terminal) still passes non-NULL and
+// sets them, exactly as before. Org-scoped and gated on 'processing' so it only
+// ever completes the run this worker claimed (idempotent no-op otherwise).
+// claimed_at is cleared: the run is done, no claim is in flight.
 func (q *Queries) MarkEpisodeReady(ctx context.Context, arg MarkEpisodeReadyParams) (Episode, error) {
 	row := q.db.QueryRow(ctx, markEpisodeReady,
-		arg.PublicID,
-		arg.OrgID,
 		arg.ProxyObjectKey,
 		arg.DurationMs,
+		arg.PublicID,
+		arg.OrgID,
 	)
 	var i Episode
 	err := row.Scan(

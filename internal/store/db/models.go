@@ -82,6 +82,17 @@ type Org struct {
 	UpdatedAt pgtype.Timestamptz
 }
 
+type Segment struct {
+	ID        int64
+	EpisodeID int64
+	Idx       int32
+	StartMs   int32
+	EndMs     int32
+	Text      string
+	Words     []byte
+	CreatedAt pgtype.Timestamptz
+}
+
 type Show struct {
 	ID        int64
 	PublicID  pgtype.UUID

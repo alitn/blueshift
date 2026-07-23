@@ -359,6 +359,83 @@ func TestLoadSweepInvalid(t *testing.T) {
 	}
 }
 
+func TestLoadASRDefaults(t *testing.T) {
+	// Dev defaults to the offline fake engine under the neutral label; no provider
+	// coordinates are required and the language-code map is empty.
+	cfg, err := load(env(nil))
+	if err != nil {
+		t.Fatalf("load: %v", err)
+	}
+	if cfg.ASRMode != ASRModeFake {
+		t.Errorf("ASRMode = %q, want fake in dev", cfg.ASRMode)
+	}
+	if cfg.ASREngineLabel != defaultASREngineLabel {
+		t.Errorf("ASREngineLabel = %q, want %q", cfg.ASREngineLabel, defaultASREngineLabel)
+	}
+	if len(cfg.ASRLanguageCodes) != 0 {
+		t.Errorf("ASRLanguageCodes = %v, want empty", cfg.ASRLanguageCodes)
+	}
+}
+
+func TestLoadASRProdDefaultsSpeech(t *testing.T) {
+	// Prod derives speech mode and must still boot with the ASR coordinates unset:
+	// requiredness is enforced by the engine constructor at wiring time, not here,
+	// so the API server (which never builds an engine) is never blocked on them.
+	cfg, err := load(env(map[string]string{
+		"ENV": "prod", "SESSION_SECRET": "s", "IDP_API_KEY": "k", "GCS_BUCKET": "b",
+	}))
+	if err != nil {
+		t.Fatalf("load: %v", err)
+	}
+	if cfg.ASRMode != ASRModeSpeech {
+		t.Errorf("ASRMode = %q, want speech in prod", cfg.ASRMode)
+	}
+}
+
+func TestLoadASRSpeechOverrides(t *testing.T) {
+	cfg, err := load(env(map[string]string{
+		"ASR_ENGINE_MODE":    "speech",
+		"ASR_ENGINE_LABEL":   "bs-asr-2",
+		"ASR_MODEL":          "some-model",
+		"ASR_REGION":         "us-central1",
+		"ASR_PROJECT":        "bs-proj",
+		"ASR_BUCKET":         "bs-media",
+		"ASR_LANGUAGE_CODES": " fa=fa-IR , en = en-US ",
+	}))
+	if err != nil {
+		t.Fatalf("load: %v", err)
+	}
+	if cfg.ASRMode != ASRModeSpeech {
+		t.Errorf("ASRMode = %q, want speech", cfg.ASRMode)
+	}
+	if cfg.ASREngineLabel != "bs-asr-2" {
+		t.Errorf("ASREngineLabel = %q, want bs-asr-2", cfg.ASREngineLabel)
+	}
+	if cfg.ASRModel != "some-model" || cfg.ASRRegion != "us-central1" || cfg.ASRProject != "bs-proj" || cfg.ASRBucket != "bs-media" {
+		t.Errorf("speech coords = %q/%q/%q/%q", cfg.ASRModel, cfg.ASRRegion, cfg.ASRProject, cfg.ASRBucket)
+	}
+	if cfg.ASRLanguageCodes["fa"] != "fa-IR" || cfg.ASRLanguageCodes["en"] != "en-US" {
+		t.Errorf("ASRLanguageCodes = %v, want fa->fa-IR, en->en-US (trimmed)", cfg.ASRLanguageCodes)
+	}
+}
+
+func TestLoadASRInvalid(t *testing.T) {
+	cases := map[string]map[string]string{
+		"invalid mode":         {"ASR_ENGINE_MODE": "magic"},
+		"fake in prod":         {"ENV": "prod", "SESSION_SECRET": "s", "IDP_API_KEY": "k", "GCS_BUCKET": "b", "ASR_ENGINE_MODE": "fake"},
+		"lang codes no equals": {"ASR_LANGUAGE_CODES": "fa"},
+		"lang codes empty tag": {"ASR_LANGUAGE_CODES": "=fa-IR"},
+		"lang codes empty val": {"ASR_LANGUAGE_CODES": "fa="},
+	}
+	for name, m := range cases {
+		t.Run(name, func(t *testing.T) {
+			if _, err := load(env(m)); err == nil {
+				t.Fatalf("load(%v): expected error, got nil", m)
+			}
+		})
+	}
+}
+
 func TestParseLevel(t *testing.T) {
 	cases := map[string]slog.Level{
 		"debug":   slog.LevelDebug,

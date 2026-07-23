@@ -52,6 +52,10 @@ func (s *Store) Claim(ctx context.Context, episodePublicID, stage, prevStage str
 		PublicID:        ids.Encode(ids.Episode, row.PublicID.Bytes),
 		MasterObjectKey: textOrEmpty(row.MasterObjectKey),
 		Language:        row.Language,
+		// DurationMs carries the media length ingest measured (0 until ingest runs).
+		// A continuation stage (transcribe) reads it to plan its work without
+		// re-probing the audio; timestamps stay measured, never guessed.
+		DurationMs: row.DurationMs.Int64,
 	}, true, nil
 }
 
@@ -103,10 +107,13 @@ func (s *Store) MarkReady(ctx context.Context, orgID, episodePublicID, proxyObje
 		return nil
 	}
 	_, err = s.MarkEpisodeReady(ctx, db.MarkEpisodeReadyParams{
-		PublicID:       pgUUID(epUUID),
-		OrgID:          orgInternal,
+		PublicID: pgUUID(epUUID),
+		OrgID:    orgInternal,
+		// Empty proxy / zero duration leave the existing column untouched (COALESCE
+		// in MarkEpisodeReady): the terminal transcribe stage produces neither, so it
+		// must preserve the proxy key and duration ingest already recorded.
 		ProxyObjectKey: pgtype.Text{String: proxyObjectKey, Valid: proxyObjectKey != ""},
-		DurationMs:     pgtype.Int8{Int64: durationMs, Valid: durationMs >= 0},
+		DurationMs:     pgtype.Int8{Int64: durationMs, Valid: durationMs > 0},
 	})
 	if errors.Is(err, pgx.ErrNoRows) {
 		return nil

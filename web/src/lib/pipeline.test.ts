@@ -97,6 +97,16 @@ describe('pipelineView (multi-stage: bars light per current stage)', () => {
     expect(v.tone).toBe('ok');
   });
 
+  it('ready at transcribe (M1 terminal) = bars 1-2 done, rest unreached', () => {
+    // The current M1-partial pipeline ends at transcribe: a Ready episode has both
+    // a proxy (ingest) and a transcript (transcribe), so bars 1-2 are done and the
+    // not-yet-wired stages stay honestly unreached — the seeded sample's state.
+    const v = pipelineView('ready', 'transcribe');
+    expect(v.steps).toEqual(['done', 'done', 'unreached', 'unreached', 'unreached']);
+    expect(v.label).toBe('READY');
+    expect(v.tone).toBe('ok');
+  });
+
   it('ready mid-pipeline = stages up to and including current done, later unreached', () => {
     const v = pipelineView('ready', 'moments');
     expect(v.steps).toEqual(['done', 'done', 'done', 'done', 'unreached']);

@@ -46,6 +46,11 @@ type Querier interface {
 	// signal the stale-claim sweeper reads to force-fail a 'processing' row whose
 	// worker died without finalizing it.
 	ClaimEpisodeForStage(ctx context.Context, arg ClaimEpisodeForStageParams) (Episode, error)
+	// Remove all of an episode's segments. Paired with InsertSegment inside one
+	// transaction, this makes a re-run of the transcribe stage idempotent: the prior
+	// transcript is replaced wholesale rather than duplicated. episode_id is the
+	// internal id, resolved org-scoped by the caller.
+	DeleteEpisodeSegments(ctx context.Context, episodeID int64) error
 	// Compensating rollback for a create that failed AFTER the row was inserted but
 	// BEFORE an upload URL could be minted (e.g. signing unavailable). It hard-deletes
 	// the just-created row so a failed create leaves nothing behind. It is narrowly
@@ -88,15 +93,27 @@ type Querier interface {
 	// JSON body). cost_cents is NULL when no price is configured for the model;
 	// latency_ms and status record the attempt's outcome.
 	InsertLlmCall(ctx context.Context, arg InsertLlmCallParams) (LlmCall, error)
+	// Insert one transcript segment. `words` is the positional jsonb array the schema
+	// documents ([text, start_ms, end_ms, conf] tuples); text/words are stored
+	// verbatim from ASR (no normalization at rest).
+	InsertSegment(ctx context.Context, arg InsertSegmentParams) error
 	ListEpisodesByOrg(ctx context.Context, orgID int64) ([]Episode, error)
+	// List an episode's transcript in order. episode_id is the internal id, resolved
+	// org-scoped by the caller.
+	ListSegmentsByEpisode(ctx context.Context, episodeID int64) ([]ListSegmentsByEpisodeRow, error)
 	// Finalize an exhausted stage: record a neutral error_id and flip to 'failed'.
 	// Org-scoped and gated on 'processing' for the same reason as MarkEpisodeReady.
 	// claimed_at is cleared: the run is done, no claim is in flight.
 	MarkEpisodeFailed(ctx context.Context, arg MarkEpisodeFailedParams) (Episode, error)
-	// Finalize a successful stage: record the proxy key and measured duration and
-	// flip to 'ready'. Org-scoped and gated on 'processing' so it only ever
-	// completes the run this worker claimed (idempotent no-op otherwise). claimed_at
-	// is cleared: the run is done, no claim is in flight.
+	// Finalize a successful run: flip to 'ready', preserving the outputs earlier
+	// stages recorded. proxy_object_key/duration_ms are COALESCEd (a NULL arg leaves
+	// the existing value untouched), so the terminal stage — which today is
+	// transcribe, and produces no proxy or duration of its own — does not wipe the
+	// proxy key and measured duration ingest recorded. A stage that DOES produce them
+	// (a single-stage pipeline where ingest is terminal) still passes non-NULL and
+	// sets them, exactly as before. Org-scoped and gated on 'processing' so it only
+	// ever completes the run this worker claimed (idempotent no-op otherwise).
+	// claimed_at is cleared: the run is done, no claim is in flight.
 	MarkEpisodeReady(ctx context.Context, arg MarkEpisodeReadyParams) (Episode, error)
 	// State-guarded retry: atomically move a single 'failed' episode back to
 	// 'uploaded' so the ingest trigger can re-run it, clearing the prior error_id.

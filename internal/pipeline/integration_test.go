@@ -103,10 +103,12 @@ func TestIngestRealHappyPath(t *testing.T) {
 		t.Fatalf("Run: %v", err)
 	}
 	e := repo.get(ep)
-	t.Logf("[ingest] status=%s proxy_object_key=%s duration_ms=%d", e.status, e.proxyKey, e.durationMs)
+	t.Logf("[ingest] status=%s stage=%s proxy_object_key=%s duration_ms=%d", e.status, e.stage, e.proxyKey, e.durationMs)
 
-	if e.status != "ready" {
-		t.Errorf("status = %q, want ready", e.status)
+	// Ingest is intermediate now (transcribe is terminal): it hands off, staying
+	// 'processing' at ingest, with the proxy/audio/duration recorded.
+	if e.status != "processing" || e.stage != "ingest" {
+		t.Errorf("state = (%q,%q), want (processing,ingest) after the ingest handoff", e.status, e.stage)
 	}
 	if d := e.durationMs - 2000; d < -50 || d > 50 {
 		t.Errorf("duration_ms = %d, want ~2000 (±50)", e.durationMs)
@@ -210,8 +212,8 @@ func TestIngestRealRemuxPath(t *testing.T) {
 		t.Fatalf("Run: %v", err)
 	}
 	e := repo.get(ep)
-	if e.status != "ready" {
-		t.Fatalf("status = %q, want ready", e.status)
+	if e.status != "processing" || e.stage != "ingest" {
+		t.Fatalf("state = (%q,%q), want (processing,ingest) after the ingest handoff", e.status, e.stage)
 	}
 	proxyPath := filepath.Join(blobDir, e.proxyKey)
 	audioPath := filepath.Join(blobDir, org, ep, "proxies", audioFilename)
@@ -268,8 +270,8 @@ func TestIngestRealTranscodePath(t *testing.T) {
 		t.Fatalf("Run: %v", err)
 	}
 	e := repo.get(ep)
-	if e.status != "ready" {
-		t.Fatalf("status = %q, want ready", e.status)
+	if e.status != "processing" || e.stage != "ingest" {
+		t.Fatalf("state = (%q,%q), want (processing,ingest) after the ingest handoff", e.status, e.stage)
 	}
 	proxyPath := filepath.Join(blobDir, e.proxyKey)
 	audioPath := filepath.Join(blobDir, org, ep, "proxies", audioFilename)

@@ -26,21 +26,24 @@ import (
 // -> diarize -> moments -> render; these constants name the whole set (they match
 // the episodes.current_stage CHECK and the Library's five bars). Only the stages
 // registered in defaultStages are actually *runnable* by the worker — M1 wires
-// ingest; the rest register as they land. Stage names are neutral product terms,
-// never provider names.
+// ingest then transcribe; the rest register as they land. Stage names are neutral
+// product terms, never provider names.
 type Stage string
 
 const (
 	// StageIngest extracts audio and renders a browser proxy from the master.
 	StageIngest Stage = "ingest"
-	// StageTranscribe, StageDiarize, StageMoments, StageRender name the downstream
-	// stages. They are declared here (and allowed by the DB CHECK) but are not yet
+	// StageTranscribe turns the ingest audio into word-timed transcript segments
+	// (internal/asr). It is registered after ingest, so ingest auto-advances into
+	// it and transcribe is the terminal stage in this M1-partial pipeline.
+	StageTranscribe Stage = "transcribe"
+	// StageDiarize, StageMoments, StageRender name the remaining downstream stages.
+	// They are declared here (and allowed by the DB CHECK) but are not yet
 	// registered in defaultStages, so the worker refuses to run them until their
 	// implementations land.
-	StageTranscribe Stage = "transcribe"
-	StageDiarize    Stage = "diarize"
-	StageMoments    Stage = "moments"
-	StageRender     Stage = "render"
+	StageDiarize Stage = "diarize"
+	StageMoments Stage = "moments"
+	StageRender  Stage = "render"
 )
 
 // stageDef is one entry in the ordered stage registry: a runnable stage's name
@@ -64,13 +67,15 @@ type stageOutput struct {
 	DurationMs int64
 }
 
-// defaultStages is the ordered registry of runnable stages. M1 registers only
-// ingest, so ingest is the terminal stage and its success flips the episode to
-// 'ready' — identical to the M0 single-stage behaviour. transcribe/diarize/
-// moments/render append here (in order) as they land, at which point ingest
-// becomes an intermediate stage that auto-advances to the next.
+// defaultStages is the ordered registry of runnable stages. M1 registers ingest
+// then transcribe: ingest is now an intermediate stage that auto-advances into
+// transcribe, and transcribe is the terminal stage whose success flips the
+// episode to 'ready' (the new M1-partial behaviour — the episode is Ready once it
+// has a proxy AND a transcript). diarize/moments/render append here (in order) as
+// they land, at which point transcribe becomes intermediate too.
 var defaultStages = []stageDef{
 	{name: StageIngest, run: (*Runner).runIngest},
+	{name: StageTranscribe, run: (*Runner).runTranscribe},
 }
 
 // ValidStage reports whether s names a stage the worker can run (i.e. one
@@ -93,6 +98,11 @@ type Episode struct {
 	PublicID        string
 	MasterObjectKey string
 	Language        string
+	// DurationMs is the media length ingest measured (ffprobe), 0 until ingest has
+	// run. A continuation stage reads it as measured data — the transcribe stage
+	// plans its ≤15-min chunk windows from it (verbatim invariant: the length is
+	// measured, never guessed) instead of re-probing the audio object.
+	DurationMs int64
 }
 
 // Repo is the pipeline's view of episode persistence. Claim is the stage-aware
@@ -145,6 +155,11 @@ type Media interface {
 	RemuxProxy(ctx context.Context, in, out string) error
 	RenderProxy(ctx context.Context, in, out string) error
 	ExtractAudio(ctx context.Context, in, out string) error
+	// CutAudio writes the [startMs, startMs+durationMs) window of the audio at in
+	// to out (mono 16 kHz FLAC). The transcribe stage uses it to split long audio
+	// into ≤15-min chunks; short audio (a single chunk covering the whole track) is
+	// transcribed directly and never calls this.
+	CutAudio(ctx context.Context, in, out string, startMs, durationMs int) error
 }
 
 // Config tunes a run: the per-attempt timeout, how many extra attempts follow
@@ -167,6 +182,11 @@ type Config struct {
 	// handoff durably, but the next stage is not launched — a staged rollout /
 	// manual-drive mode. It has no effect on a terminal stage (there is no next).
 	AutoAdvance bool
+	// TranscribeChunkMs caps the transcribe stage's per-chunk audio length in
+	// milliseconds. <=0 uses defaultTranscribeChunkMs (15 min, a margin under the
+	// ~20-min word-timestamp batch limit). Exists so a test can force multi-chunk
+	// splitting on a short fixture; production leaves it at the default.
+	TranscribeChunkMs int
 }
 
 const (
@@ -179,6 +199,11 @@ const (
 	// DefaultRetries is the number of *additional* attempts after the first, per
 	// the ruling (total attempts = 1 + retries = 3). cmd/worker applies it.
 	DefaultRetries = 2
+	// defaultTranscribeChunkMs is the transcribe stage's per-chunk audio cap when
+	// Config.TranscribeChunkMs is unset: 15 minutes, a deliberate margin under the
+	// ~20-min limit the batch API imposes when word-level timestamps are enabled
+	// (see internal/asr/stitch.go). Audio at or under it is one chunk.
+	defaultTranscribeChunkMs = 15 * 60 * 1000
 	// shutdownFinalizeTimeout bounds the detached mark-failed write performed when
 	// the run's context is already cancelled (SIGTERM shutdown / deadline). It must
 	// stay well under Cloud Run's ~10s SIGTERM-to-SIGKILL grace so the episode is
@@ -207,6 +232,13 @@ func (c Config) maxRemuxBitrate() int64 {
 	return c.MaxRemuxBitrate
 }
 
+func (c Config) transcribeChunkMs() int {
+	if c.TranscribeChunkMs <= 0 {
+		return defaultTranscribeChunkMs
+	}
+	return c.TranscribeChunkMs
+}
+
 // ErrStageFailed reports that a stage exhausted its attempts. The episode is
 // already recorded 'failed' with a neutral error_id by the time it surfaces;
 // cmd/worker maps it to exit code 1 for Cloud Run Jobs semantics.
@@ -227,6 +259,14 @@ type Runner struct {
 	// next stage is not launched (logged; recoverable by a manual re-drive or the
 	// stale-claim sweep).
 	Trigger Trigger
+	// ASR resolves the speech engine bound to an episode's content language (the
+	// lang registry declares the language uses an asr slot; a neutral label binds
+	// it to a registered engine). Only the transcribe stage consults it; an
+	// ingest-only worker may leave it nil. Provider choice never crosses this seam.
+	ASR ASR
+	// Segments persists an episode's transcript (idempotent, org-scoped). Only the
+	// transcribe stage consults it; nil for an ingest-only worker.
+	Segments SegmentStore
 	// stages overrides the default stage registry. Nil uses defaultStages
 	// (production). It exists so tests can register fake multi-stage pipelines to
 	// exercise auto-advance without a real downstream stage; it is never set in

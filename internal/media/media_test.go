@@ -352,6 +352,71 @@ func TestExtractAudio(t *testing.T) {
 	}
 }
 
+// genAudio writes a mono 16 kHz FLAC tone of the given length (seconds) — the
+// shape the ASR stage feeds CutAudio.
+func genAudio(t *testing.T, dir string, seconds int) string {
+	t.Helper()
+	out := filepath.Join(dir, "audio.flac")
+	cmd := exec.Command(ffmpegBin, "-nostdin", "-y", "-loglevel", "error",
+		"-f", "lavfi", "-i", "sine=frequency=440:duration="+strconv.Itoa(seconds),
+		"-ac", "1", "-ar", "16000", "-c:a", "flac", out)
+	var stderr bytes.Buffer
+	cmd.Stderr = &stderr
+	if err := cmd.Run(); err != nil {
+		t.Fatalf("generate audio fixture: %v: %s", err, stderr.String())
+	}
+	return out
+}
+
+// TestCutAudio cuts a window out of a real audio fixture and asserts the chunk is
+// mono 16 kHz FLAC of the requested length — the transcribe stage's chunking.
+func TestCutAudio(t *testing.T) {
+	requireFFmpeg(t)
+	dir := t.TempDir()
+	audio := genAudio(t, dir, 5) // 5s source
+	chunk := filepath.Join(dir, "chunk.flac")
+
+	// Cut the middle [1.000s, 3.000s) window (2s).
+	if err := CutAudio(context.Background(), audio, chunk, 1000, 2000); err != nil {
+		t.Fatalf("CutAudio: %v", err)
+	}
+
+	codec := probeField(t, "-v", "error", "-select_streams", "a:0", "-show_entries", "stream=codec_name", "-of", "csv=p=0", chunk)
+	channels := probeField(t, "-v", "error", "-select_streams", "a:0", "-show_entries", "stream=channels", "-of", "csv=p=0", chunk)
+	rate := probeField(t, "-v", "error", "-select_streams", "a:0", "-show_entries", "stream=sample_rate", "-of", "csv=p=0", chunk)
+	dur := probeField(t, "-v", "error", "-show_entries", "format=duration", "-of", "csv=p=0", chunk)
+	if codec != "flac" {
+		t.Errorf("chunk codec = %q, want flac", codec)
+	}
+	if channels != "1" {
+		t.Errorf("chunk channels = %q, want 1 (mono)", channels)
+	}
+	if rate != "16000" {
+		t.Errorf("chunk sample_rate = %q, want 16000", rate)
+	}
+	secs, err := strconv.ParseFloat(dur, 64)
+	if err != nil {
+		t.Fatalf("parse chunk duration %q: %v", dur, err)
+	}
+	if secs < 1.9 || secs > 2.1 {
+		t.Errorf("chunk duration = %vs, want ~2s", secs)
+	}
+}
+
+// TestCutAudioInvalidWindow rejects a non-positive duration before invoking
+// ffmpeg, rather than shelling out with a nonsense window.
+func TestCutAudioInvalidWindow(t *testing.T) {
+	requireFFmpeg(t)
+	dir := t.TempDir()
+	audio := genAudio(t, dir, 2)
+	if err := CutAudio(context.Background(), audio, filepath.Join(dir, "c.flac"), 0, 0); err == nil {
+		t.Error("CutAudio with zero duration: want error, got nil")
+	}
+	if err := CutAudio(context.Background(), audio, filepath.Join(dir, "c.flac"), -1, 1000); err == nil {
+		t.Error("CutAudio with negative start: want error, got nil")
+	}
+}
+
 // TestRenderProxyBadInput asserts a corrupt master yields a media.Error whose
 // stderr tail is captured (for server logs), not a silent success.
 func TestRenderProxyBadInput(t *testing.T) {

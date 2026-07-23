@@ -159,19 +159,24 @@ WHERE public_id = $1
   AND deleted_at IS NULL;
 
 -- name: MarkEpisodeReady :one
--- Finalize a successful stage: record the proxy key and measured duration and
--- flip to 'ready'. Org-scoped and gated on 'processing' so it only ever
--- completes the run this worker claimed (idempotent no-op otherwise). claimed_at
--- is cleared: the run is done, no claim is in flight.
+-- Finalize a successful run: flip to 'ready', preserving the outputs earlier
+-- stages recorded. proxy_object_key/duration_ms are COALESCEd (a NULL arg leaves
+-- the existing value untouched), so the terminal stage — which today is
+-- transcribe, and produces no proxy or duration of its own — does not wipe the
+-- proxy key and measured duration ingest recorded. A stage that DOES produce them
+-- (a single-stage pipeline where ingest is terminal) still passes non-NULL and
+-- sets them, exactly as before. Org-scoped and gated on 'processing' so it only
+-- ever completes the run this worker claimed (idempotent no-op otherwise).
+-- claimed_at is cleared: the run is done, no claim is in flight.
 UPDATE episodes
 SET status = 'ready',
-    proxy_object_key = $3,
-    duration_ms = $4,
+    proxy_object_key = COALESCE(sqlc.narg(proxy_object_key), proxy_object_key),
+    duration_ms = COALESCE(sqlc.narg(duration_ms), duration_ms),
     error_id = NULL,
     claimed_at = NULL,
     updated_at = now()
-WHERE public_id = $1
-  AND org_id = $2
+WHERE public_id = sqlc.arg(public_id)
+  AND org_id = sqlc.arg(org_id)
   AND status = 'processing'
   AND deleted_at IS NULL
 RETURNING *;

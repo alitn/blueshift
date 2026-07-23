@@ -18,12 +18,19 @@ import (
 	"os/signal"
 	"syscall"
 
+	"blueshift/internal/asr"
 	"blueshift/internal/blob"
 	"blueshift/internal/config"
 	"blueshift/internal/logx"
 	"blueshift/internal/media"
 	"blueshift/internal/pipeline"
 	"blueshift/internal/store"
+
+	// Register the supported content languages with the /internal/lang registry
+	// (import for side effect). The transcribe stage resolves an episode's language
+	// through the registry, so each content language must be registered here.
+	// Persian (fa) is the first; additional languages add a blank import.
+	_ "blueshift/internal/lang/fa"
 )
 
 func main() {
@@ -39,7 +46,7 @@ func run(args []string) error {
 	}
 	episodeID, stage := args[0], args[1]
 	if !pipeline.ValidStage(stage) {
-		return fmt.Errorf("unknown stage %q (want ingest)", stage)
+		return fmt.Errorf("unknown stage %q (want ingest|transcribe)", stage)
 	}
 
 	cfg, err := config.Load()
@@ -74,6 +81,11 @@ func run(args []string) error {
 		return fmt.Errorf("worker: blob: %w", err)
 	}
 
+	asrRegistry, err := buildASRRegistry(cfg, logger)
+	if err != nil {
+		return fmt.Errorf("worker: asr: %w", err)
+	}
+
 	runner := &pipeline.Runner{
 		Repo:  st,
 		Blob:  bs,
@@ -87,9 +99,13 @@ func run(args []string) error {
 		},
 		// The worker launches the next stage on auto-advance through the same
 		// neutral trigger the API server uses (its SA already holds the runner
-		// role). With only ingest registered this is dormant — ingest is terminal —
-		// but wiring it keeps the multi-stage machinery complete.
+		// role). Ingest now auto-advances into transcribe.
 		Trigger: buildTrigger(cfg, logger),
+		// The transcribe stage resolves an episode's language to its asr engine via
+		// the lang registry declaration + the neutral label bound to the registry,
+		// and persists the transcript through the store (org-scoped, idempotent).
+		ASR:      pipeline.LangEngineResolver{Registry: asrRegistry, Label: cfg.ASREngineLabel},
+		Segments: st,
 	}
 
 	if err := runner.Run(ctx, episodeID, stage); err != nil {
@@ -122,6 +138,39 @@ func buildBlob(ctx context.Context, cfg config.Config) (pipeline.Blob, error) {
 	default:
 		return blob.NewLocal(cfg.BlobDir, []byte(cfg.SessionSecret), nil)
 	}
+}
+
+// buildASRRegistry constructs the speech-recognition registry the transcribe
+// stage resolves engines from. The mode selects which engine backs the neutral
+// label: `fake` replays the embedded offline recordings (dev/demo, deterministic,
+// no credential); `speech` is the provider-backed engine fully specified by
+// SpeechConfig (region/model/bucket/project from env per docs/RUNBOOK.md — the
+// engine constructor validates requiredness, so a misconfigured speech worker
+// fails fast here). Provider names are confined to internal/asr and the deploy
+// env; nothing they touch is client-visible.
+func buildASRRegistry(cfg config.Config, logger *slog.Logger) (*asr.Registry, error) {
+	var (
+		engine asr.Engine
+		err    error
+	)
+	switch cfg.ASRMode {
+	case config.ASRModeSpeech:
+		engine, err = asr.NewSpeechEngine(asr.SpeechConfig{
+			Label:         cfg.ASREngineLabel,
+			Model:         cfg.ASRModel,
+			Region:        cfg.ASRRegion,
+			Project:       cfg.ASRProject,
+			Bucket:        cfg.ASRBucket,
+			LanguageCodes: cfg.ASRLanguageCodes,
+			Logger:        logger,
+		})
+	default:
+		engine, err = asr.NewDefaultFakeEngine(cfg.ASREngineLabel)
+	}
+	if err != nil {
+		return nil, err
+	}
+	return asr.NewRegistry(engine)
 }
 
 // buildTrigger constructs the worker's own trigger for auto-advancing to the next

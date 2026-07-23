@@ -80,6 +80,12 @@ func (Runner) ExtractAudio(ctx context.Context, in, out string) error {
 	return ExtractAudio(ctx, in, out)
 }
 
+// CutAudio writes the [startMs, startMs+durationMs) window of in to out as a mono
+// 16 kHz FLAC chunk (the transcribe stage's long-audio chunking).
+func (Runner) CutAudio(ctx context.Context, in, out string, startMs, durationMs int) error {
+	return CutAudio(ctx, in, out, startMs, durationMs)
+}
+
 // Error is a media-processing failure. It exposes a short neutral Op for the
 // caller's log message and carries StderrTail — the raw last bytes of the tool's
 // stderr — which the caller must keep server-side only, never surface to a
@@ -427,6 +433,54 @@ func ExtractAudio(ctx context.Context, in, out string) error {
 		return &Error{Op: "extract audio", StderrTail: tail, Err: err}
 	}
 	return nil
+}
+
+// CutAudio writes the [startMs, startMs+durationMs) window of the audio at in to
+// out as a mono 16 kHz FLAC chunk — the shape the ASR stage feeds its engine.
+// The transcribe stage uses it to split a long master's audio into ≤15-min
+// chunks (a margin under the ~20-min word-timestamp batch cap) before
+// transcribing each and stitching the results (asr.PlanChunks / StitchTranscripts
+// drive the boundaries and the ms-offset merge; this wrapper only performs the
+// cut). Fixed-window boundaries can clip a word at a chunk edge; silence-adjacent
+// cutting is a later refinement, so chunk timings must be recombined by
+// StitchTranscripts, never trusted across a boundary.
+//
+//   - `-ss <start>` BEFORE `-i` is ffmpeg's fast input seek; because the chunk is
+//     re-encoded to FLAC (every FLAC frame is independently decodable), the cut is
+//     sample-accurate at the requested offset. Ref: ffmpeg(1) "-ss" (input vs
+//     output seeking) and the FFmpeg Seeking wiki.
+//   - `-t <duration>` bounds the window length; the last chunk is naturally
+//     shorter when the remaining audio is less than durationMs.
+//
+// Times are passed in seconds with millisecond precision. A negative start or a
+// non-positive duration is rejected rather than handed to ffmpeg.
+func CutAudio(ctx context.Context, in, out string, startMs, durationMs int) error {
+	if _, err := exec.LookPath(ffmpegBin); err != nil {
+		return ErrUnavailable
+	}
+	if startMs < 0 || durationMs <= 0 {
+		return &Error{Op: "cut audio", Err: fmt.Errorf("invalid window [%d,+%d]ms", startMs, durationMs)}
+	}
+	args := []string{
+		"-nostdin", "-y",
+		"-ss", msToSeconds(startMs),
+		"-i", in,
+		"-t", msToSeconds(durationMs),
+		"-vn",
+		"-ac", "1", "-ar", "16000",
+		"-c:a", "flac",
+		out,
+	}
+	if _, tail, err := run(ctx, ffmpegBin, args); err != nil {
+		return &Error{Op: "cut audio", StderrTail: tail, Err: err}
+	}
+	return nil
+}
+
+// msToSeconds renders integer milliseconds as a fixed-precision seconds string
+// (e.g. 900000 -> "900.000") for ffmpeg's -ss/-t time arguments.
+func msToSeconds(ms int) string {
+	return strconv.FormatFloat(float64(ms)/1000, 'f', 3, 64)
 }
 
 // run executes bin with args, returning stdout and a bounded tail of stderr.

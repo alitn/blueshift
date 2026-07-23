@@ -147,7 +147,11 @@ demo_build_binaries() {
 }
 
 # demo_migrate_seed — apply migrations, seed identities + the deterministic
-# sample episode, then run the REAL worker ingest so the sample is 'ready'.
+# sample episode, then run the REAL worker through ingest AND transcribe so the
+# sample boots 'ready' with a transcript. The two stages run sequentially with
+# auto-advance OFF, so the sample is deterministically 'ready' before the app
+# starts (no race with a detached auto-advanced worker). Transcribe uses the
+# offline fake ASR engine (ASR_ENGINE_MODE=fake) — deterministic, no credential.
 # Sets EP_ID.
 demo_migrate_seed() {
   command -v migrate >/dev/null 2>&1 || die "golang-migrate CLI not installed (brew install golang-migrate)"
@@ -159,8 +163,11 @@ demo_migrate_seed() {
   EP_ID="$("$BIN_DIR/demoseed" -devseed "$REPO_ROOT/fixtures/dev-seed.sql" | tail -n 1)"
   [ -n "$EP_ID" ] || die "demoseed did not return a sample episode id"
 
-  log "running worker ingest for sample episode ($EP_ID)"
-  WORKER_TRIGGER="exec" "$BIN_DIR/worker" "$EP_ID" ingest
+  log "running worker ingest -> transcribe for sample episode ($EP_ID)"
+  WORKER_TRIGGER="exec" PIPELINE_AUTO_ADVANCE="false" ASR_ENGINE_MODE="fake" \
+    "$BIN_DIR/worker" "$EP_ID" ingest
+  WORKER_TRIGGER="exec" PIPELINE_AUTO_ADVANCE="false" ASR_ENGINE_MODE="fake" \
+    "$BIN_DIR/worker" "$EP_ID" transcribe
 }
 
 # demo_start_app — start the API server in the background, record its pid, and
@@ -176,6 +183,7 @@ demo_start_app() {
   DATABASE_URL="$DB_URL" \
   WORKER_TRIGGER="exec" \
   WORKER_BIN="$BIN_DIR/worker" \
+  ASR_ENGINE_MODE="fake" \
   PORT="$DEMO_PORT" \
     "$BIN_DIR/app" &
   local pid=$!

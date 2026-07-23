@@ -54,6 +54,19 @@ const (
 	WorkerTriggerCloudRun WorkerTrigger = "cloudrun"
 )
 
+// ASRMode selects the speech-recognition backend the worker's transcribe stage
+// registers. `fake` replays committed offline recordings (used by `make
+// demo`/`make dev` and offline verification — deterministic, no credential or
+// network); `speech` calls the managed provider-backed engine (staging/prod).
+// The mode only chooses which engine backs the neutral label; nothing here or
+// downstream of the /internal/asr seam names a provider.
+type ASRMode string
+
+const (
+	ASRModeFake   ASRMode = "fake"
+	ASRModeSpeech ASRMode = "speech"
+)
+
 // Config is the fully-resolved, validated server configuration.
 type Config struct {
 	// Port is the TCP port the HTTP server binds to.
@@ -110,6 +123,30 @@ type Config struct {
 	// IngestTimeout bounds a single ingest stage attempt in the worker.
 	IngestTimeout time.Duration
 
+	// ASRMode selects the speech-recognition backend (fake|speech). Defaults to
+	// fake in dev and speech in staging/prod. Only the worker's transcribe stage
+	// uses it; the app reads it solely so a worker it spawns inherits the value.
+	ASRMode ASRMode
+	// ASREngineLabel is the neutral label the ASR engine registers under and that
+	// the transcribe stage resolves for a language's asr slot (default "bs-asr-1").
+	// It never carries a provider name.
+	ASREngineLabel string
+	// ASRModel, ASRRegion, ASRProject, ASRBucket fully specify the provider-backed
+	// engine (speech mode). They are read verbatim from the environment/deploy —
+	// never defaulted here, so no provider/model string lives in this package — and
+	// validated by the engine constructor, not at load, so the app boots without
+	// them (only the worker's speech-mode wiring requires them).
+	ASRModel   string
+	ASRRegion  string
+	ASRProject string
+	ASRBucket  string
+	// ASRLanguageCodes maps a BCP-47 content tag to the provider language code
+	// (e.g. "fa" -> "fa-IR"), parsed from ASR_LANGUAGE_CODES ("fa=fa-IR,en=en-US").
+	// Kept as data (env/deploy), so adding a language is a row, not a code change,
+	// and no "fa" assumption lives in this package. Empty means every tag passes
+	// through to the engine verbatim.
+	ASRLanguageCodes map[string]string
+
 	// PipelineAutoAdvance controls whether a worker, on a non-terminal stage's
 	// success, launches the next registered stage (via the same trigger the API
 	// server uses). Maps to PIPELINE_AUTO_ADVANCE and defaults to true. When false
@@ -161,6 +198,10 @@ const (
 	// defaultIngestTimeout bounds a single ingest stage attempt when
 	// INGEST_TIMEOUT is unset.
 	defaultIngestTimeout = 30 * time.Minute
+
+	// defaultASREngineLabel is the neutral ASR engine label when ASR_ENGINE_LABEL
+	// is unset. It names no provider (CLAUDE.md, "Vendor neutrality").
+	defaultASREngineLabel = "bs-asr-1"
 
 	// defaultProxyMaxRemuxBitrate is the remux bitrate ceiling (~6 Mbps, in
 	// bits/sec) when PROXY_MAX_REMUX_BITRATE is unset. Mirrors
@@ -239,11 +280,87 @@ func load(getenv func(string) string) (Config, error) {
 		return Config{}, err
 	}
 
+	if err := loadASR(&cfg, getenv); err != nil {
+		return Config{}, err
+	}
+
 	if err := loadSweep(&cfg, getenv); err != nil {
 		return Config{}, err
 	}
 
 	return cfg, nil
+}
+
+// loadASR resolves the speech-recognition wiring. The mode defaults to fake in
+// dev and speech in staging/prod (mirroring blob/auth), and fake is refused
+// outside dev so a production worker never silently replays fixtures. The
+// provider coordinates (model/region/project/bucket) are read verbatim — never
+// defaulted here, so no provider/model string appears in this package — and their
+// requiredness is enforced by the engine constructor at wiring time, not at load:
+// the API server (which never builds an engine) must boot even when they are
+// unset. The language-code map is parsed from ASR_LANGUAGE_CODES ("fa=fa-IR,...").
+func loadASR(cfg *Config, getenv func(string) string) error {
+	isProdLike := cfg.Env == EnvStaging || cfg.Env == EnvProd
+
+	if v := strings.TrimSpace(getenv("ASR_ENGINE_MODE")); v != "" {
+		m := ASRMode(v)
+		switch m {
+		case ASRModeFake, ASRModeSpeech:
+			cfg.ASRMode = m
+		default:
+			return fmt.Errorf("config: invalid ASR_ENGINE_MODE %q (want fake|speech)", v)
+		}
+	} else if isProdLike {
+		cfg.ASRMode = ASRModeSpeech
+	} else {
+		cfg.ASRMode = ASRModeFake
+	}
+	if isProdLike && cfg.ASRMode == ASRModeFake {
+		return fmt.Errorf("config: ASR_ENGINE_MODE=fake is not allowed when ENV=%s", cfg.Env)
+	}
+
+	cfg.ASREngineLabel = defaultASREngineLabel
+	if v := strings.TrimSpace(getenv("ASR_ENGINE_LABEL")); v != "" {
+		cfg.ASREngineLabel = v
+	}
+
+	cfg.ASRModel = strings.TrimSpace(getenv("ASR_MODEL"))
+	cfg.ASRRegion = strings.TrimSpace(getenv("ASR_REGION"))
+	cfg.ASRProject = strings.TrimSpace(getenv("ASR_PROJECT"))
+	cfg.ASRBucket = strings.TrimSpace(getenv("ASR_BUCKET"))
+
+	codes, err := parseLanguageCodes(getenv("ASR_LANGUAGE_CODES"))
+	if err != nil {
+		return err
+	}
+	cfg.ASRLanguageCodes = codes
+
+	return nil
+}
+
+// parseLanguageCodes parses a "tag=code,tag=code" list into a map. Whitespace
+// around entries and around each side is trimmed; an empty input is an empty map.
+// A malformed entry (no '=', or an empty tag/code) is a hard error so a
+// misconfigured mapping fails fast rather than silently dropping a language.
+func parseLanguageCodes(raw string) (map[string]string, error) {
+	raw = strings.TrimSpace(raw)
+	if raw == "" {
+		return map[string]string{}, nil
+	}
+	out := map[string]string{}
+	for _, entry := range strings.Split(raw, ",") {
+		entry = strings.TrimSpace(entry)
+		if entry == "" {
+			continue
+		}
+		tag, code, ok := strings.Cut(entry, "=")
+		tag, code = strings.TrimSpace(tag), strings.TrimSpace(code)
+		if !ok || tag == "" || code == "" {
+			return nil, fmt.Errorf("config: invalid ASR_LANGUAGE_CODES entry %q (want tag=code)", entry)
+		}
+		out[tag] = code
+	}
+	return out, nil
 }
 
 // loadSweep resolves the sweep cadence and the two TTLs it enforces: the
