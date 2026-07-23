@@ -1,0 +1,37 @@
+{
+  "description": "Short Persian interview opening: host welcome then guest reply. Two speaker-agnostic segments. Word timings are milliseconds, hand-checked to be monotonic, non-overlapping, and within their segment bounds. The guest's second word (khosh-haalam) carries a literal U+200C ZWNJ between its two morphemes so tests can assert join controls survive verbatim.",
+  "language": "fa",
+  "match_keys": ["org_demo/ep_demo/proxies/audio.wav"],
+  "raw": {
+    "source": "fake",
+    "fixture": "fa_interview_open"
+  },
+  "segments": [
+    {
+      "idx": 0,
+      "start_ms": 0,
+      "end_ms": 2200,
+      "text": "سلام به برنامه خوش آمدید",
+      "words": [
+        { "text": "سلام", "start_ms": 0, "end_ms": 520, "conf": 0.98 },
+        { "text": "به", "start_ms": 600, "end_ms": 720, "conf": 0.95 },
+        { "text": "برنامه", "start_ms": 760, "end_ms": 1280, "conf": 0.97 },
+        { "text": "خوش", "start_ms": 1340, "end_ms": 1600, "conf": 0.96 },
+        { "text": "آمدید", "start_ms": 1660, "end_ms": 2200, "conf": 0.94 }
+      ]
+    },
+    {
+      "idx": 1,
+      "start_ms": 2600,
+      "end_ms": 4600,
+      "text": "خیلی خوش‌حالم که اینجا هستم",
+      "words": [
+        { "text": "خیلی", "start_ms": 2600, "end_ms": 2900, "conf": 0.96 },
+        { "text": "خوش‌حالم", "start_ms": 2960, "end_ms": 3540, "conf": 0.95 },
+        { "text": "که", "start_ms": 3600, "end_ms": 3720, "conf": 0.94 },
+        { "text": "اینجا", "start_ms": 3780, "end_ms": 4180, "conf": 0.96 },
+        { "text": "هستم", "start_ms": 4240, "end_ms": 4600, "conf": 0.95 }
+      ]
+    }
+  ]
+}
