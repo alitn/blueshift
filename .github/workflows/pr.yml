@@ -1,6 +1,18 @@
-# PR gate: make check (incl. DB-backed store/migration tests) + make eval +
-# make e2e against the demo stack. Merge is blocked unless green (enable branch
-# protection on main requiring this workflow).
+# PR gate — TWO parallel jobs so `make e2e` no longer waits behind the whole of
+# `make check`, and the web bundle is no longer built twice per run:
+#
+#   check : the single source of truth (CLAUDE.md) — gofmt/vet/golangci-lint, go
+#           test -race (incl. the DB-backed store/migration tests against a real
+#           Postgres 18 + pgvector), the web checks, the vendor-leak + hex gates,
+#           the web+go build, then `make eval`. Runs on EVERY PR.
+#   e2e   : `make e2e` (Playwright) against the demo stack that `make demo` boots.
+#           This job builds the SPA itself; because `make check` is no longer in
+#           the same job, the old check-then-demo double web build is gone by
+#           construction. On docs-only PRs it early-exits SUCCESS (see below).
+#
+# Merge is blocked unless BOTH jobs are green. Branch protection on `main` must
+# require BOTH check contexts: `check` AND `e2e` (it previously required only
+# `check` — `e2e` is the new required context to add to the ruleset).
 name: pr
 
 on:
@@ -11,16 +23,17 @@ concurrency:
   cancel-in-progress: true
 
 jobs:
+  # ---------------------------------------------------------------------------
+  # check — the full `make check` gate. Kept whole and intact in one job so its
+  # semantics (CLAUDE.md's single truth) never fragment.
+  # ---------------------------------------------------------------------------
   check:
     runs-on: ubuntu-latest
     timeout-minutes: 40
 
     # Real Postgres 18 with pgvector so the store/migration tests actually RUN
-    # here (migration 0001 creates the vector + pg_trgm extensions). Two logical
-    # databases share one server: `blueshift_test` for `make check` go tests
-    # (TEST_DATABASE_URL) and the default `postgres` for the demo stack that
-    # `make e2e` boots (DEMO_DATABASE_URL) — isolated so test rows never leak
-    # into the demo's asserted fixtures.
+    # here (migration 0001 creates the vector + pg_trgm extensions). The go test
+    # suite uses `blueshift_test` (TEST_DATABASE_URL), created below.
     services:
       postgres:
         image: pgvector/pgvector:pg18
@@ -36,7 +49,6 @@ jobs:
 
     env:
       TEST_DATABASE_URL: postgres://postgres:postgres@localhost:5432/blueshift_test?sslmode=disable
-      DEMO_DATABASE_URL: postgres://postgres:postgres@localhost:5432/postgres?sslmode=disable
 
     steps:
       - uses: actions/checkout@v4
@@ -46,27 +58,33 @@ jobs:
           go-version: "1.25"
           cache: true
 
-      # bun is the web package manager + build/test/lint/type-check runtime
-      # (ADR 0001). setup-node stays because Playwright (make e2e) runs under
-      # Node, not bun.
+      # bun is the web package manager AND the build/test/lint/type-check runtime
+      # (ADR 0001). No setup-node in this job: it never runs Playwright, and every
+      # web check runs under bun (`bunx --bun`); the runner's preinstalled node is
+      # a fallback that make check does not rely on.
       - uses: oven-sh/setup-bun@v2
         with:
           bun-version: "1.3.14"
 
-      - uses: actions/setup-node@v4
+      # Cache bun's global module cache so `bun install --frozen-lockfile`
+      # resolves from disk on a hit. Keyed on the lockfile.
+      - name: Cache bun modules
+        uses: actions/cache@v4
         with:
-          node-version: "22"
+          path: ~/.bun/install/cache
+          key: ${{ runner.os }}-bun-${{ hashFiles('web/bun.lock') }}
+          restore-keys: |
+            ${{ runner.os }}-bun-
 
-      # ffmpeg: the worker's media stage (and the demo's sample-episode
-      # generation) shell out to it. migrate CLI: `make demo` applies migrations.
-      - name: Install system tools (ffmpeg, golang-migrate)
+      # ffmpeg: internal/media and internal/pipeline tests transcode a real 2s
+      # sample with it and t.Skip() when it is absent — installing it keeps those
+      # tests RUNNING here, so `make check` semantics are unchanged. No migrate
+      # CLI in this job: the store tests apply migrations via the golang-migrate
+      # LIBRARY (file://../../migrations), not the binary.
+      - name: Install ffmpeg
         run: |
           sudo apt-get update
           sudo apt-get install -y --no-install-recommends ffmpeg
-          curl -sSfL https://github.com/golang-migrate/migrate/releases/download/v4.19.1/migrate.linux-amd64.tar.gz \
-            | tar -xz migrate
-          sudo mv migrate /usr/local/bin/migrate
-          migrate -version
 
       # Pinned to the exact version we run locally (`golangci-lint version` =>
       # 2.12.2) so CI lints identically to dev. We do NOT use
@@ -91,7 +109,8 @@ jobs:
         run: |
           if [ -f web/package.json ]; then cd web && bun install --frozen-lockfile; fi
 
-      # Isolated database for the go test suite; the demo uses the default one.
+      # Isolated database for the go test suite; the demo (e2e job) uses the
+      # default `postgres` database.
       - name: Create test database
         run: |
           PGPASSWORD=postgres psql -h localhost -U postgres -c 'CREATE DATABASE blueshift_test;'
@@ -116,13 +135,152 @@ jobs:
       - name: make eval
         run: make eval
 
-      - name: Install Playwright browsers
+  # ---------------------------------------------------------------------------
+  # e2e — Playwright against the demo stack. Split out so it runs in parallel
+  # with `check` instead of after it. On docs-only PRs the heavy work early-exits
+  # SUCCESS: we never skip the JOB (a skipped required check leaves the PR stuck
+  # "pending" forever), so the `e2e` context always reports.
+  # ---------------------------------------------------------------------------
+  e2e:
+    runs-on: ubuntu-latest
+    timeout-minutes: 40
+
+    # LOCKSTEP with baselines.yml: same Postgres 18 + pgvector service container.
+    # The demo stack Playwright boots resolves this via DEMO_DATABASE_URL (the
+    # default `postgres` database) before any docker fallback.
+    services:
+      postgres:
+        image: pgvector/pgvector:pg18
+        env:
+          POSTGRES_PASSWORD: postgres
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd "pg_isready -U postgres"
+          --health-interval 5s
+          --health-timeout 5s
+          --health-retries 20
+
+    env:
+      DEMO_DATABASE_URL: postgres://postgres:postgres@localhost:5432/postgres?sslmode=disable
+
+    steps:
+      # fetch-depth: 0 so the docs-only detector can diff against the merge base.
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      # Skip the browser suite on PRs that touch ONLY *.md / docs/ / tasks/ /
+      # design/. We do NOT gate the job with a job-level `if` (a skipped required
+      # job can leave the PR "Expected — waiting for status" forever); this job
+      # always runs and reports, and the heavy steps below are gated on `run`.
+      # Default is RUN on ANY doubt (missing SHAs, merge-base/diff failure, empty
+      # diff) so a code PR is never skipped by accident.
+      - name: Detect whether e2e must run
+        id: decide
+        env:
+          BASE_SHA: ${{ github.event.pull_request.base.sha }}
+          HEAD_SHA: ${{ github.event.pull_request.head.sha }}
         run: |
-          if [ -f web/package.json ] && [ -d web/tests ]; then cd web && bunx --bun=false playwright install --with-deps chromium; fi
+          set -uo pipefail
+          run=true
+          if [ -n "${BASE_SHA:-}" ] && [ -n "${HEAD_SHA:-}" ] \
+             && mb="$(git merge-base "$BASE_SHA" "$HEAD_SHA" 2>/dev/null)" \
+             && changed="$(git diff --name-only "$mb" "$HEAD_SHA" 2>/dev/null)"; then
+            # Docs paths: any *.md, plus everything under docs/ tasks/ design/.
+            # `nondocs` = the changed files that are NOT docs. run=false only when
+            # the diff is non-empty AND nondocs is empty (every path is docs).
+            # Computed as a list (not `grep -qv`, whose -q/-v composition differs
+            # across grep builds) so the decision is identical on any runner.
+            nondocs="$(printf '%s\n' "$changed" \
+                       | grep -vE '(\.md$)|(^docs/)|(^tasks/)|(^design/)' || true)"
+            if [ -n "$changed" ] && [ -z "$nondocs" ]; then
+              run=false
+            fi
+          fi
+          printf 'changed files:\n%s\n' "${changed:-<unavailable>}"
+          echo "==> run e2e: $run"
+          echo "run=$run" >> "$GITHUB_OUTPUT"
+
+      - uses: actions/setup-go@v5
+        if: steps.decide.outputs.run == 'true'
+        with:
+          go-version: "1.25"
+          cache: true
+
+      - uses: oven-sh/setup-bun@v2
+        if: steps.decide.outputs.run == 'true'
+        with:
+          bun-version: "1.3.14"
+
+      # setup-node stays: Playwright has a hard Node runtime dependency, so
+      # `make e2e` pins it to node via `bunx --bun=false`.
+      - uses: actions/setup-node@v4
+        if: steps.decide.outputs.run == 'true'
+        with:
+          node-version: "22"
+
+      - name: Cache bun modules
+        if: steps.decide.outputs.run == 'true'
+        uses: actions/cache@v4
+        with:
+          path: ~/.bun/install/cache
+          key: ${{ runner.os }}-bun-${{ hashFiles('web/bun.lock') }}
+          restore-keys: |
+            ${{ runner.os }}-bun-
+
+      # LOCKSTEP with baselines.yml: ffmpeg (the worker's media stage and the
+      # demo's sample-episode generation shell out to it) and the golang-migrate
+      # CLI (`make demo` applies migrations).
+      - name: Install system tools (ffmpeg, golang-migrate)
+        if: steps.decide.outputs.run == 'true'
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends ffmpeg
+          curl -sSfL https://github.com/golang-migrate/migrate/releases/download/v4.19.1/migrate.linux-amd64.tar.gz \
+            | tar -xz migrate
+          sudo mv migrate /usr/local/bin/migrate
+          migrate -version
+
+      - name: Install web deps
+        if: steps.decide.outputs.run == 'true'
+        run: |
+          if [ -f web/package.json ]; then cd web && bun install --frozen-lockfile; fi
+
+      # Cache the Playwright browser download, keyed on the RESOLVED Playwright
+      # version so a version bump busts it. On a hit we skip the ~100MB browser
+      # download and only (re)install the apt system libs.
+      - name: Resolve Playwright version
+        if: steps.decide.outputs.run == 'true'
+        id: pw
+        run: |
+          cd web
+          echo "version=$(node -p "require('./node_modules/@playwright/test/package.json').version")" >> "$GITHUB_OUTPUT"
+
+      - name: Cache Playwright browsers
+        if: steps.decide.outputs.run == 'true'
+        id: pw-cache
+        uses: actions/cache@v4
+        with:
+          path: ~/.cache/ms-playwright
+          key: ${{ runner.os }}-playwright-${{ steps.pw.outputs.version }}
+
+      - name: Install Playwright browsers
+        if: steps.decide.outputs.run == 'true'
+        run: |
+          if [ -f web/package.json ] && [ -d web/tests ]; then
+            cd web
+            if [ "${{ steps.pw-cache.outputs.cache-hit }}" = "true" ]; then
+              bunx --bun=false playwright install-deps chromium
+            else
+              bunx --bun=false playwright install --with-deps chromium
+            fi
+          fi
 
       # Playwright's webServer runs `make demo`, which resolves Postgres from
       # DEMO_DATABASE_URL (the service container) before any docker fallback.
       - name: make e2e
+        if: steps.decide.outputs.run == 'true'
         run: make e2e
 
       - name: Upload screenshot diffs on failure

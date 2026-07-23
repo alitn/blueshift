@@ -121,12 +121,24 @@ demo_resolve_db() {
 }
 
 # demo_build_binaries — build the Go binaries the demo runs. web_embed=1 also
-# refreshes the embedded SPA (needed by `make demo`; `make dev` serves via Vite).
+# refreshes the embedded SPA via `make build` (needed by `make demo`; `make dev`
+# serves the SPA via Vite, so it passes 0).
+#
+# BS_SKIP_BUILD=1 skips that `make build` and reuses a web build already produced
+# this session — e.g. `BS_SKIP_BUILD=1 make e2e` right after a fresh `make build`
+# (or `make check`, which ends in `make build`). The Go binaries below are always
+# (re)built and embed the existing internal/webembed/dist. Default (flag unset)
+# is unchanged: `make demo`/`make dev` always run `make build`, so local
+# behaviour is byte-identical unless a caller opts in.
 demo_build_binaries() {
   local web_embed="${1:-0}"
   if [ "$web_embed" = "1" ]; then
-    log "building web + go (make build)"
-    make build >&2
+    if [ "${BS_SKIP_BUILD:-0}" = "1" ]; then
+      log "BS_SKIP_BUILD=1 — reusing the existing web build (skipping make build)"
+    else
+      log "building web + go (make build)"
+      make build >&2
+    fi
   fi
   log "building demo binaries"
   go build -o "$BIN_DIR/app" ./cmd/app
