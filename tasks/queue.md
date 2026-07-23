@@ -28,7 +28,9 @@ spec file `tasks/<slug>.md` = one Implementer dispatch = one Reviewer verdict = 
 | m0-design-refresh | apply 2026-07-22 prototype readability refresh | committed | tasks/m0-design-refresh.md |
 | m0-bun-migration | bun replaces npm (ADR 0001) | committed | tasks/m0-bun-migration.md |
 | m0-dev-watch | Go auto-restart in make dev | committed | tasks/m0-dev-watch.md |
-| m0-gate-proofs | Deliberate-failure proofs (AC 2/3/4/6) | blocked(human prerequisites) | tasks/m0-gate-proofs.md |
+| m0-deploy-bootstrap | live-rollout fixes (5 findings, 3 commits) | committed | tasks/m0-deploy-bootstrap.md |
+| m0-baselines-ci | workflow_dispatch baselines generator | committed | tasks/m0-baselines-ci.md |
+| m0-gate-proofs | Deliberate-failure proofs (AC 2/3/4/6) | spec-ready | tasks/m0-gate-proofs.md |
 
 ## Backlog
 
@@ -103,3 +105,13 @@ M1 decomposition happens after the M0 gate (see docs/SPEC-M1.md §Task decomposi
   app+worker with coherent-pair staging, APPROVE). Author identity rewritten to alitn.
   Remaining: m0-gate-proofs + baselines + prod demo on the 4-step human prerequisites in
   deploy/README.md.
+- 2026-07-23 — PROD IS LIVE. Human completed prerequisites (repo, ruleset, gcloud auth);
+  Architect provisioned video-clipping-503022 (infra, IAM, WIF, secrets, IdP via REST,
+  demo@blueshift.local user, $50 budget). Four rollouts to green — live findings fixed
+  through the loop (m0-deploy-bootstrap): PG18 needs --edition=enterprise; --no-traffic
+  invalid on service creation (fail-closed bootstrap detector); jobs deploy wants
+  --set-cloudsql-instances; org DRS forbids allUsers → --no-invoker-iam-check (human
+  authorized by pushing); GFE intercepts /healthz on run.app → pipeline gates on /readyz.
+  Rollout #4 green end to end (no-traffic → migrate → smoke → 10% → watch → 100%);
+  identity-mode sign-in verified against prod; demo user mapped approver in Cloud SQL.
+  m0-baselines-ci committed. Remaining: baselines commit, gate proofs, AC1 prod demo.
