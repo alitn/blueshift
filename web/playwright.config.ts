@@ -36,16 +36,37 @@ export default defineConfig({
 
   expect: {
     toHaveScreenshot: {
-      // Absolute budget, not a ratio. A ratio of 0.01 on a 1440x900 fullPage
-      // shot permits ~13k changed pixels, so a real token-misuse drift (e.g. a
-      // header recoloured text-text-faint -> text-accent, ~3k px) sails through
-      // the gate it exists to catch. 150 px is sized to reject any visible drift
-      // while tolerating sub-pixel anti-aliasing jitter: comparisons are
-      // same-platform only (baselines are the linux CI set, see
-      // snapshotPathTemplate), so with animations disabled and the caret hidden
-      // an identical build renders near-zero diff; the per-pixel threshold (0.2,
-      // Playwright default, left unset) already discards AA colour noise, and
-      // 150 leaves a ~20x margin below the smallest known real drift.
+      // Two knobs, both load-bearing for a gate that must catch token misuse on
+      // a DARK theme.
+      //
+      // threshold (pixelmatch per-pixel YIQ distance, 0..1; a pixel counts as
+      // changed only when its squared colour delta exceeds 35215*threshold^2):
+      // the Playwright/pixelmatch default 0.2 needs ~20% of the full
+      // black->white range before it counts a pixel at all. Our UI sits at the
+      // bottom of that range, so real drift never crosses the bar and the pixel
+      // budget below never gets to count it. Worked examples over bg-2
+      // (#141414): an 18% accent (#4e7fc2) wash composites to ~rgb(30,39,51),
+      // YIQ delta ~184/35215 -> ~7% linear distance; a text-faint(#8c8880)->
+      // accent recolour of glyph cores is ~1091/35215 -> ~18%. BOTH sit under
+      // the 0.2 default (cutoff ~1409), which is exactly why the two proof
+      // drifts passed regardless of maxDiffPixels. 0.05 (cutoff ~88, i.e. 5%
+      // linear) counts both with margin (~2x on the wash, the smaller signal)
+      // while staying above the same-platform noise floor: comparisons are
+      // linux-vs-linux only (baselines are the CI set, see snapshotPathTemplate),
+      // animations are disabled and the caret hidden, and pixelmatch's default
+      // AA detection already skips anti-aliased edge pixels, so an identical
+      // build renders near-zero diff. Lower buys sensitivity to sub-5% drift we
+      // have no evidence of, at rising flakiness risk; 0.06+ starts to miss the
+      // low end of the ~6-12% wash band. 0.05 is the sweet spot.
+      threshold: 0.05,
+      //
+      // maxDiffPixels is an absolute budget, NOT a ratio. A 0.01 ratio on a
+      // 1440x900 fullPage shot permits ~13k changed pixels, so a ~3k-px
+      // token-misuse drift sails through; a ratio also scales with page height,
+      // silently inflating the budget on taller pages. 150 px is height-
+      // invariant, rejects any visible drift, and leaves a wide margin below the
+      // smallest known real drift now that threshold actually lets those pixels
+      // be counted.
       maxDiffPixels: 150,
       animations: 'disabled',
       caret: 'hide'
