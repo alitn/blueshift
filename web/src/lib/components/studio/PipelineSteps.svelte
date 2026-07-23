@@ -1,12 +1,13 @@
 <script lang="ts">
   // Five-bar pipeline indicator per DESIGN.md: five 22×4px radius-2 bars plus a
-  // mono 10.5px stage label below, colored to state. The status->bars mapping is
-  // the M0 ruling in $lib/pipeline.
+  // mono 10.5px stage label below, colored to state. The (state, stage)->bars
+  // mapping is the ruling in $lib/pipeline; `stage` is the server's neutral
+  // current_stage that says which bar is current.
   import { pipelineView, STEP_BG, TONE_TEXT } from '$lib/pipeline';
   import type { DisplayState } from '$lib/episodes';
 
-  let { state }: { state: DisplayState } = $props();
-  const view = $derived(pipelineView(state));
+  let { state, stage }: { state: DisplayState; stage?: string } = $props();
+  const view = $derived(pipelineView(state, stage));
 </script>
 
 <div>

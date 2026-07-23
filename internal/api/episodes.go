@@ -61,8 +61,9 @@ type EpisodeRow struct {
 	SourceFilename string
 	Language       string
 	Status         string
-	SizeBytes      int64 // declared master size; 0 = unknown
-	DurationMs     int64 // measured proxy duration; 0 = not yet measured
+	CurrentStage   string // pipeline stage running/next; "" = not yet claimed (legacy/unclaimed)
+	SizeBytes      int64  // declared master size; 0 = unknown
+	DurationMs     int64  // measured proxy duration; 0 = not yet measured
 	MasterKey      string
 	ProxyKey       string // set once ingest succeeds; empty until Ready
 	CreatedAt      time.Time
@@ -115,10 +116,16 @@ type episodeDTO struct {
 	SourceFilename string `json:"source_filename"`
 	Language       string `json:"language"`
 	Status         string `json:"status"`
-	HasMaster      bool   `json:"has_master"`
-	DurationMs     *int64 `json:"duration_ms,omitempty"`
-	SizeBytes      *int64 `json:"size_bytes,omitempty"`
-	UploadedAt     string `json:"uploaded_at"`
+	// Stage is the neutral pipeline stage running or next (ingest/transcribe/…)
+	// while status is 'processing', and the last stage reached on a terminal row
+	// (so the Library can label "FAILED — INGEST" and light the per-stage bars).
+	// Absent (omitempty) until the first claim stamps it. Stage names are product
+	// terms — never provider names.
+	Stage      *string `json:"stage,omitempty"`
+	HasMaster  bool    `json:"has_master"`
+	DurationMs *int64  `json:"duration_ms,omitempty"`
+	SizeBytes  *int64  `json:"size_bytes,omitempty"`
+	UploadedAt string  `json:"uploaded_at"`
 }
 
 func episodeDTOFrom(row EpisodeRow) episodeDTO {
@@ -130,6 +137,10 @@ func episodeDTOFrom(row EpisodeRow) episodeDTO {
 		Status:         row.Status,
 		HasMaster:      row.MasterKey != "",
 		UploadedAt:     row.CreatedAt.UTC().Format(time.RFC3339),
+	}
+	if row.CurrentStage != "" {
+		s := row.CurrentStage
+		dto.Stage = &s
 	}
 	if row.DurationMs > 0 {
 		d := row.DurationMs

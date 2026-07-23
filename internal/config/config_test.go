@@ -230,6 +230,37 @@ func TestLoadProxyMaxRemuxBitrate(t *testing.T) {
 	}
 }
 
+func TestLoadPipelineAutoAdvance(t *testing.T) {
+	// Default: on.
+	cfg, err := load(env(nil))
+	if err != nil {
+		t.Fatalf("load: %v", err)
+	}
+	if !cfg.PipelineAutoAdvance {
+		t.Error("PipelineAutoAdvance default = false, want true")
+	}
+	// Explicit off.
+	cfg, err = load(env(map[string]string{"PIPELINE_AUTO_ADVANCE": "false"}))
+	if err != nil {
+		t.Fatalf("load: %v", err)
+	}
+	if cfg.PipelineAutoAdvance {
+		t.Error("PIPELINE_AUTO_ADVANCE=false did not disable auto-advance")
+	}
+	// Explicit on (accepts the usual boolean spellings).
+	cfg, err = load(env(map[string]string{"PIPELINE_AUTO_ADVANCE": "1"}))
+	if err != nil {
+		t.Fatalf("load: %v", err)
+	}
+	if !cfg.PipelineAutoAdvance {
+		t.Error("PIPELINE_AUTO_ADVANCE=1 did not enable auto-advance")
+	}
+	// Invalid -> error.
+	if _, err := load(env(map[string]string{"PIPELINE_AUTO_ADVANCE": "maybe"})); err == nil {
+		t.Error("PIPELINE_AUTO_ADVANCE=maybe: expected error, got nil")
+	}
+}
+
 func TestLoadWorkerCloudRun(t *testing.T) {
 	cfg, err := load(env(map[string]string{
 		"WORKER_TRIGGER":     "cloudrun",

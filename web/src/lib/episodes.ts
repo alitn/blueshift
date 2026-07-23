@@ -15,6 +15,10 @@ export type Episode = {
   sourceFilename: string;
   language: string;
   status: EpisodeStatus;
+  /** Neutral pipeline stage running/next while processing, or the stage a
+   *  terminal row reached (ingest/transcribe/…). Absent until the first claim
+   *  stamps it. Drives the per-stage pipeline bars and the failure label. */
+  stage?: string;
   /** Whether the master upload actually landed. A row still 'uploaded' with
    *  hasMaster=false is one whose client abandoned the upload — the Library
    *  shows it as "awaiting upload" rather than "queued". */
@@ -31,6 +35,7 @@ type EpisodeDTO = {
   source_filename: string;
   language: string;
   status: EpisodeStatus;
+  stage?: string;
   has_master: boolean;
   duration_ms?: number;
   size_bytes?: number;
@@ -46,6 +51,7 @@ function fromDTO(d: EpisodeDTO): Episode {
     sourceFilename: d.source_filename,
     language: d.language,
     status: d.status,
+    stage: d.stage,
     hasMaster: d.has_master,
     durationMs: d.duration_ms,
     sizeBytes: d.size_bytes,

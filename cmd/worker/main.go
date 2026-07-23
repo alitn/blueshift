@@ -13,6 +13,7 @@ package main
 import (
 	"context"
 	"fmt"
+	"log/slog"
 	"os"
 	"os/signal"
 	"syscall"
@@ -82,7 +83,13 @@ func run(args []string) error {
 			StageTimeout:    cfg.IngestTimeout,
 			Retries:         pipeline.DefaultRetries,
 			MaxRemuxBitrate: cfg.ProxyMaxRemuxBitrate,
+			AutoAdvance:     cfg.PipelineAutoAdvance,
 		},
+		// The worker launches the next stage on auto-advance through the same
+		// neutral trigger the API server uses (its SA already holds the runner
+		// role). With only ingest registered this is dormant — ingest is terminal —
+		// but wiring it keeps the multi-stage machinery complete.
+		Trigger: buildTrigger(cfg, logger),
 	}
 
 	if err := runner.Run(ctx, episodeID, stage); err != nil {
@@ -114,5 +121,24 @@ func buildBlob(ctx context.Context, cfg config.Config) (pipeline.Blob, error) {
 		return blob.NewGCS(ctx, cfg.GCSBucket)
 	default:
 		return blob.NewLocal(cfg.BlobDir, []byte(cfg.SessionSecret), nil)
+	}
+}
+
+// buildTrigger constructs the worker's own trigger for auto-advancing to the next
+// stage, mirroring cmd/app's mode selection: cloudrun starts a Cloud Run Jobs
+// execution, exec spawns the worker binary again. In exec mode it prefers the
+// configured WORKER_BIN and falls back to this running binary (os.Args[0]) so a
+// dev/demo worker can always re-invoke itself. The provider detail stays inside
+// internal/pipeline.
+func buildTrigger(cfg config.Config, logger *slog.Logger) pipeline.Trigger {
+	switch cfg.WorkerTrigger {
+	case config.WorkerTriggerCloudRun:
+		return pipeline.NewCloudRunTrigger(cfg.WorkerJobProject, cfg.WorkerJobRegion, cfg.WorkerJobName, logger)
+	default:
+		bin := cfg.WorkerBin
+		if bin == "" {
+			bin = os.Args[0]
+		}
+		return pipeline.NewExecTrigger(bin, logger)
 	}
 }

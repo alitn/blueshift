@@ -66,6 +66,69 @@ describe('pipelineView (M1 one-stage: bar 1 = ingest, bars 2-5 = not reached)', 
     expect(TONE_TEXT.danger).toBe('text-danger');
   });
 
+  it('an unknown/absent stage falls back to ingest, so single-stage rows are unchanged', () => {
+    // The generalisation must not move today's bars: an absent or unrecognised
+    // stage is treated as ingest (index 0), reproducing the one-stage mapping.
+    expect(pipelineView('processing', undefined).steps).toEqual(pipelineView('processing').steps);
+    expect(pipelineView('ready', 'ingest')).toEqual(pipelineView('ready'));
+    expect(pipelineView('failed', 'nonsense').label).toBe('FAILED — INGEST');
+    expect(pipelineView('processing', 'ingest').label).toBe('INGEST…');
+  });
+});
+
+describe('pipelineView (multi-stage: bars light per current stage)', () => {
+  it('processing at transcribe = ingest done, transcribe active, rest unreached', () => {
+    const v = pipelineView('processing', 'transcribe');
+    expect(v.steps).toEqual(['done', 'active', 'unreached', 'unreached', 'unreached']);
+    expect(v.label).toBe('TRANSCRIBE…');
+    expect(v.tone).toBe('accent');
+  });
+
+  it('processing at diarize = first two done, diarize active', () => {
+    const v = pipelineView('processing', 'diarize');
+    expect(v.steps).toEqual(['done', 'done', 'active', 'unreached', 'unreached']);
+    expect(v.label).toBe('DIARIZE…');
+  });
+
+  it('ready at the terminal render stage = all five bars done', () => {
+    const v = pipelineView('ready', 'render');
+    expect(v.steps).toEqual(['done', 'done', 'done', 'done', 'done']);
+    expect(v.label).toBe('READY');
+    expect(v.tone).toBe('ok');
+  });
+
+  it('ready mid-pipeline = stages up to and including current done, later unreached', () => {
+    const v = pipelineView('ready', 'moments');
+    expect(v.steps).toEqual(['done', 'done', 'done', 'done', 'unreached']);
+  });
+
+  it('failed at moments = earlier done, moments failed, render unreached', () => {
+    const v = pipelineView('failed', 'moments');
+    expect(v.steps).toEqual(['done', 'done', 'done', 'failed', 'unreached']);
+    expect(v.label).toBe('FAILED — MOMENTS');
+    expect(v.tone).toBe('danger');
+  });
+
+  it('queued/awaiting ignore the stage (nothing has run yet)', () => {
+    // A stage value should not light early bars before any stage has started.
+    expect(pipelineView('uploaded', 'transcribe').steps).toEqual([
+      'pending',
+      'unreached',
+      'unreached',
+      'unreached',
+      'unreached'
+    ]);
+    expect(pipelineView('awaiting_upload', 'render').steps).toEqual([
+      'unreached',
+      'unreached',
+      'unreached',
+      'unreached',
+      'unreached'
+    ]);
+  });
+});
+
+describe('pipelineView token classes', () => {
   it('the three pipeline fills (done/active/pending) are three distinct token classes', () => {
     // Token conformance at the mapping layer: DESIGN.md defines exactly two greys
     // (step-done, border-default) plus accent, so done/active/pending resolve to

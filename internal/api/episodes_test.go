@@ -775,6 +775,33 @@ func TestEpisodeDTOHasMaster(t *testing.T) {
 	}
 }
 
+// TestEpisodeDTOStage asserts the neutral `stage` field mirrors the row's
+// current_stage: absent (omitempty) until a claim stamps it, then present with
+// the stage name. It never carries a provider name — stage names are product
+// terms.
+func TestEpisodeDTOStage(t *testing.T) {
+	// Unclaimed row: no stage -> field omitted from the JSON entirely.
+	base := EpisodeRow{Status: "uploaded"}
+	if got := episodeDTOFrom(base); got.Stage != nil {
+		t.Errorf("stage = %v for an unclaimed row, want nil", *got.Stage)
+	}
+	b, err := json.Marshal(episodeDTOFrom(base))
+	if err != nil {
+		t.Fatalf("marshal: %v", err)
+	}
+	if strings.Contains(string(b), "\"stage\"") {
+		t.Errorf("unclaimed DTO json = %s, want no stage key (omitempty)", b)
+	}
+
+	// Claimed/processing row: stage surfaces verbatim.
+	base.Status = "processing"
+	base.CurrentStage = "ingest"
+	got := episodeDTOFrom(base)
+	if got.Stage == nil || *got.Stage != "ingest" {
+		t.Errorf("stage = %v, want ingest", got.Stage)
+	}
+}
+
 func TestProxy404BeforeReady(t *testing.T) {
 	repo := newFakeRepo()
 	router, _, _ := newEpisodeRouter(t, repo)

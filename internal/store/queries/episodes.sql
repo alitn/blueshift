@@ -84,27 +84,73 @@ WHERE public_id = $1
   AND deleted_at IS NULL
 RETURNING *;
 
--- name: ClaimEpisodeForIngest :one
--- Compare-and-set claim: atomically move a single 'uploaded' episode to
--- 'processing' and stamp claimed_at = now(). The status predicate is the
--- concurrency guard — a second concurrent worker finds no matching row and
--- no-ops (pgx.ErrNoRows). The returned org_id is how the worker scopes every
--- later write to the claimed tenant; it never takes an org from its arguments.
--- claimed_at is the backstop signal the stale-claim sweeper reads to force-fail a
--- 'processing' row whose worker died without finalizing it.
+-- name: ClaimEpisodeForStage :one
+-- Stage-aware compare-and-set claim: atomically take an episode for a stage,
+-- stamp current_stage = the stage, and re-arm claimed_at = now(). Two shapes,
+-- selected by prev_stage:
+--
+--   * Entry stage (prev_stage IS NULL, e.g. ingest): move a single 'uploaded'
+--     episode to 'processing'. The status predicate is the concurrency guard — a
+--     second concurrent worker finds no matching row and no-ops (pgx.ErrNoRows).
+--     Behaviour is identical to the M0 ingest claim, plus setting current_stage.
+--
+--   * Continuation stage (prev_stage set): the episode is already 'processing',
+--     sitting at the predecessor stage (the prior stage's finalize left
+--     current_stage there). The guard current_stage = prev_stage is the
+--     compare-and-set: the first claim advances current_stage to the new stage,
+--     so a duplicate/concurrent claim finds no matching row and no-ops. This is
+--     what makes auto-advance loop- and skip-proof: a stage can only be claimed
+--     from its immediate predecessor, never from itself or an earlier stage.
+--
+-- The returned org_id is how the worker scopes every later write to the claimed
+-- tenant; it never takes an org from its arguments. claimed_at is the backstop
+-- signal the stale-claim sweeper reads to force-fail a 'processing' row whose
+-- worker died without finalizing it.
 UPDATE episodes
 SET status = 'processing',
+    current_stage = sqlc.arg(stage),
     claimed_at = now(),
     error_id = NULL,
     updated_at = now()
-WHERE public_id = $1
-  AND status = 'uploaded'
+WHERE public_id = sqlc.arg(public_id)
+  AND deleted_at IS NULL
+  AND (
+        (sqlc.narg(prev_stage)::text IS NULL AND status = 'uploaded')
+     OR (sqlc.narg(prev_stage)::text IS NOT NULL
+         AND status = 'processing'
+         AND current_stage = sqlc.narg(prev_stage))
+      )
+RETURNING *;
+
+-- name: AdvanceEpisodeStage :one
+-- Non-terminal (intermediate) stage finalize: the stage completed but a next
+-- stage will run, so the episode STAYS 'processing'. It records the stage's
+-- outputs (proxy key + measured duration; a NULL arg leaves the existing value
+-- untouched via COALESCE), clears error_id, and RE-ARMS claimed_at = now() so the
+-- stale-claim sweep grants the next stage a fresh TTL to start — the handoff
+-- window is never left with a NULL claimed_at, which the sweep would treat as a
+-- dead legacy claim and force-fail immediately. current_stage is left AT the
+-- completing stage on purpose: the next stage's claim advances it (that
+-- current_stage transition is the continuation claim's compare-and-set guard).
+-- Org-scoped and gated on 'processing' + current_stage = the completing stage, so
+-- a lost race, a foreign org, or a stage that no longer matches is an idempotent
+-- no-op (pgx.ErrNoRows) — never a cross-tenant or out-of-order write.
+UPDATE episodes
+SET proxy_object_key = COALESCE(sqlc.narg(proxy_object_key), proxy_object_key),
+    duration_ms = COALESCE(sqlc.narg(duration_ms), duration_ms),
+    error_id = NULL,
+    claimed_at = now(),
+    updated_at = now()
+WHERE public_id = sqlc.arg(public_id)
+  AND org_id = sqlc.arg(org_id)
+  AND status = 'processing'
+  AND current_stage = sqlc.arg(current_stage)
   AND deleted_at IS NULL
 RETURNING *;
 
 -- name: GetEpisodeStatusByPublicID :one
 -- Look up an episode's current status by public id alone (not org-scoped, like
--- ClaimEpisodeForIngest: the worker has no org until it claims). Used only to
+-- ClaimEpisodeForStage: the worker has no org until it claims). Used only to
 -- annotate the server-side WARN a worker logs when it cannot take a claim — the
 -- blocking status is why the claim was refused. Server-log-only, never client
 -- surface.

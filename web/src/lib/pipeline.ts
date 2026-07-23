@@ -1,10 +1,17 @@
 /**
- * Display state -> five-bar pipeline view. The Library shows a fixed five-bar
- * pipeline, but today (M1) only one real stage exists: ingest. So bar 1 tracks
- * the ingest stage's actual state, and bars 2-5 stand for the future stages
- * (transcribe, moments, etc.) that have not been built or reached yet — they are
- * honestly "not reached", never falsely "done". This replaces the earlier
- * all-done READY mapping, which rendered five identical bars.
+ * Display state (+ pipeline stage) -> five-bar pipeline view. The Library shows a
+ * fixed five-bar pipeline, one bar per M1 stage: ingest · transcribe · diarize ·
+ * moments · render. The server's neutral `stage` field (episodes.current_stage)
+ * says which stage is running/next while processing, or which stage a terminal
+ * row reached. Bars before the current stage are `done`, the current stage is
+ * `active` (processing) / `pending` (queued) / `failed`, and bars after it are
+ * honestly `unreached` — never falsely "done".
+ *
+ * Only ingest is wired in the worker today, so in production every row's stage is
+ * ingest (index 0) or absent, which collapses to exactly the earlier one-stage
+ * mapping (bar 1 tracks ingest; bars 2-5 unreached). The per-stage generalisation
+ * lights the later bars as those stages land, with no visual change to today's
+ * single-stage rows.
  *
  * Colors are token classes, resolved by DESIGN.md's pipeline-step spec:
  *   done -> step-done · active -> accent · pending -> border-default · failed -> danger
@@ -30,27 +37,68 @@ const U: StepState = 'unreached';
 const F: StepState = 'failed';
 
 /**
- * pipelineView maps a display state to its five bars, stage label, and tone.
- * Bar 1 = the ingest stage; bars 2-5 = downstream stages not reached in M1.
+ * STAGE_ORDER is the pipeline sequence, one entry per bar. It mirrors the worker
+ * registry order and the episodes.current_stage CHECK. Stage names are neutral
+ * product terms — never provider names.
  */
-export function pipelineView(state: DisplayState): PipelineView {
+export const STAGE_ORDER = ['ingest', 'transcribe', 'diarize', 'moments', 'render'] as const;
+export type StageName = (typeof STAGE_ORDER)[number];
+
+/** Uppercase stage labels for the chip text ("INGEST…", "FAILED — TRANSCRIBE"). */
+const STAGE_LABELS: Record<StageName, string> = {
+  ingest: 'INGEST',
+  transcribe: 'TRANSCRIBE',
+  diarize: 'DIARIZE',
+  moments: 'MOMENTS',
+  render: 'RENDER'
+};
+
+/**
+ * stageIndex resolves a stage name to its bar index. An absent or unknown stage
+ * defaults to ingest (index 0): an unclaimed/legacy row is treated as sitting at
+ * the first stage, which keeps single-stage rows rendering exactly as before.
+ */
+function stageIndex(stage?: string): number {
+  const i = STAGE_ORDER.indexOf(stage as StageName);
+  return i >= 0 ? i : 0;
+}
+
+/**
+ * pipelineView maps a display state and the pipeline stage to the five bars,
+ * stage label, and tone. `stage` is the server's neutral current_stage; when it
+ * is absent the view falls back to the first stage (ingest).
+ */
+export function pipelineView(state: DisplayState, stage?: string): PipelineView {
+  const n = STAGE_ORDER.length; // 5 bars, one per stage
+  const idx = stageIndex(stage);
+  const steps: StepState[] = Array.from({ length: n }, () => U);
+
   switch (state) {
     case 'awaiting_upload':
-      // No master landed, so ingest cannot start: every bar is unreached and the
+      // No master landed, so nothing can start: every bar is unreached and the
       // row reads honestly as awaiting the master rather than queued.
-      return { steps: [U, U, U, U, U], label: 'AWAITING UPLOAD', tone: 'muted' };
+      return { steps, label: 'AWAITING UPLOAD', tone: 'muted' };
     case 'uploaded':
-      // Master landed; ingest is queued (pending) but has not run.
-      return { steps: [P, U, U, U, U], label: 'QUEUED', tone: 'muted' };
+      // Master landed; the first stage (ingest) is queued (pending) but has not run.
+      steps[0] = P;
+      return { steps, label: 'QUEUED', tone: 'muted' };
     case 'processing':
-      // Ingest is running.
-      return { steps: [A, U, U, U, U], label: 'INGEST…', tone: 'accent' };
+      // Stages before the current one are done; the current stage is running.
+      for (let i = 0; i < idx; i++) steps[i] = D;
+      steps[idx] = A;
+      return { steps, label: `${STAGE_LABELS[STAGE_ORDER[idx]]}…`, tone: 'accent' };
     case 'ready':
-      // Ingest is done; downstream stages do not exist yet, so they stay unreached.
-      return { steps: [D, U, U, U, U], label: 'READY', tone: 'ok' };
+      // Terminal success: every stage up to and including the one reached is done;
+      // any later, not-yet-wired stages stay unreached. For today's single-stage
+      // rows (idx 0) that is bar 1 done, bars 2-5 unreached.
+      for (let i = 0; i <= idx; i++) steps[i] = D;
+      return { steps, label: 'READY', tone: 'ok' };
     case 'failed':
-      // Ingest failed; downstream stages were never reached.
-      return { steps: [F, U, U, U, U], label: 'FAILED — INGEST', tone: 'danger' };
+      // The stage that failed is marked failed; earlier stages are done, later
+      // ones were never reached.
+      for (let i = 0; i < idx; i++) steps[i] = D;
+      steps[idx] = F;
+      return { steps, label: `FAILED — ${STAGE_LABELS[STAGE_ORDER[idx]]}`, tone: 'danger' };
   }
 }
 

@@ -110,6 +110,14 @@ type Config struct {
 	// IngestTimeout bounds a single ingest stage attempt in the worker.
 	IngestTimeout time.Duration
 
+	// PipelineAutoAdvance controls whether a worker, on a non-terminal stage's
+	// success, launches the next registered stage (via the same trigger the API
+	// server uses). Maps to PIPELINE_AUTO_ADVANCE and defaults to true. When false
+	// the completed stage's handoff is still recorded durably, but the next stage
+	// is not launched — a staged-rollout / manual-drive mode. With only ingest
+	// registered (M1) it has no observable effect: ingest is terminal.
+	PipelineAutoAdvance bool
+
 	// ProxyMaxRemuxBitrate is the overall-bitrate ceiling (bits/sec) under which an
 	// already-browser-compatible master is remuxed (stream copy) into its proxy
 	// rather than transcoded. Above it, the master is transcoded so a proxy always
@@ -322,6 +330,16 @@ func loadWorker(cfg *Config, getenv func(string) string) error {
 			return fmt.Errorf("config: INGEST_TIMEOUT must be positive, got %q", v)
 		}
 		cfg.IngestTimeout = d
+	}
+
+	// PIPELINE_AUTO_ADVANCE defaults to true; an explicit value must be a boolean.
+	cfg.PipelineAutoAdvance = true
+	if v := strings.TrimSpace(getenv("PIPELINE_AUTO_ADVANCE")); v != "" {
+		b, err := strconv.ParseBool(v)
+		if err != nil {
+			return fmt.Errorf("config: invalid PIPELINE_AUTO_ADVANCE %q (want a boolean): %w", v, err)
+		}
+		cfg.PipelineAutoAdvance = b
 	}
 
 	cfg.ProxyMaxRemuxBitrate = defaultProxyMaxRemuxBitrate

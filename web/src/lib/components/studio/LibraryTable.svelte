@@ -91,7 +91,7 @@
     {formatDuration(ep.durationMs)}
   </div>
   <div class="w-[250px] flex-none">
-    <PipelineSteps state={displayState(ep)} />
+    <PipelineSteps state={displayState(ep)} stage={ep.stage} />
   </div>
   <div class="w-[60px] flex-none text-right font-mono text-[11px] text-text-primary">—</div>
   <div class="w-[80px] flex-none text-right font-mono text-[11px] tabular-nums text-text-muted">—</div>

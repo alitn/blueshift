@@ -118,7 +118,7 @@ func (s *Store) SweepStuckProcessingEpisodes(ctx context.Context, ttl time.Durat
 }
 
 // EpisodeStatus returns an episode's current status by public id, not org-scoped
-// (the worker has no org before it claims, exactly like ClaimEpisodeForIngest).
+// (the worker has no org before it claims, exactly like ClaimEpisodeForStage).
 // It exists only to annotate the server-side WARN a worker logs when it cannot
 // take a claim — the blocking status is *why* the claim was refused. A malformed
 // id or a missing/soft-deleted row yields ("", nil): a clean "nothing to claim",
@@ -270,6 +270,7 @@ func episodeRow(orgPub pgtype.UUID, ep db.Episode) api.EpisodeRow {
 		SourceFilename: ep.SourceFilename,
 		Language:       ep.Language,
 		Status:         ep.Status,
+		CurrentStage:   textOrEmpty(ep.CurrentStage),
 		SizeBytes:      int64OrZero(ep.MasterSizeBytes),
 		DurationMs:     int64OrZero(ep.DurationMs),
 		MasterKey:      textOrEmpty(ep.MasterObjectKey),

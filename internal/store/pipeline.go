@@ -16,18 +16,27 @@ import (
 // Store implements the pipeline's episode persistence port.
 var _ pipeline.Repo = (*Store)(nil)
 
-// Claim atomically advances a single 'uploaded' episode to 'processing' and
-// returns its identifiers. claimed=false (err=nil) when the episode is not in
-// 'uploaded' — already claimed by a concurrent worker, missing, or in a terminal
-// state — so a losing invocation cleanly no-ops. The org resolved here is the
-// only org the finalizers below will accept, keeping every write in-tenant.
-func (s *Store) Claim(ctx context.Context, episodePublicID string) (pipeline.Episode, bool, error) {
+// Claim is the stage-aware compare-and-set that takes an episode for stage and
+// returns its identifiers. prevStage selects the shape: "" is an entry stage
+// (ingest), advancing a single 'uploaded' episode to 'processing'; a non-empty
+// prevStage is a continuation stage, claimable only from a 'processing' episode
+// sitting at current_stage = prevStage (the prior stage's finalize left it
+// there). Either way it stamps current_stage = stage and re-arms claimed_at.
+// claimed=false (err=nil) when no row matches — already claimed, missing,
+// terminal, or sitting at a different stage — so a losing/duplicate invocation
+// cleanly no-ops. The org resolved here is the only org the finalizers below will
+// accept, keeping every write in-tenant.
+func (s *Store) Claim(ctx context.Context, episodePublicID, stage, prevStage string) (pipeline.Episode, bool, error) {
 	epUUID, err := ids.Decode(ids.Episode, episodePublicID)
 	if err != nil {
 		// A malformed id names no episode: a clean no-op, not a fault.
 		return pipeline.Episode{}, false, nil
 	}
-	row, err := s.ClaimEpisodeForIngest(ctx, pgUUID(epUUID))
+	row, err := s.ClaimEpisodeForStage(ctx, db.ClaimEpisodeForStageParams{
+		PublicID:  pgUUID(epUUID),
+		Stage:     pgtype.Text{String: stage, Valid: true},
+		PrevStage: pgtype.Text{String: prevStage, Valid: prevStage != ""},
+	})
 	if errors.Is(err, pgx.ErrNoRows) {
 		return pipeline.Episode{}, false, nil
 	}
@@ -44,6 +53,40 @@ func (s *Store) Claim(ctx context.Context, episodePublicID string) (pipeline.Epi
 		MasterObjectKey: textOrEmpty(row.MasterObjectKey),
 		Language:        row.Language,
 	}, true, nil
+}
+
+// AdvanceStage is the non-terminal stage finalize: it records the completing
+// stage's outputs (proxy key + measured duration) and hands off to the next
+// stage while the episode stays 'processing'. Org-scoped and gated on
+// 'processing' + current_stage = completedStage, so a lost race, a foreign org,
+// or a stage that no longer matches is an idempotent no-op — the same
+// lost-race/cross-tenant contract as MarkReady/MarkFailed. current_stage is left
+// at completedStage on purpose; the next stage's claim advances it (that
+// transition is the continuation claim's compare-and-set). A zero durationMs or
+// empty proxyKey leaves the existing column untouched (COALESCE).
+func (s *Store) AdvanceStage(ctx context.Context, orgID, episodePublicID, completedStage, proxyObjectKey string, durationMs int64) error {
+	orgInternal, epUUID, ok, err := s.resolveOrgAndEpisode(ctx, orgID, episodePublicID)
+	if err != nil {
+		return err
+	}
+	if !ok {
+		// Unknown/foreign org: nothing to advance. A clean no-op.
+		return nil
+	}
+	_, err = s.AdvanceEpisodeStage(ctx, db.AdvanceEpisodeStageParams{
+		PublicID:       pgUUID(epUUID),
+		OrgID:          orgInternal,
+		CurrentStage:   pgtype.Text{String: completedStage, Valid: completedStage != ""},
+		ProxyObjectKey: pgtype.Text{String: proxyObjectKey, Valid: proxyObjectKey != ""},
+		DurationMs:     pgtype.Int8{Int64: durationMs, Valid: durationMs > 0},
+	})
+	if errors.Is(err, pgx.ErrNoRows) {
+		return nil
+	}
+	if err != nil {
+		return fmt.Errorf("store: advance stage: %w", err)
+	}
+	return nil
 }
 
 // MarkReady finalizes a successful run: proxy key + measured duration, status

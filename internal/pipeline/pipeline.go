@@ -22,22 +22,67 @@ import (
 	"blueshift/internal/media"
 )
 
-// Stage names a unit of pipeline work. M0 defines exactly one; transcribe and
-// analyze arrive with M1. Kept as a small closed set validated at dispatch.
+// Stage names a unit of pipeline work. The M1 pipeline is ingest -> transcribe
+// -> diarize -> moments -> render; these constants name the whole set (they match
+// the episodes.current_stage CHECK and the Library's five bars). Only the stages
+// registered in defaultStages are actually *runnable* by the worker — M1 wires
+// ingest; the rest register as they land. Stage names are neutral product terms,
+// never provider names.
 type Stage string
 
-// StageIngest extracts audio and renders a browser proxy from the master.
-const StageIngest Stage = "ingest"
+const (
+	// StageIngest extracts audio and renders a browser proxy from the master.
+	StageIngest Stage = "ingest"
+	// StageTranscribe, StageDiarize, StageMoments, StageRender name the downstream
+	// stages. They are declared here (and allowed by the DB CHECK) but are not yet
+	// registered in defaultStages, so the worker refuses to run them until their
+	// implementations land.
+	StageTranscribe Stage = "transcribe"
+	StageDiarize    Stage = "diarize"
+	StageMoments    Stage = "moments"
+	StageRender     Stage = "render"
+)
 
-// knownStages is the closed registry of runnable stages.
-var knownStages = map[Stage]struct{}{
-	StageIngest: {},
+// stageDef is one entry in the ordered stage registry: a runnable stage's name
+// and its per-attempt execution. The slice order defines the pipeline sequence
+// and therefore auto-advance — each stage triggers the next in the slice, and the
+// last registered stage is terminal (-> status ready).
+type stageDef struct {
+	name Stage
+	// run executes one attempt of the stage against the runner's seams and returns
+	// the outputs to persist on success (proxy key + measured duration for ingest;
+	// later stages fill what they produce).
+	run func(r *Runner, ctx context.Context, ep Episode, attempt int) (stageOutput, error)
 }
 
-// ValidStage reports whether s names a runnable stage.
+// stageOutput is what a completed stage records on success. Today only ingest
+// produces outputs (the browser proxy key and the measured duration); the
+// finalize persists them the same way whether the stage is terminal (MarkReady)
+// or intermediate (AdvanceStage).
+type stageOutput struct {
+	ProxyKey   string
+	DurationMs int64
+}
+
+// defaultStages is the ordered registry of runnable stages. M1 registers only
+// ingest, so ingest is the terminal stage and its success flips the episode to
+// 'ready' — identical to the M0 single-stage behaviour. transcribe/diarize/
+// moments/render append here (in order) as they land, at which point ingest
+// becomes an intermediate stage that auto-advances to the next.
+var defaultStages = []stageDef{
+	{name: StageIngest, run: (*Runner).runIngest},
+}
+
+// ValidStage reports whether s names a stage the worker can run (i.e. one
+// registered in defaultStages). cmd/worker validates its argument against this,
+// so a not-yet-implemented stage name is rejected up front.
 func ValidStage(s string) bool {
-	_, ok := knownStages[Stage(s)]
-	return ok
+	for _, st := range defaultStages {
+		if st.name == Stage(s) {
+			return true
+		}
+	}
+	return false
 }
 
 // Episode is the claimed subject of a pipeline run: the identifiers needed to
@@ -50,13 +95,22 @@ type Episode struct {
 	Language        string
 }
 
-// Repo is the pipeline's view of episode persistence. Claim is the compare-and-
-// set that advances a single 'uploaded' episode to 'processing' (a second
-// concurrent invocation sees claimed=false and no-ops). MarkReady/MarkFailed are
-// org-scoped finalizers keyed by the org resolved during Claim, so a run can
-// never write across tenants. All are idempotent on a losing race.
+// Repo is the pipeline's view of episode persistence. Claim is the stage-aware
+// compare-and-set that takes an episode for a stage and stamps current_stage +
+// claimed_at (a second concurrent/duplicate invocation sees claimed=false and
+// no-ops); prevStage "" is an entry stage claimed from 'uploaded', a non-empty
+// prevStage a continuation stage claimed only from a 'processing' episode at that
+// predecessor stage. AdvanceStage is the intermediate finalize (record outputs,
+// hand off, stay 'processing'); MarkReady/MarkFailed are the terminal finalizers.
+// All are org-scoped and keyed by the org resolved during Claim, so a run can
+// never write across tenants, and all are idempotent on a losing race.
 type Repo interface {
-	Claim(ctx context.Context, episodePublicID string) (ep Episode, claimed bool, err error)
+	Claim(ctx context.Context, episodePublicID, stage, prevStage string) (ep Episode, claimed bool, err error)
+	// AdvanceStage records a non-terminal stage's outputs and hands off to the next
+	// stage while keeping the episode 'processing'. It is gated on
+	// current_stage = completedStage (in addition to the org + 'processing' gate),
+	// so it only ever finalizes the stage this run actually completed.
+	AdvanceStage(ctx context.Context, orgID, episodePublicID, completedStage, proxyObjectKey string, durationMs int64) error
 	MarkReady(ctx context.Context, orgID, episodePublicID, proxyObjectKey string, durationMs int64) error
 	MarkFailed(ctx context.Context, orgID, episodePublicID, errorID string) error
 	// EpisodeStatus reports an episode's current status, used only to annotate the
@@ -107,6 +161,12 @@ type Config struct {
 	// path (config PROXY_MAX_REMUX_BITRATE). A master above it is transcoded so a
 	// proxy always streams cheaply.
 	MaxRemuxBitrate int64
+	// AutoAdvance triggers the next registered stage when a non-terminal stage
+	// succeeds. It maps to PIPELINE_AUTO_ADVANCE (default true); cmd/worker sets it
+	// from config. When false, a completed non-terminal stage still records its
+	// handoff durably, but the next stage is not launched — a staged rollout /
+	// manual-drive mode. It has no effect on a terminal stage (there is no next).
+	AutoAdvance bool
 }
 
 const (
@@ -160,6 +220,58 @@ type Runner struct {
 	Media  Media
 	Log    *slog.Logger
 	Config Config
+	// Trigger launches the next stage on auto-advance (the same neutral trigger
+	// seam the API server uses; the worker's SA already holds the runner role). It
+	// is only consulted when a non-terminal stage succeeds and Config.AutoAdvance
+	// is set. Nil means no trigger is configured: the handoff is recorded but the
+	// next stage is not launched (logged; recoverable by a manual re-drive or the
+	// stale-claim sweep).
+	Trigger Trigger
+	// stages overrides the default stage registry. Nil uses defaultStages
+	// (production). It exists so tests can register fake multi-stage pipelines to
+	// exercise auto-advance without a real downstream stage; it is never set in
+	// production wiring.
+	stages []stageDef
+}
+
+// registry returns the runner's effective, ordered stage registry: the injected
+// override for tests, else the package default.
+func (r *Runner) registry() []stageDef {
+	if r.stages != nil {
+		return r.stages
+	}
+	return defaultStages
+}
+
+// lookupStage finds a stage by name in the runner's registry, returning its
+// definition and index. found=false when the name is not a runnable stage.
+func (r *Runner) lookupStage(name Stage) (def stageDef, idx int, found bool) {
+	for i, st := range r.registry() {
+		if st.name == name {
+			return st, i, true
+		}
+	}
+	return stageDef{}, -1, false
+}
+
+// prevStageName returns the name of the stage before index idx, or "" when idx is
+// the entry stage (index 0). It is the predecessor the continuation claim guards
+// on.
+func (r *Runner) prevStageName(idx int) string {
+	if idx <= 0 {
+		return ""
+	}
+	return string(r.registry()[idx-1].name)
+}
+
+// nextStageName returns the stage after index idx and whether one exists. No next
+// stage means idx is terminal (its success flips the episode to 'ready').
+func (r *Runner) nextStageName(idx int) (Stage, bool) {
+	reg := r.registry()
+	if idx < 0 || idx+1 >= len(reg) {
+		return "", false
+	}
+	return reg[idx+1].name, true
 }
 
 // Run claims the episode and executes stage, driving the status machine. A
@@ -168,16 +280,14 @@ type Runner struct {
 // with a neutral error_id and Run returns ErrStageFailed.
 func (r *Runner) Run(ctx context.Context, episodePublicID, stage string) error {
 	log := r.logger()
-	if !ValidStage(stage) {
+	def, idx, ok := r.lookupStage(Stage(stage))
+	if !ok {
 		return fmt.Errorf("pipeline: unknown stage %q", stage)
-	}
-	if stage != string(StageIngest) {
-		// Defensive: only ingest is wired in M0.
-		return fmt.Errorf("pipeline: stage %q not runnable in this milestone", stage)
 	}
 
 	started := time.Now()
-	ep, claimed, err := r.Repo.Claim(ctx, episodePublicID)
+	prev := r.prevStageName(idx)
+	ep, claimed, err := r.Repo.Claim(ctx, episodePublicID, stage, prev)
 	if err != nil {
 		return fmt.Errorf("pipeline: claim: %w", err)
 	}
@@ -202,15 +312,9 @@ func (r *Runner) Run(ctx context.Context, episodePublicID, stage string) error {
 	attempts := 1 + r.Config.retries()
 	var lastErr error
 	for attempt := 1; attempt <= attempts; attempt++ {
-		proxyKey, durationMs, aerr := r.attemptIngest(ctx, ep, attempt)
+		out, aerr := def.run(r, ctx, ep, attempt)
 		if aerr == nil {
-			if err := r.Repo.MarkReady(ctx, ep.OrgID, ep.PublicID, proxyKey, durationMs); err != nil {
-				return fmt.Errorf("pipeline: mark ready: %w", err)
-			}
-			log.InfoContext(ctx, "stage complete",
-				slog.String("episode", ep.PublicID), slog.String("stage", stage),
-				slog.Int("attempt", attempt), slog.Int64("duration_ms", durationMs))
-			return nil
+			return r.finalizeSuccess(ctx, ep, stage, idx, out, attempt)
 		}
 		lastErr = aerr
 		// The raw cause (which may name codecs/tools) stays in server logs only.
@@ -258,6 +362,75 @@ func (r *Runner) Run(ctx context.Context, episodePublicID, stage string) error {
 			slog.String("elapsed", elapsed.String()), slog.String("error", errString(lastErr)))
 	}
 	return fmt.Errorf("%w (error_id=%s)", ErrStageFailed, errID)
+}
+
+// finalizeSuccess records a stage's success and drives the transition. If the
+// stage is terminal (the last registered stage — ingest today), it flips the
+// episode to 'ready' via MarkReady, exactly the M0 single-stage behaviour. If a
+// next stage is registered it is a non-terminal stage: AdvanceStage records the
+// outputs and hands off while the episode stays 'processing', then — only when
+// Config.AutoAdvance is set — the next stage is launched via the Trigger seam.
+// Auto-advance can never loop or skip: the trigger is fired for exactly the next
+// registered stage, and the store's continuation claim only accepts it from this
+// stage as predecessor.
+func (r *Runner) finalizeSuccess(ctx context.Context, ep Episode, stage string, idx int, out stageOutput, attempt int) error {
+	log := r.logger()
+	next, hasNext := r.nextStageName(idx)
+	if !hasNext {
+		// Terminal stage: record outputs and mark ready.
+		if err := r.Repo.MarkReady(ctx, ep.OrgID, ep.PublicID, out.ProxyKey, out.DurationMs); err != nil {
+			return fmt.Errorf("pipeline: mark ready: %w", err)
+		}
+		log.InfoContext(ctx, "stage complete",
+			slog.String("episode", ep.PublicID), slog.String("stage", stage),
+			slog.Int("attempt", attempt), slog.Int64("duration_ms", out.DurationMs),
+			slog.Bool("terminal", true))
+		return nil
+	}
+
+	// Non-terminal stage: record outputs and hand off, staying 'processing'.
+	if err := r.Repo.AdvanceStage(ctx, ep.OrgID, ep.PublicID, stage, out.ProxyKey, out.DurationMs); err != nil {
+		return fmt.Errorf("pipeline: advance stage: %w", err)
+	}
+	log.InfoContext(ctx, "stage complete",
+		slog.String("episode", ep.PublicID), slog.String("stage", stage),
+		slog.Int("attempt", attempt), slog.Int64("duration_ms", out.DurationMs),
+		slog.String("next_stage", string(next)), slog.Bool("terminal", false))
+
+	if !r.Config.AutoAdvance {
+		log.InfoContext(ctx, "auto-advance disabled; next stage awaits manual trigger",
+			slog.String("episode", ep.PublicID), slog.String("next_stage", string(next)))
+		return nil
+	}
+	if r.Trigger == nil {
+		log.WarnContext(ctx, "auto-advance enabled but no trigger configured; next stage not launched",
+			slog.String("episode", ep.PublicID), slog.String("next_stage", string(next)))
+		return nil
+	}
+	if err := r.Trigger.Trigger(ctx, ep.PublicID, string(next)); err != nil {
+		// Best-effort: the handoff is already durable, so a trigger miss must not
+		// fail an episode whose stage actually succeeded. Log it (neutrally, with a
+		// correlation id); a manual re-drive or the stale-claim sweep recovers it.
+		id := newErrorID()
+		log.ErrorContext(ctx, "auto-advance trigger failed",
+			slog.String("episode", ep.PublicID), slog.String("next_stage", string(next)),
+			slog.String("error_id", id), slog.String("error", err.Error()))
+		return nil
+	}
+	log.InfoContext(ctx, "auto-advanced to next stage",
+		slog.String("episode", ep.PublicID), slog.String("next_stage", string(next)))
+	return nil
+}
+
+// runIngest adapts the ingest stage to the registry's run signature: it runs one
+// ingest attempt and reports the proxy key + measured duration as the stage's
+// outputs. The heavy lifting stays in attemptIngest (ingest.go).
+func (r *Runner) runIngest(ctx context.Context, ep Episode, attempt int) (stageOutput, error) {
+	proxyKey, durationMs, err := r.attemptIngest(ctx, ep, attempt)
+	if err != nil {
+		return stageOutput{}, err
+	}
+	return stageOutput{ProxyKey: proxyKey, DurationMs: durationMs}, nil
 }
 
 func (r *Runner) logger() *slog.Logger {

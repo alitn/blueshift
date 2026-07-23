@@ -26,6 +26,7 @@ func discard() *slog.Logger { return slog.New(slog.NewTextHandler(io.Discard, ni
 type fakeEp struct {
 	org        string // encoded org_ id
 	status     string
+	stage      string // current_stage: the stage running/next, "" until first claim
 	masterKey  string
 	proxyKey   string
 	durationMs int64
@@ -57,17 +58,53 @@ func (f *fakeRepo) get(epID string) fakeEp {
 	return *f.eps[epID]
 }
 
-// Claim mirrors ClaimEpisodeForIngest: CAS 'uploaded' -> 'processing'.
-func (f *fakeRepo) Claim(_ context.Context, epID string) (Episode, bool, error) {
+// Claim mirrors ClaimEpisodeForStage: an entry stage (prevStage == "") is a CAS
+// 'uploaded' -> 'processing'; a continuation stage (prevStage != "") is a CAS on
+// current_stage = prevStage while 'processing'. Either way it stamps
+// current_stage = stage and counts the claim.
+func (f *fakeRepo) Claim(_ context.Context, epID, stage, prevStage string) (Episode, bool, error) {
 	f.mu.Lock()
 	defer f.mu.Unlock()
 	e, ok := f.eps[epID]
-	if !ok || e.status != "uploaded" {
+	if !ok {
 		return Episode{}, false, nil
 	}
+	if prevStage == "" {
+		// Entry stage: only from 'uploaded'.
+		if e.status != "uploaded" {
+			return Episode{}, false, nil
+		}
+	} else {
+		// Continuation stage: only from 'processing' sitting at the predecessor.
+		if e.status != "processing" || e.stage != prevStage {
+			return Episode{}, false, nil
+		}
+	}
 	e.status = "processing"
+	e.stage = stage
 	e.claims++
 	return Episode{OrgID: e.org, PublicID: epID, MasterObjectKey: e.masterKey}, true, nil
+}
+
+// AdvanceStage mirrors the intermediate finalize: gated on org + 'processing' +
+// current_stage = completedStage, it records the outputs and keeps the episode
+// 'processing' at completedStage (the next stage's claim advances it). A mismatch
+// is a no-op.
+func (f *fakeRepo) AdvanceStage(_ context.Context, org, epID, completedStage, proxyKey string, durationMs int64) error {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	e, ok := f.eps[epID]
+	if !ok || e.org != org || e.status != "processing" || e.stage != completedStage {
+		return nil
+	}
+	if proxyKey != "" {
+		e.proxyKey = proxyKey
+	}
+	if durationMs > 0 {
+		e.durationMs = durationMs
+	}
+	e.errorID = ""
+	return nil
 }
 
 // MarkReady mirrors the org-scoped, 'processing'-gated finalizer.

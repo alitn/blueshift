@@ -56,7 +56,7 @@ func TestPipelineClaimFinalize(t *testing.T) {
 	ep := insert("k/masters/m.mp4")
 	epEncoded := ids.Encode(ids.Episode, ep.PublicID.Bytes)
 
-	claimed, ok, err := st.Claim(ctx, epEncoded)
+	claimed, ok, err := st.Claim(ctx, epEncoded, "ingest", "")
 	if err != nil || !ok {
 		t.Fatalf("Claim = (%+v, %v, %v), want claimed", claimed, ok, err)
 	}
@@ -68,7 +68,7 @@ func TestPipelineClaimFinalize(t *testing.T) {
 	}
 
 	// A second claim is a no-op (already 'processing').
-	if _, ok, _ := st.Claim(ctx, epEncoded); ok {
+	if _, ok, _ := st.Claim(ctx, epEncoded, "ingest", ""); ok {
 		t.Error("second Claim succeeded; want no-op")
 	}
 
@@ -86,7 +86,7 @@ func TestPipelineClaimFinalize(t *testing.T) {
 	// --- cross-org finalize is a no-op ---
 	ep2 := insert("k/masters/m2.mp4")
 	ep2Encoded := ids.Encode(ids.Episode, ep2.PublicID.Bytes)
-	if _, ok, err := st.Claim(ctx, ep2Encoded); err != nil || !ok {
+	if _, ok, err := st.Claim(ctx, ep2Encoded, "ingest", ""); err != nil || !ok {
 		t.Fatalf("Claim ep2: ok=%v err=%v", ok, err)
 	}
 	// A different org's public id must not finalize ep2.
@@ -179,7 +179,7 @@ func TestClaimStampsClaimedAt(t *testing.T) {
 	}
 
 	// Claim stamps claimed_at.
-	if _, ok, err := st.Claim(ctx, epEncoded); err != nil || !ok {
+	if _, ok, err := st.Claim(ctx, epEncoded, "ingest", ""); err != nil || !ok {
 		t.Fatalf("Claim: ok=%v err=%v", ok, err)
 	}
 	if claimedAtNull(t, st, ctx, ep.PublicID) {
