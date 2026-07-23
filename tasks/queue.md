@@ -63,8 +63,9 @@ cited patterns in its spec. "Staging" in SPEC-M1's gate = the PoC prod service
 | 4b | m1-pipeline-bars-fix | pipeline bars per-stage truth (human-found; design-faithful two greys) | committed |
 | 4c | m1-ingest-fastpath | probe→remux fastpath (compatible masters ingest in seconds) | committed |
 | 4d | m1-test-hygiene | scratch-DB isolation for DB tests; residue-tolerant asserts | committed |
-| 5a | m1-stage-machine | multi-stage worker: current_stage, registry, auto-advance chaining | spec-ready (next) |
-| 5 | m1-transcribe-stage | worker stage: audio → segments+words rows + per-segment embeddings (migration: segments) | queued |
+| 5a | m1-stage-machine | multi-stage worker: current_stage, registry, auto-advance chaining | committed |
+| 5 | m1-transcribe-stage | worker stage: audio → verbatim word-timed segments (migration 0007) | committed |
+| 5b | m1-tool-pinning | pin migrate CLI via go.mod tool directive (human-directed) | spec-ready |
 | 6 | m1-diarize-stage | text-anchored LLM diarization, anchor-merge + golden stability tests in make eval | queued |
 | 7 | m1-speaker-naming | naming evidence (intro quote + lower-third crop), speaker_directory merge (migration: speakers) | queued |
 | 8 | m1-shots-stage | scdet shot boundaries + per-shot 9:16 bbox proposals stored (migration: shots) | queued |
@@ -85,6 +86,12 @@ cited patterns in its spec. "Staging" in SPEC-M1's gate = the PoC prod service
 
 ## Backlog
 
+- m1-transcribe-stage Reviewer observations (non-blocking, 2026-07-23): (a)
+  segments_episode_id_idx is redundant with the UNIQUE(episode_id, idx) prefix — drop it;
+  (b) multi-chunk transcribe leaves chunk objects under proxies/ uncleaned — add cleanup
+  when long-audio chunking becomes routine (harmless, org-scoped at PoC volume).
+- glossary_terms table is unbuilt (bias-term plumbing is wired but passes empty); build it
+  additively when a glossary task lands (moment/caption quality depends on it later).
 - Flaky test (pre-existing, Reviewer-flagged 2026-07-23): internal/pipeline
   trigger_test.go TestExecTriggerSpawnsBinary — async child-process poll with 3s
   deadline flaked once under load, passed 3/3 rerun. Harden the poll or extend deadline.
