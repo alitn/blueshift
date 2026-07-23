@@ -97,7 +97,6 @@ setup:
 	git config core.hooksPath .githooks
 	chmod +x .githooks/* .claude/hooks/*.sh
 	@command -v golangci-lint >/dev/null || echo "TODO: install golangci-lint (brew install golangci-lint)"
-	@command -v migrate >/dev/null || echo "TODO: install golang-migrate (brew install golang-migrate)"
 	@command -v sqlc >/dev/null || echo "TODO: install sqlc (brew install sqlc) — codegen only, not a runtime dep"
 	@if command -v ffmpeg >/dev/null; then \
 		ver=$$(ffmpeg -version 2>/dev/null | head -1 | sed -nE 's/^ffmpeg version n?([0-9]+)\.([0-9]+).*/\1 \2/p'); \
@@ -164,13 +163,18 @@ dev:
 	@bash tools/demo/dev.sh
 
 # ------------------------------------------------------------------------------
-# Database: apply additive-only migrations (used by demo/CI). Requires the
-# golang-migrate CLI (make setup notes it) and DATABASE_URL.
+# Database: apply additive-only migrations (used by demo/CI). The migrate CLI is
+# run via `go run` pinned to the go.mod require (v4.19.1) — no PATH binary,
+# version-locked to the library so the two cannot drift. The `postgres` build tag
+# registers the pq driver: golang-migrate gates every driver behind a build tag,
+# and `go tool` cannot pass tags, so `go run -tags` is the mechanism. Requires
+# DATABASE_URL. (deploy.yml deliberately keeps its own pinned-v4.19.1 release
+# binary for the prod migration step — the working prod path is not touched here.)
 # ------------------------------------------------------------------------------
+MIGRATE := go run -tags 'postgres' github.com/golang-migrate/migrate/v4/cmd/migrate
 migrate-up:
 	@if [ -z "$$DATABASE_URL" ]; then echo "migrate-up: DATABASE_URL is not set"; exit 1; fi
-	@command -v migrate >/dev/null || { echo "migrate-up: golang-migrate CLI not installed (make setup)"; exit 1; }
-	migrate -path migrations -database "$$DATABASE_URL" up
+	$(MIGRATE) -path migrations -database "$$DATABASE_URL" up
 
 # Load dev/demo user identities into an already-migrated database. Dev-only:
 # staging/prod provision users per docs/RUNBOOK.md, never via this file. Wiring

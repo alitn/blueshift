@@ -152,9 +152,14 @@ demo_build_binaries() {
 # the sample boots 'ready' at current_stage=ingest (transcribe stays registered
 # but out of the chain until it is re-enabled). Sets EP_ID.
 demo_migrate_seed() {
-  command -v migrate >/dev/null 2>&1 || die "golang-migrate CLI not installed (brew install golang-migrate)"
+  # Migrate CLI is version-locked to the go.mod require (v4.19.1) via `go run`, so
+  # it can never drift from the library and needs no PATH binary. The `postgres`
+  # build tag registers the pq driver (golang-migrate gates every driver behind a
+  # build tag, and `go tool` cannot pass tags — hence `go run`). The cd makes
+  # `go run` resolve the module and the relative `migrations` path.
   log "applying migrations"
-  migrate -path migrations -database "$DB_URL" up
+  ( cd "$REPO_ROOT" && go run -tags 'postgres' github.com/golang-migrate/migrate/v4/cmd/migrate \
+      -path migrations -database "$DB_URL" up )
 
   export DATABASE_URL="$DB_URL" BLOB_MODE="local" BLOB_DIR="$DEMO_BLOB_DIR"
   log "seeding dev identities + sample episode"

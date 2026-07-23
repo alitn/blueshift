@@ -272,15 +272,9 @@ jobs:
           ffmpeg -version | head -1 | grep -qE ' n?8\.1' \
             || { echo "::error::ffmpeg is not 8.1.x after pinned install"; exit 1; }
 
-      # LOCKSTEP with baselines.yml: the golang-migrate CLI (`make demo` applies
-      # migrations). ffmpeg is installed by the pinned step above.
-      - name: Install golang-migrate
-        if: steps.decide.outputs.run == 'true'
-        run: |
-          curl -sSfL https://github.com/golang-migrate/migrate/releases/download/v4.19.1/migrate.linux-amd64.tar.gz \
-            | tar -xz migrate
-          sudo mv migrate /usr/local/bin/migrate
-          migrate -version
+      # No migrate CLI install: `make demo` (demo_migrate_seed) applies migrations
+      # via `go run -tags 'postgres' …/cmd/migrate`, version-locked to the go.mod
+      # require and built by the setup-go step above — no PATH binary needed.
 
       - name: Install web deps
         if: steps.decide.outputs.run == 'true'
