@@ -110,6 +110,12 @@ type Config struct {
 	// IngestTimeout bounds a single ingest stage attempt in the worker.
 	IngestTimeout time.Duration
 
+	// ProxyMaxRemuxBitrate is the overall-bitrate ceiling (bits/sec) under which an
+	// already-browser-compatible master is remuxed (stream copy) into its proxy
+	// rather than transcoded. Above it, the master is transcoded so a proxy always
+	// streams cheaply. Defaults to ~6 Mbps.
+	ProxyMaxRemuxBitrate int64
+
 	// SweepInterval is the cadence of the abandoned-upload sweep (the app-side
 	// TTL reaper). Defaults to 1h. The sweep only runs when a database is
 	// configured (DATABASE_URL set).
@@ -147,6 +153,11 @@ const (
 	// defaultIngestTimeout bounds a single ingest stage attempt when
 	// INGEST_TIMEOUT is unset.
 	defaultIngestTimeout = 30 * time.Minute
+
+	// defaultProxyMaxRemuxBitrate is the remux bitrate ceiling (~6 Mbps, in
+	// bits/sec) when PROXY_MAX_REMUX_BITRATE is unset. Mirrors
+	// pipeline.defaultMaxRemuxBitrate.
+	defaultProxyMaxRemuxBitrate = 6_000_000
 
 	// defaultSweepInterval is the cadence of the abandoned-upload sweep when
 	// SWEEP_INTERVAL is unset.
@@ -311,6 +322,18 @@ func loadWorker(cfg *Config, getenv func(string) string) error {
 			return fmt.Errorf("config: INGEST_TIMEOUT must be positive, got %q", v)
 		}
 		cfg.IngestTimeout = d
+	}
+
+	cfg.ProxyMaxRemuxBitrate = defaultProxyMaxRemuxBitrate
+	if v := strings.TrimSpace(getenv("PROXY_MAX_REMUX_BITRATE")); v != "" {
+		n, err := strconv.ParseInt(v, 10, 64)
+		if err != nil {
+			return fmt.Errorf("config: invalid PROXY_MAX_REMUX_BITRATE %q (want an integer bits/sec): %w", v, err)
+		}
+		if n <= 0 {
+			return fmt.Errorf("config: PROXY_MAX_REMUX_BITRATE must be positive, got %q", v)
+		}
+		cfg.ProxyMaxRemuxBitrate = n
 	}
 
 	return nil

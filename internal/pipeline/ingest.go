@@ -3,10 +3,12 @@ package pipeline
 import (
 	"context"
 	"fmt"
+	"log/slog"
 	"os"
 	"path/filepath"
 
 	"blueshift/internal/blob"
+	"blueshift/internal/media"
 )
 
 // Output filenames under the episode's proxies/ prefix. Fixed, code-supplied
@@ -73,16 +75,34 @@ func (r *Runner) attemptIngest(parent context.Context, ep Episode, attempt int) 
 		}
 	}
 
-	// Duration is measured from the master (verbatim invariant), never derived.
-	dur, err := r.Media.ProbeDuration(ctx, masterPath)
+	// Probe the master once: the duration is measured from the container
+	// (verbatim invariant, never derived) and the same summary drives the
+	// remux/transcode ruling below.
+	probe, err := r.Media.Probe(ctx, masterPath)
 	if err != nil {
-		return "", 0, fmt.Errorf("probe duration: %w", err)
+		return "", 0, fmt.Errorf("probe master: %w", err)
 	}
-	durationMs = dur.Milliseconds()
+	durationMs = probe.Duration.Milliseconds()
 
-	if err = r.Media.RenderProxy(ctx, masterPath, proxyPath); err != nil {
-		return "", 0, fmt.Errorf("render proxy: %w", err)
+	// Rule: an already-browser-compatible master is remuxed (stream copy, seconds);
+	// otherwise it is transcoded (minutes). The probe summary and ruling are logged
+	// server-side only — they name codecs/dimensions, never a provider.
+	decision := media.EligibleForRemux(probe, r.Config.maxRemuxBitrate())
+	r.logger().InfoContext(ctx, "master probed",
+		slog.String("episode", ep.PublicID), slog.Int("attempt", attempt),
+		slog.Any("probe", probe), slog.Bool("remux", decision.Remux),
+		slog.String("ruling", decision.Reason))
+
+	if decision.Remux {
+		if err = r.Media.RemuxProxy(ctx, masterPath, proxyPath); err != nil {
+			return "", 0, fmt.Errorf("remux proxy: %w", err)
+		}
+	} else {
+		if err = r.Media.RenderProxy(ctx, masterPath, proxyPath); err != nil {
+			return "", 0, fmt.Errorf("render proxy: %w", err)
+		}
 	}
+	// Audio extraction is unchanged and runs in both paths (ASR needs it).
 	if err = r.Media.ExtractAudio(ctx, masterPath, audioPath); err != nil {
 		return "", 0, fmt.Errorf("extract audio: %w", err)
 	}

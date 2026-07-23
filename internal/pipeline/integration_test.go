@@ -7,6 +7,7 @@ import (
 	"os/exec"
 	"path/filepath"
 	"regexp"
+	"strconv"
 	"testing"
 	"time"
 
@@ -38,6 +39,26 @@ func genMaster(t *testing.T, path string) {
 		"-f", "lavfi", "-i", "testsrc=duration=2:size=320x240:rate=30",
 		"-f", "lavfi", "-i", "sine=frequency=440:duration=2",
 		"-c:v", "libx264", "-pix_fmt", "yuv420p", "-c:a", "aac", "-shortest", path)
+	var stderr bytes.Buffer
+	cmd.Stderr = &stderr
+	if err := cmd.Run(); err != nil {
+		t.Fatalf("generate master: %v: %s", err, stderr.String())
+	}
+}
+
+// genMasterSpec writes an H.264+AAC master with an explicit size/profile/level so
+// a real-ffmpeg test can control remux-eligibility (a 1080p High master is
+// remux-eligible). Uses ffmpeg directly, not the wrappers under test.
+func genMasterSpec(t *testing.T, path, size, profile, level string) {
+	t.Helper()
+	if err := os.MkdirAll(filepath.Dir(path), 0o750); err != nil {
+		t.Fatalf("mkdir master: %v", err)
+	}
+	cmd := exec.Command("ffmpeg", "-nostdin", "-y", "-loglevel", "error",
+		"-f", "lavfi", "-i", "testsrc=duration=2:size="+size+":rate=30",
+		"-f", "lavfi", "-i", "sine=frequency=440:duration=2",
+		"-c:v", "libx264", "-profile:v", profile, "-level", level, "-pix_fmt", "yuv420p",
+		"-c:a", "aac", "-shortest", path)
 	var stderr bytes.Buffer
 	cmd.Stderr = &stderr
 	if err := cmd.Run(); err != nil {
@@ -155,6 +176,125 @@ func TestIngestRealFailurePath(t *testing.T) {
 	// The client-facing error names no tool/provider — only the neutral id.
 	if err == nil || !regexp.MustCompile(`error_id=[0-9a-f]{16}`).MatchString(err.Error()) {
 		t.Errorf("returned error = %v, want neutral error_id", err)
+	}
+}
+
+// TestIngestRealRemuxPath drives a full ingest over real ffmpeg with a master
+// that is already browser-compatible: the pipeline must take the remux
+// (stream-copy) fast path. The proof is that the proxy's video stream is copied
+// verbatim — codecs preserved AND the full 1080p height retained (a transcode
+// would have downscaled to ≤720). It shares the transcoded proxy's playability
+// assertions (h264/aac, faststart, 16 kHz audio.flac).
+func TestIngestRealRemuxPath(t *testing.T) {
+	requireFFmpeg(t)
+
+	blobDir := t.TempDir()
+	local, err := blob.NewLocal(blobDir, []byte("secret"), nil)
+	if err != nil {
+		t.Fatalf("NewLocal: %v", err)
+	}
+	org := "org_0000000000000000000000000c"
+	ep := "ep_00000000000000000000000000c"
+	masterKey, err := blob.MasterKey(org, ep, "master.mp4")
+	if err != nil {
+		t.Fatalf("MasterKey: %v", err)
+	}
+	// 1080p H.264 High L4.2 AAC mp4: satisfies every remux rule.
+	genMasterSpec(t, filepath.Join(blobDir, masterKey), "1920x1080", "high", "4.2")
+
+	repo := newFakeRepo()
+	repo.add(ep, org, masterKey)
+	r := &Runner{Repo: repo, Blob: local, Media: media.Runner{}, Log: discard(), Config: Config{Retries: 2}}
+
+	if err := r.Run(context.Background(), ep, "ingest"); err != nil {
+		t.Fatalf("Run: %v", err)
+	}
+	e := repo.get(ep)
+	if e.status != "ready" {
+		t.Fatalf("status = %q, want ready", e.status)
+	}
+	proxyPath := filepath.Join(blobDir, e.proxyKey)
+	audioPath := filepath.Join(blobDir, org, ep, "proxies", audioFilename)
+
+	vcodec := probe(t, "-v", "error", "-select_streams", "v:0", "-show_entries", "stream=codec_name", "-of", "csv=p=0", proxyPath)
+	height := probe(t, "-v", "error", "-select_streams", "v:0", "-show_entries", "stream=height", "-of", "csv=p=0", proxyPath)
+	acodec := probe(t, "-v", "error", "-select_streams", "a:0", "-show_entries", "stream=codec_name", "-of", "csv=p=0", proxyPath)
+	arate := probe(t, "-v", "error", "-select_streams", "a:0", "-show_entries", "stream=sample_rate", "-of", "csv=p=0", audioPath)
+	t.Logf("[remux] proxy: video=%s height=%s audio=%s | audio.flac sample_rate=%s | faststart=%v",
+		vcodec, height, acodec, arate, faststartFront(t, proxyPath))
+
+	if vcodec != "h264" || acodec != "aac" {
+		t.Errorf("proxy codecs = %s/%s, want h264/aac", vcodec, acodec)
+	}
+	// The distinguishing signal: a stream copy retains the master's 1080p height.
+	if height != "1080" {
+		t.Errorf("proxy height = %s, want 1080 (stream copy, not the ≤720 transcode)", height)
+	}
+	if arate != "16000" {
+		t.Errorf("audio.flac sample_rate = %s, want 16000", arate)
+	}
+	if !faststartFront(t, proxyPath) {
+		t.Error("remuxed proxy not faststart")
+	}
+}
+
+// TestIngestRealTranscodePath drives a full ingest over real ffmpeg down the
+// transcode fallback, using the SAME eligible master but a 1-bit remux budget to
+// force it — proving the ruling is config-tunable and the transcode path still
+// yields a playable, downscaled (≤720) H.264 proxy.
+func TestIngestRealTranscodePath(t *testing.T) {
+	requireFFmpeg(t)
+
+	blobDir := t.TempDir()
+	local, err := blob.NewLocal(blobDir, []byte("secret"), nil)
+	if err != nil {
+		t.Fatalf("NewLocal: %v", err)
+	}
+	org := "org_0000000000000000000000000d"
+	ep := "ep_00000000000000000000000000d"
+	masterKey, err := blob.MasterKey(org, ep, "master.mp4")
+	if err != nil {
+		t.Fatalf("MasterKey: %v", err)
+	}
+	genMasterSpec(t, filepath.Join(blobDir, masterKey), "1920x1080", "high", "4.2")
+
+	repo := newFakeRepo()
+	repo.add(ep, org, masterKey)
+	// A 1 bit/sec remux budget rejects even this compatible master -> transcode.
+	r := &Runner{Repo: repo, Blob: local, Media: media.Runner{}, Log: discard(),
+		Config: Config{Retries: 2, MaxRemuxBitrate: 1}}
+
+	if err := r.Run(context.Background(), ep, "ingest"); err != nil {
+		t.Fatalf("Run: %v", err)
+	}
+	e := repo.get(ep)
+	if e.status != "ready" {
+		t.Fatalf("status = %q, want ready", e.status)
+	}
+	proxyPath := filepath.Join(blobDir, e.proxyKey)
+	audioPath := filepath.Join(blobDir, org, ep, "proxies", audioFilename)
+
+	vcodec := probe(t, "-v", "error", "-select_streams", "v:0", "-show_entries", "stream=codec_name", "-of", "csv=p=0", proxyPath)
+	hs := probe(t, "-v", "error", "-select_streams", "v:0", "-show_entries", "stream=height", "-of", "csv=p=0", proxyPath)
+	arate := probe(t, "-v", "error", "-select_streams", "a:0", "-show_entries", "stream=sample_rate", "-of", "csv=p=0", audioPath)
+	t.Logf("[transcode] proxy: video=%s height=%s | audio.flac sample_rate=%s | faststart=%v",
+		vcodec, hs, arate, faststartFront(t, proxyPath))
+
+	h, err := strconv.Atoi(hs)
+	if err != nil {
+		t.Fatalf("parse height %q: %v", hs, err)
+	}
+	if vcodec != "h264" {
+		t.Errorf("proxy video codec = %q, want h264", vcodec)
+	}
+	if h > 720 {
+		t.Errorf("proxy height = %d, want ≤720 (transcode downscale)", h)
+	}
+	if arate != "16000" {
+		t.Errorf("audio.flac sample_rate = %s, want 16000", arate)
+	}
+	if !faststartFront(t, proxyPath) {
+		t.Error("transcoded proxy not faststart")
 	}
 }
 

@@ -15,6 +15,8 @@ import (
 	"sync/atomic"
 	"testing"
 	"time"
+
+	"blueshift/internal/media"
 )
 
 func discard() *slog.Logger { return slog.New(slog.NewTextHandler(io.Discard, nil)) }
@@ -115,26 +117,46 @@ func (f *fakeRepo) EpisodeStatus(_ context.Context, epID string) (string, error)
 
 type fakeMedia struct {
 	mu sync.Mutex
-	// renderErrs[i] is the error returned by the i-th RenderProxy call (nil =
-	// success). Missing indices default to nil.
+	// probe is returned by Probe; its Duration drives durationMs and the rest
+	// drives the remux/transcode ruling. The zero value has no video codec, so it
+	// is transcode-eligible (EligibleForRemux -> false) and Probe defaults its
+	// Duration to 2s — the shape the pre-existing tests expect.
+	probe    media.ProbeResult
+	probeErr error
+	// renderErrs[i]/remuxErrs[i] is the error returned by the i-th RenderProxy /
+	// RemuxProxy call (nil = success). Missing indices default to nil.
 	renderErrs []error
-	// blockOnCtx makes RenderProxy block until the context is cancelled, then
+	remuxErrs  []error
+	// blockOnCtx makes the proxy op block until the context is cancelled, then
 	// return ctx.Err() — used to exercise the per-attempt timeout kill.
 	blockOnCtx bool
-	duration   time.Duration
 	renders    atomic.Int32
+	remuxes    atomic.Int32
 	cancelled  atomic.Int32
 }
 
-func (m *fakeMedia) ProbeDuration(_ context.Context, _ string) (time.Duration, error) {
-	if m.duration == 0 {
-		return 2 * time.Second, nil
+func (m *fakeMedia) Probe(_ context.Context, _ string) (media.ProbeResult, error) {
+	if m.probeErr != nil {
+		return media.ProbeResult{}, m.probeErr
 	}
-	return m.duration, nil
+	p := m.probe
+	if p.Duration == 0 {
+		p.Duration = 2 * time.Second
+	}
+	return p, nil
+}
+
+func (m *fakeMedia) RemuxProxy(ctx context.Context, _, out string) error {
+	return m.proxyOp(ctx, out, int(m.remuxes.Add(1))-1, m.remuxErrs)
 }
 
 func (m *fakeMedia) RenderProxy(ctx context.Context, _, out string) error {
-	n := int(m.renders.Add(1)) - 1
+	return m.proxyOp(ctx, out, int(m.renders.Add(1))-1, m.renderErrs)
+}
+
+// proxyOp is the shared body of RemuxProxy/RenderProxy: honor the block-on-ctx
+// timeout probe, fail on the scripted per-call error, else emit a placeholder.
+func (m *fakeMedia) proxyOp(ctx context.Context, out string, n int, errs []error) error {
 	if m.blockOnCtx {
 		<-ctx.Done()
 		m.cancelled.Add(1)
@@ -142,8 +164,8 @@ func (m *fakeMedia) RenderProxy(ctx context.Context, _, out string) error {
 	}
 	m.mu.Lock()
 	var err error
-	if n < len(m.renderErrs) {
-		err = m.renderErrs[n]
+	if n < len(errs) {
+		err = errs[n]
 	}
 	m.mu.Unlock()
 	if err != nil {
@@ -155,6 +177,20 @@ func (m *fakeMedia) RenderProxy(ctx context.Context, _, out string) error {
 
 func (m *fakeMedia) ExtractAudio(_ context.Context, _, out string) error {
 	return os.WriteFile(out, []byte("audio"), 0o600)
+}
+
+// remuxEligibleProbe is a ProbeResult that passes EligibleForRemux, so a fake
+// returning it drives the pipeline down the remux (stream-copy) path.
+var remuxEligibleProbe = media.ProbeResult{
+	Container:      "mov,mp4,m4a,3gp,3g2,mj2",
+	Duration:       2 * time.Second,
+	OverallBitRate: 3_000_000,
+	VideoCodec:     "h264",
+	VideoProfile:   "High",
+	VideoLevel:     40,
+	Width:          1920,
+	Height:         1080,
+	AudioCodec:     "aac",
 }
 
 // --- fake blobs: remote (download/upload) and local (direct path) ------------
@@ -205,7 +241,7 @@ type localBlob struct {
 
 func newLocalBlob(t *testing.T, masterKey string) *localBlob {
 	b := &localBlob{root: t.TempDir()}
-	// Seed the master so ProbeDuration/RenderProxy have an input path.
+	// Seed the master so Probe/RenderProxy have an input path.
 	p, _ := b.LocalPath(masterKey)
 	_ = os.MkdirAll(filepath.Dir(p), 0o750)
 	_ = os.WriteFile(p, []byte("master"), 0o600)
@@ -230,8 +266,8 @@ const (
 	epB  = "ep_bbbb"
 )
 
-func newRunner(repo Repo, blob Blob, media Media, cfg Config) *Runner {
-	return &Runner{Repo: repo, Blob: blob, Media: media, Log: discard(), Config: cfg}
+func newRunner(repo Repo, blob Blob, md Media, cfg Config) *Runner {
+	return &Runner{Repo: repo, Blob: blob, Media: md, Log: discard(), Config: cfg}
 }
 
 // --- tests -------------------------------------------------------------------
@@ -240,8 +276,8 @@ func TestIngestHappyPathRemote(t *testing.T) {
 	repo := newFakeRepo()
 	repo.add(epA, orgA, orgA+"/"+epA+"/masters/m.mp4")
 	blob := newRemoteBlob(t)
-	media := &fakeMedia{duration: 2 * time.Second}
-	r := newRunner(repo, blob, media, Config{Retries: 2})
+	md := &fakeMedia{}
+	r := newRunner(repo, blob, md, Config{Retries: 2})
 
 	if err := r.Run(context.Background(), epA, "ingest"); err != nil {
 		t.Fatalf("Run: %v", err)
@@ -274,8 +310,8 @@ func TestIngestHappyPathLocalDirect(t *testing.T) {
 	repo := newFakeRepo()
 	repo.add(epA, orgA, masterKey)
 	blob := newLocalBlob(t, masterKey)
-	media := &fakeMedia{duration: 2 * time.Second}
-	r := newRunner(repo, blob, media, Config{Retries: 2})
+	md := &fakeMedia{}
+	r := newRunner(repo, blob, md, Config{Retries: 2})
 
 	if err := r.Run(context.Background(), epA, "ingest"); err != nil {
 		t.Fatalf("Run: %v", err)
@@ -291,13 +327,151 @@ func TestIngestHappyPathLocalDirect(t *testing.T) {
 	}
 }
 
+// TestIngestRemuxPathForCompatibleMaster: an already-browser-compatible master
+// takes the remux (stream-copy) fast path — RemuxProxy runs, RenderProxy never
+// does — and still lands 'ready' with a measured duration.
+func TestIngestRemuxPathForCompatibleMaster(t *testing.T) {
+	repo := newFakeRepo()
+	repo.add(epA, orgA, orgA+"/"+epA+"/masters/m.mp4")
+	blob := newRemoteBlob(t)
+	md := &fakeMedia{probe: remuxEligibleProbe}
+	r := newRunner(repo, blob, md, Config{Retries: 2})
+
+	if err := r.Run(context.Background(), epA, "ingest"); err != nil {
+		t.Fatalf("Run: %v", err)
+	}
+	if e := repo.get(epA); e.status != "ready" {
+		t.Errorf("status = %q, want ready", e.status)
+	}
+	if got := md.remuxes.Load(); got != 1 {
+		t.Errorf("remux calls = %d, want 1 (compatible master)", got)
+	}
+	if got := md.renders.Load(); got != 0 {
+		t.Errorf("transcode calls = %d, want 0 (remux path taken)", got)
+	}
+	// The proxy still lands under proxies/, contract unchanged.
+	if _, ok := blob.uploaded[orgA+"/"+epA+"/proxies/"+proxyFilename]; !ok {
+		t.Error("remuxed proxy not uploaded under proxies/")
+	}
+	// Audio is still extracted in the remux path (ASR needs it).
+	if _, ok := blob.uploaded[orgA+"/"+epA+"/proxies/"+audioFilename]; !ok {
+		t.Error("audio not extracted on the remux path")
+	}
+}
+
+// TestIngestTranscodePathForIncompatibleMaster: an incompatible master (the
+// fake's default zero probe has no h264 stream) transcodes — RenderProxy runs,
+// RemuxProxy never does.
+func TestIngestTranscodePathForIncompatibleMaster(t *testing.T) {
+	repo := newFakeRepo()
+	repo.add(epA, orgA, orgA+"/"+epA+"/masters/m.mp4")
+	blob := newRemoteBlob(t)
+	md := &fakeMedia{} // zero probe -> not remux-eligible
+	r := newRunner(repo, blob, md, Config{Retries: 2})
+
+	if err := r.Run(context.Background(), epA, "ingest"); err != nil {
+		t.Fatalf("Run: %v", err)
+	}
+	if got := md.renders.Load(); got != 1 {
+		t.Errorf("transcode calls = %d, want 1", got)
+	}
+	if got := md.remuxes.Load(); got != 0 {
+		t.Errorf("remux calls = %d, want 0 (transcode path taken)", got)
+	}
+}
+
+// TestIngestBitrateBudgetForcesTranscode proves the ruling is config-tunable at
+// the pipeline seam: the same compatible master transcodes when its overall
+// bitrate exceeds Config.MaxRemuxBitrate.
+func TestIngestBitrateBudgetForcesTranscode(t *testing.T) {
+	repo := newFakeRepo()
+	repo.add(epA, orgA, orgA+"/"+epA+"/masters/m.mp4")
+	blob := newRemoteBlob(t)
+	// remuxEligibleProbe carries a 3 Mbps overall bitrate; a 1 Mbps budget rejects it.
+	md := &fakeMedia{probe: remuxEligibleProbe}
+	r := newRunner(repo, blob, md, Config{Retries: 2, MaxRemuxBitrate: 1_000_000})
+
+	if err := r.Run(context.Background(), epA, "ingest"); err != nil {
+		t.Fatalf("Run: %v", err)
+	}
+	if got := md.renders.Load(); got != 1 {
+		t.Errorf("transcode calls = %d, want 1 (over bitrate budget)", got)
+	}
+	if got := md.remuxes.Load(); got != 0 {
+		t.Errorf("remux calls = %d, want 0", got)
+	}
+}
+
+// TestIngestProbeFailureRetries: a probe failure is a stage-attempt failure —
+// retried, and on exhaustion the episode is marked failed with no proxy op run.
+func TestIngestProbeFailureRetries(t *testing.T) {
+	repo := newFakeRepo()
+	repo.add(epA, orgA, orgA+"/"+epA+"/masters/m.mp4")
+	blob := newRemoteBlob(t)
+	md := &fakeMedia{probeErr: errors.New("probe boom")}
+	r := newRunner(repo, blob, md, Config{Retries: 2})
+
+	err := r.Run(context.Background(), epA, "ingest")
+	if !errors.Is(err, ErrStageFailed) {
+		t.Fatalf("Run err = %v, want ErrStageFailed", err)
+	}
+	if e := repo.get(epA); e.status != "failed" {
+		t.Errorf("status = %q, want failed", e.status)
+	}
+	// No proxy op ran when the probe itself failed.
+	if md.renders.Load() != 0 || md.remuxes.Load() != 0 {
+		t.Errorf("proxy ops ran despite probe failure: render=%d remux=%d", md.renders.Load(), md.remuxes.Load())
+	}
+}
+
+// TestIngestLogsProbeSummary asserts the probe summary + ruling are logged
+// server-side (INFO) with the codec/dimension group and the remux decision —
+// the operator's window into which path a master took, and the "persist probe
+// summary in the worker log" requirement.
+func TestIngestLogsProbeSummary(t *testing.T) {
+	repo := newFakeRepo()
+	repo.add(epA, orgA, orgA+"/"+epA+"/masters/m.mp4")
+	blob := newRemoteBlob(t)
+	md := &fakeMedia{probe: remuxEligibleProbe}
+	var buf syncBuffer
+	r := &Runner{Repo: repo, Blob: blob, Media: md,
+		Log: slog.New(slog.NewJSONHandler(&buf, nil)), Config: Config{Retries: 2}}
+
+	if err := r.Run(context.Background(), epA, "ingest"); err != nil {
+		t.Fatalf("Run: %v", err)
+	}
+	var found map[string]any
+	for _, line := range strings.Split(strings.TrimSpace(buf.String()), "\n") {
+		m := map[string]any{}
+		if json.Unmarshal([]byte(line), &m) == nil && m["msg"] == "master probed" {
+			found = m
+		}
+	}
+	if found == nil {
+		t.Fatalf("no 'master probed' log line; got:\n%s", buf.String())
+	}
+	if found["remux"] != true {
+		t.Errorf("logged remux = %v, want true", found["remux"])
+	}
+	if found["ruling"] == "" || found["ruling"] == nil {
+		t.Error("logged ruling is empty; want the eligibility explanation")
+	}
+	probeGroup, ok := found["probe"].(map[string]any)
+	if !ok {
+		t.Fatalf("probe group missing/typed wrong: %v", found["probe"])
+	}
+	if probeGroup["video_codec"] != "h264" || probeGroup["audio_codec"] != "aac" {
+		t.Errorf("logged codecs = %v/%v, want h264/aac", probeGroup["video_codec"], probeGroup["audio_codec"])
+	}
+}
+
 func TestIngestRetryThenSuccess(t *testing.T) {
 	repo := newFakeRepo()
 	repo.add(epA, orgA, orgA+"/"+epA+"/masters/m.mp4")
 	blob := newRemoteBlob(t)
 	// First attempt fails to render; second succeeds.
-	media := &fakeMedia{renderErrs: []error{errors.New("transient render fault")}}
-	r := newRunner(repo, blob, media, Config{Retries: 2})
+	md := &fakeMedia{renderErrs: []error{errors.New("transient render fault")}}
+	r := newRunner(repo, blob, md, Config{Retries: 2})
 
 	if err := r.Run(context.Background(), epA, "ingest"); err != nil {
 		t.Fatalf("Run: %v", err)
@@ -305,7 +479,7 @@ func TestIngestRetryThenSuccess(t *testing.T) {
 	if e := repo.get(epA); e.status != "ready" {
 		t.Errorf("status = %q, want ready after retry", e.status)
 	}
-	if got := media.renders.Load(); got != 2 {
+	if got := md.renders.Load(); got != 2 {
 		t.Errorf("render attempts = %d, want 2 (fail then success)", got)
 	}
 }
@@ -315,16 +489,16 @@ func TestIngestRetriesExhaustedFails(t *testing.T) {
 	repo.add(epA, orgA, orgA+"/"+epA+"/masters/m.mp4")
 	blob := newRemoteBlob(t)
 	// Every attempt fails; with 2 retries that is 3 attempts.
-	media := &fakeMedia{renderErrs: []error{
+	md := &fakeMedia{renderErrs: []error{
 		errors.New("boom 1"), errors.New("boom 2"), errors.New("boom 3"), errors.New("boom 4"),
 	}}
-	r := newRunner(repo, blob, media, Config{Retries: 2})
+	r := newRunner(repo, blob, md, Config{Retries: 2})
 
 	err := r.Run(context.Background(), epA, "ingest")
 	if !errors.Is(err, ErrStageFailed) {
 		t.Fatalf("Run err = %v, want ErrStageFailed", err)
 	}
-	if got := media.renders.Load(); got != 3 {
+	if got := md.renders.Load(); got != 3 {
 		t.Errorf("render attempts = %d, want 3 (1 + 2 retries)", got)
 	}
 	e := repo.get(epA)
@@ -351,9 +525,9 @@ func TestIngestTimeoutKillsAttempt(t *testing.T) {
 	repo := newFakeRepo()
 	repo.add(epA, orgA, orgA+"/"+epA+"/masters/m.mp4")
 	blob := newRemoteBlob(t)
-	media := &fakeMedia{blockOnCtx: true}
+	md := &fakeMedia{blockOnCtx: true}
 	// Tiny per-attempt timeout; 2 retries -> 3 short attempts.
-	r := newRunner(repo, blob, media, Config{StageTimeout: 20 * time.Millisecond, Retries: 2})
+	r := newRunner(repo, blob, md, Config{StageTimeout: 20 * time.Millisecond, Retries: 2})
 
 	done := make(chan error, 1)
 	go func() { done <- r.Run(context.Background(), epA, "ingest") }()
@@ -369,7 +543,7 @@ func TestIngestTimeoutKillsAttempt(t *testing.T) {
 		t.Errorf("status = %q, want failed", repo.get(epA).status)
 	}
 	// Each attempt saw its context cancelled by the per-attempt timeout.
-	if got := media.cancelled.Load(); got != 3 {
+	if got := md.cancelled.Load(); got != 3 {
 		t.Errorf("cancelled attempts = %d, want 3", got)
 	}
 }
@@ -378,8 +552,8 @@ func TestConcurrentClaimNoOp(t *testing.T) {
 	repo := newFakeRepo()
 	repo.add(epA, orgA, orgA+"/"+epA+"/masters/m.mp4")
 	blob := newRemoteBlob(t)
-	media := &fakeMedia{duration: 2 * time.Second}
-	r := newRunner(repo, blob, media, Config{Retries: 2})
+	md := &fakeMedia{}
+	r := newRunner(repo, blob, md, Config{Retries: 2})
 
 	const n = 8
 	var wg sync.WaitGroup
@@ -401,7 +575,7 @@ func TestConcurrentClaimNoOp(t *testing.T) {
 	if e.status != "ready" {
 		t.Errorf("status = %q, want ready", e.status)
 	}
-	if got := media.renders.Load(); got != 1 {
+	if got := md.renders.Load(); got != 1 {
 		t.Errorf("render calls = %d, want 1 (stage ran once)", got)
 	}
 }
@@ -412,8 +586,8 @@ func TestCrossOrgIsolation(t *testing.T) {
 	repo.add(epA, orgA, masterA)
 	repo.add(epB, orgB, orgB+"/"+epB+"/masters/m.mp4")
 	blob := newRemoteBlob(t)
-	media := &fakeMedia{duration: 2 * time.Second}
-	r := newRunner(repo, blob, media, Config{Retries: 2})
+	md := &fakeMedia{}
+	r := newRunner(repo, blob, md, Config{Retries: 2})
 
 	if err := r.Run(context.Background(), epA, "ingest"); err != nil {
 		t.Fatalf("Run(epA): %v", err)
@@ -459,9 +633,9 @@ func TestRunShutdownMarksFailedBounded(t *testing.T) {
 	repo.markRespectsCtx = true
 	repo.add(epA, orgA, orgA+"/"+epA+"/masters/m.mp4")
 	blob := newRemoteBlob(t)
-	media := &fakeMedia{blockOnCtx: true} // blocks until the context is cancelled
+	md := &fakeMedia{blockOnCtx: true} // blocks until the context is cancelled
 	// A long per-attempt timeout so only the parent cancel ends the attempt.
-	r := newRunner(repo, blob, media, Config{StageTimeout: time.Minute, Retries: 2})
+	r := newRunner(repo, blob, md, Config{StageTimeout: time.Minute, Retries: 2})
 
 	ctx, cancel := context.WithCancel(context.Background())
 	done := make(chan error, 1)
@@ -486,7 +660,7 @@ func TestRunShutdownMarksFailedBounded(t *testing.T) {
 		t.Errorf("error_id = %q, want a neutral 16-hex id", e.errorID)
 	}
 	// The stage was cancelled once (no retry after parent cancel).
-	if got := media.cancelled.Load(); got != 1 {
+	if got := md.cancelled.Load(); got != 1 {
 		t.Errorf("cancelled attempts = %d, want 1 (no retry after shutdown)", got)
 	}
 }
@@ -498,10 +672,10 @@ func TestNotClaimableLogsWarnWithBlockingStatus(t *testing.T) {
 	repo := newFakeRepo()
 	repo.add(epA, orgA, orgA+"/"+epA+"/masters/m.mp4")
 	blob := newRemoteBlob(t)
-	media := &fakeMedia{duration: 2 * time.Second}
+	md := &fakeMedia{}
 
 	var buf syncBuffer
-	r := &Runner{Repo: repo, Blob: blob, Media: media,
+	r := &Runner{Repo: repo, Blob: blob, Media: md,
 		Log:    slog.New(slog.NewJSONHandler(&buf, nil)),
 		Config: Config{Retries: 2}}
 

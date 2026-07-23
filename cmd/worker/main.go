@@ -79,8 +79,9 @@ func run(args []string) error {
 		Media: media.Runner{},
 		Log:   logger,
 		Config: pipeline.Config{
-			StageTimeout: cfg.IngestTimeout,
-			Retries:      pipeline.DefaultRetries,
+			StageTimeout:    cfg.IngestTimeout,
+			Retries:         pipeline.DefaultRetries,
+			MaxRemuxBitrate: cfg.ProxyMaxRemuxBitrate,
 		},
 	}
 

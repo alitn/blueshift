@@ -18,6 +18,8 @@ import (
 	"log/slog"
 	"os"
 	"time"
+
+	"blueshift/internal/media"
 )
 
 // Stage names a unit of pipeline work. M0 defines exactly one; transcribe and
@@ -80,24 +82,40 @@ type localPather interface {
 }
 
 // Media is the ffmpeg/ffprobe seam (internal/media). Behind it, durations come
-// only from measurement (verbatim invariant).
+// only from measurement (verbatim invariant). Probe returns the structured
+// summary that both measures the duration and drives the remux/transcode ruling;
+// RemuxProxy is the stream-copy fast path for an already-compatible master and
+// RenderProxy the transcode fallback.
 type Media interface {
-	ProbeDuration(ctx context.Context, path string) (time.Duration, error)
+	Probe(ctx context.Context, path string) (media.ProbeResult, error)
+	RemuxProxy(ctx context.Context, in, out string) error
 	RenderProxy(ctx context.Context, in, out string) error
 	ExtractAudio(ctx context.Context, in, out string) error
 }
 
-// Config tunes a run: the per-attempt timeout and how many extra attempts follow
-// the first on failure. StageTimeout<=0 falls back to defaultStageTimeout; a
-// negative Retries clamps to 0. cmd/worker sets both explicitly from env, using
-// DefaultRetries for the production 1+2 attempt budget.
+// Config tunes a run: the per-attempt timeout, how many extra attempts follow
+// the first on failure, and the overall-bitrate budget under which an
+// already-compatible master is remuxed rather than transcoded. StageTimeout<=0
+// falls back to defaultStageTimeout; a negative Retries clamps to 0;
+// MaxRemuxBitrate<=0 falls back to defaultMaxRemuxBitrate. cmd/worker sets all
+// three explicitly from env, using DefaultRetries for the production 1+2 attempt
+// budget.
 type Config struct {
 	StageTimeout time.Duration
 	Retries      int
+	// MaxRemuxBitrate is the overall-bitrate ceiling (bits/sec) for the remux fast
+	// path (config PROXY_MAX_REMUX_BITRATE). A master above it is transcoded so a
+	// proxy always streams cheaply.
+	MaxRemuxBitrate int64
 }
 
 const (
 	defaultStageTimeout = 30 * time.Minute
+	// defaultMaxRemuxBitrate is the fallback remux bitrate ceiling (~6 Mbps) when
+	// Config.MaxRemuxBitrate is unset. It mirrors config.defaultProxyMaxRemuxBitrate;
+	// in production the value flows from PROXY_MAX_REMUX_BITRATE via cmd/worker, so
+	// this is only a safety net for a Config that omits it.
+	defaultMaxRemuxBitrate = 6_000_000
 	// DefaultRetries is the number of *additional* attempts after the first, per
 	// the ruling (total attempts = 1 + retries = 3). cmd/worker applies it.
 	DefaultRetries = 2
@@ -120,6 +138,13 @@ func (c Config) retries() int {
 		return 0
 	}
 	return c.Retries
+}
+
+func (c Config) maxRemuxBitrate() int64 {
+	if c.MaxRemuxBitrate <= 0 {
+		return defaultMaxRemuxBitrate
+	}
+	return c.MaxRemuxBitrate
 }
 
 // ErrStageFailed reports that a stage exhausted its attempts. The episode is

@@ -41,6 +41,25 @@ func genMaster(t *testing.T, dir string) string {
 	return out
 }
 
+// genMasterSpec writes an H.264+AAC clip with an explicit size, profile, and
+// level so a test can build a master with known remux-eligibility (e.g. a 1080p
+// High-profile file for the remux fast path). Uses ffmpeg directly.
+func genMasterSpec(t *testing.T, dir, name, size, profile, level string) string {
+	t.Helper()
+	out := filepath.Join(dir, name)
+	cmd := exec.Command(ffmpegBin, "-nostdin", "-y", "-loglevel", "error",
+		"-f", "lavfi", "-i", "testsrc=duration=2:size="+size+":rate=30",
+		"-f", "lavfi", "-i", "sine=frequency=440:duration=2",
+		"-c:v", "libx264", "-profile:v", profile, "-level", level, "-pix_fmt", "yuv420p",
+		"-c:a", "aac", "-shortest", out)
+	var stderr bytes.Buffer
+	cmd.Stderr = &stderr
+	if err := cmd.Run(); err != nil {
+		t.Fatalf("generate master fixture: %v: %s", err, stderr.String())
+	}
+	return out
+}
+
 // probeField runs ffprobe for a single csv stream/format field.
 func probeField(t *testing.T, args ...string) string {
 	t.Helper()
@@ -51,26 +70,212 @@ func probeField(t *testing.T, args ...string) string {
 	return strings.TrimSpace(string(out))
 }
 
-func TestProbeDuration(t *testing.T) {
+func TestProbe(t *testing.T) {
 	requireFFmpeg(t)
 	dir := t.TempDir()
 	master := genMaster(t, dir)
 
-	got, err := ProbeDuration(context.Background(), master)
+	got, err := Probe(context.Background(), master)
 	if err != nil {
-		t.Fatalf("ProbeDuration: %v", err)
+		t.Fatalf("Probe: %v", err)
 	}
 	// The fixture is exactly 2.0s; ffprobe reports it verbatim. Allow ±50ms.
-	const want = 2 * time.Second
-	if d := got - want; d < -50*time.Millisecond || d > 50*time.Millisecond {
-		t.Errorf("duration = %v, want ~%v (±50ms)", got, want)
+	if d := got.Duration - 2*time.Second; d < -50*time.Millisecond || d > 50*time.Millisecond {
+		t.Errorf("duration = %v, want ~2s (±50ms)", got.Duration)
+	}
+	if got.VideoCodec != "h264" {
+		t.Errorf("video codec = %q, want h264", got.VideoCodec)
+	}
+	if got.AudioCodec != "aac" {
+		t.Errorf("audio codec = %q, want aac", got.AudioCodec)
+	}
+	if !containerIsMP4orMOV(got.Container) {
+		t.Errorf("container = %q, want an mp4/mov family", got.Container)
+	}
+	if got.Width != 320 || got.Height != 240 {
+		t.Errorf("dimensions = %dx%d, want 320x240", got.Width, got.Height)
+	}
+	// libx264 on 8-bit 4:2:0 defaults to the High profile; a real level is present.
+	if got.VideoProfile == "" || got.VideoLevel <= 0 {
+		t.Errorf("profile/level = %q/%d, want both reported", got.VideoProfile, got.VideoLevel)
+	}
+	if got.OverallBitRate <= 0 {
+		t.Errorf("overall bitrate = %d, want a positive rate", got.OverallBitRate)
 	}
 }
 
-func TestProbeDurationMissingFile(t *testing.T) {
+func TestProbeMissingFile(t *testing.T) {
 	requireFFmpeg(t)
-	if _, err := ProbeDuration(context.Background(), filepath.Join(t.TempDir(), "nope.mp4")); err == nil {
-		t.Fatal("ProbeDuration on missing file: want error, got nil")
+	if _, err := Probe(context.Background(), filepath.Join(t.TempDir(), "nope.mp4")); err == nil {
+		t.Fatal("Probe on missing file: want error, got nil")
+	}
+}
+
+// TestParseProbe exercises the pure JSON parser against captured ffprobe outputs
+// (internal/media/testdata) so field extraction is covered without a process.
+func TestParseProbe(t *testing.T) {
+	load := func(name string) ProbeResult {
+		t.Helper()
+		data, err := os.ReadFile(filepath.Join("testdata", name))
+		if err != nil {
+			t.Fatalf("read fixture %s: %v", name, err)
+		}
+		got, err := parseProbe(data)
+		if err != nil {
+			t.Fatalf("parseProbe(%s): %v", name, err)
+		}
+		return got
+	}
+
+	t.Run("h264 high mp4", func(t *testing.T) {
+		p := load("probe_h264_high_mp4.json")
+		if p.VideoCodec != "h264" || p.VideoProfile != "High" || p.VideoLevel != 42 {
+			t.Errorf("video = %q/%q/%d, want h264/High/42", p.VideoCodec, p.VideoProfile, p.VideoLevel)
+		}
+		if p.AudioCodec != "aac" {
+			t.Errorf("audio = %q, want aac", p.AudioCodec)
+		}
+		if p.Width != 1920 || p.Height != 1080 {
+			t.Errorf("dims = %dx%d, want 1920x1080", p.Width, p.Height)
+		}
+		if p.Container != "mov,mp4,m4a,3gp,3g2,mj2" {
+			t.Errorf("container = %q", p.Container)
+		}
+		if p.OverallBitRate <= 0 {
+			t.Errorf("bitrate = %d, want positive", p.OverallBitRate)
+		}
+		if p.Duration <= 0 {
+			t.Errorf("duration = %v, want positive", p.Duration)
+		}
+	})
+
+	t.Run("hevc mp4", func(t *testing.T) {
+		p := load("probe_hevc_mp4.json")
+		if p.VideoCodec != "hevc" {
+			t.Errorf("video codec = %q, want hevc", p.VideoCodec)
+		}
+	})
+
+	t.Run("h264 matroska", func(t *testing.T) {
+		p := load("probe_h264_mkv.json")
+		if p.Container != "matroska,webm" {
+			t.Errorf("container = %q, want matroska,webm", p.Container)
+		}
+		if p.VideoCodec != "h264" {
+			t.Errorf("video codec = %q, want h264", p.VideoCodec)
+		}
+	})
+
+	t.Run("missing bitrate and NA duration", func(t *testing.T) {
+		p := load("probe_h264_mp4_no_bitrate.json")
+		if p.OverallBitRate != 0 {
+			t.Errorf("bitrate = %d, want 0 for an absent bit_rate", p.OverallBitRate)
+		}
+		if p.Duration != 0 {
+			t.Errorf("duration = %v, want 0 for an N/A duration", p.Duration)
+		}
+		// The rest of the structure still parses.
+		if p.VideoCodec != "h264" || p.AudioCodec != "aac" || p.VideoLevel != 31 {
+			t.Errorf("streams = %q/%q level %d, want h264/aac/31", p.VideoCodec, p.AudioCodec, p.VideoLevel)
+		}
+	})
+}
+
+// TestEligibleForRemux is the ruling table, including the boundary values on
+// every numeric bound (level, height, bitrate).
+func TestEligibleForRemux(t *testing.T) {
+	const maxBitRate = 6_000_000
+	// base is a fully remux-eligible master; each case tweaks one field.
+	base := ProbeResult{
+		Container:      "mov,mp4,m4a,3gp,3g2,mj2",
+		Duration:       time.Minute,
+		OverallBitRate: 5_000_000,
+		VideoCodec:     "h264",
+		VideoProfile:   "High",
+		VideoLevel:     40,
+		Width:          1920,
+		Height:         1080,
+		AudioCodec:     "aac",
+	}
+	with := func(mut func(*ProbeResult)) ProbeResult {
+		p := base
+		mut(&p)
+		return p
+	}
+
+	cases := []struct {
+		name string
+		p    ProbeResult
+		want bool
+	}{
+		{"all eligible", base, true},
+		{"bare mp4 container", with(func(p *ProbeResult) { p.Container = "mp4" }), true},
+		{"bare mov container", with(func(p *ProbeResult) { p.Container = "mov" }), true},
+		{"profile Main", with(func(p *ProbeResult) { p.VideoProfile = "Main" }), true},
+		{"profile Baseline", with(func(p *ProbeResult) { p.VideoProfile = "Baseline" }), true},
+		{"profile Constrained Baseline", with(func(p *ProbeResult) { p.VideoProfile = "Constrained Baseline" }), true},
+		{"profile High 10 rejected", with(func(p *ProbeResult) { p.VideoProfile = "High 10" }), false},
+		{"profile High 4:2:2 rejected", with(func(p *ProbeResult) { p.VideoProfile = "High 4:2:2" }), false},
+		{"codec hevc rejected", with(func(p *ProbeResult) { p.VideoCodec = "hevc" }), false},
+		{"codec vp9 rejected", with(func(p *ProbeResult) { p.VideoCodec = "vp9" }), false},
+		{"audio mp3 rejected", with(func(p *ProbeResult) { p.AudioCodec = "mp3" }), false},
+		{"audio opus rejected", with(func(p *ProbeResult) { p.AudioCodec = "opus" }), false},
+		{"matroska container rejected", with(func(p *ProbeResult) { p.Container = "matroska,webm" }), false},
+		{"webm container rejected", with(func(p *ProbeResult) { p.Container = "matroska,webm" }), false},
+		{"level 42 boundary ok", with(func(p *ProbeResult) { p.VideoLevel = 42 }), true},
+		{"level 43 rejected", with(func(p *ProbeResult) { p.VideoLevel = 43 }), false},
+		{"level 51 rejected", with(func(p *ProbeResult) { p.VideoLevel = 51 }), false},
+		{"level unknown rejected", with(func(p *ProbeResult) { p.VideoLevel = 0 }), false},
+		{"height 1080 boundary ok", with(func(p *ProbeResult) { p.Height = 1080 }), true},
+		{"height 1081 rejected", with(func(p *ProbeResult) { p.Height = 1081 }), false},
+		{"height 2160 rejected", with(func(p *ProbeResult) { p.Height = 2160 }), false},
+		{"bitrate at budget ok", with(func(p *ProbeResult) { p.OverallBitRate = maxBitRate }), true},
+		{"bitrate over budget rejected", with(func(p *ProbeResult) { p.OverallBitRate = maxBitRate + 1 }), false},
+		{"bitrate unknown rejected", with(func(p *ProbeResult) { p.OverallBitRate = 0 }), false},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			got := EligibleForRemux(tc.p, maxBitRate)
+			if got.Remux != tc.want {
+				t.Errorf("EligibleForRemux = %v (%s), want %v", got.Remux, got.Reason, tc.want)
+			}
+			if got.Reason == "" {
+				t.Error("decision reason is empty; want a server-log explanation")
+			}
+		})
+	}
+}
+
+// TestRemuxProxy proves the fast path is a faststart stream copy: the proxy's
+// video stream is bit-identical to a browser-compatible master (same codec,
+// profile, level, and resolution — no downscale), and the moov atom precedes
+// mdat. It shares the playability assertions the transcoded proxy must also pass.
+func TestRemuxProxy(t *testing.T) {
+	requireFFmpeg(t)
+	dir := t.TempDir()
+	// A 1080p H.264 High master: eligible, and tall enough that a copy (1080) is
+	// distinguishable from what the transcode path would emit (≤720).
+	master := genMasterSpec(t, dir, "master.mp4", "1920x1080", "high", "4.2")
+	proxy := filepath.Join(dir, "proxy.mp4")
+
+	if err := RemuxProxy(context.Background(), master, proxy); err != nil {
+		t.Fatalf("RemuxProxy: %v", err)
+	}
+
+	// Video is copied verbatim: same codec/profile/level and the full 1080 height.
+	vinfo := probeField(t, "-v", "error", "-select_streams", "v:0",
+		"-show_entries", "stream=codec_name,profile,height", "-of", "csv=p=0", proxy)
+	if vinfo != "h264,High,1080" {
+		t.Errorf("remuxed video = %q, want h264,High,1080 (copied, not re-encoded)", vinfo)
+	}
+	// Audio is copied AAC.
+	if ac := probeField(t, "-v", "error", "-select_streams", "a:0",
+		"-show_entries", "stream=codec_name", "-of", "csv=p=0", proxy); ac != "aac" {
+		t.Errorf("remuxed audio codec = %q, want aac", ac)
+	}
+	// Same playability assertion as the transcoded proxy: moov before mdat.
+	if !faststart(t, proxy) {
+		t.Error("remuxed proxy is not faststart (moov not before mdat)")
 	}
 }
 

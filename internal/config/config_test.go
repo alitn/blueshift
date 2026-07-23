@@ -215,6 +215,19 @@ func TestLoadWorkerDefaults(t *testing.T) {
 	if cfg.IngestTimeout != defaultIngestTimeout {
 		t.Errorf("IngestTimeout = %v, want %v", cfg.IngestTimeout, defaultIngestTimeout)
 	}
+	if cfg.ProxyMaxRemuxBitrate != defaultProxyMaxRemuxBitrate {
+		t.Errorf("ProxyMaxRemuxBitrate = %d, want %d", cfg.ProxyMaxRemuxBitrate, defaultProxyMaxRemuxBitrate)
+	}
+}
+
+func TestLoadProxyMaxRemuxBitrate(t *testing.T) {
+	cfg, err := load(env(map[string]string{"PROXY_MAX_REMUX_BITRATE": "8000000"}))
+	if err != nil {
+		t.Fatalf("load: %v", err)
+	}
+	if cfg.ProxyMaxRemuxBitrate != 8_000_000 {
+		t.Errorf("ProxyMaxRemuxBitrate = %d, want 8000000", cfg.ProxyMaxRemuxBitrate)
+	}
 }
 
 func TestLoadWorkerCloudRun(t *testing.T) {
@@ -241,11 +254,14 @@ func TestLoadWorkerCloudRun(t *testing.T) {
 
 func TestLoadWorkerInvalid(t *testing.T) {
 	cases := map[string]map[string]string{
-		"invalid trigger":          {"WORKER_TRIGGER": "lambda"},
-		"cloudrun missing coords":  {"WORKER_TRIGGER": "cloudrun"},
-		"cloudrun partial coords":  {"WORKER_TRIGGER": "cloudrun", "WORKER_JOB_REGION": "r"},
-		"bad ingest timeout":       {"INGEST_TIMEOUT": "soon"},
-		"nonpositive ingest tmout": {"INGEST_TIMEOUT": "0s"},
+		"invalid trigger":           {"WORKER_TRIGGER": "lambda"},
+		"cloudrun missing coords":   {"WORKER_TRIGGER": "cloudrun"},
+		"cloudrun partial coords":   {"WORKER_TRIGGER": "cloudrun", "WORKER_JOB_REGION": "r"},
+		"bad ingest timeout":        {"INGEST_TIMEOUT": "soon"},
+		"nonpositive ingest tmout":  {"INGEST_TIMEOUT": "0s"},
+		"bad remux bitrate":         {"PROXY_MAX_REMUX_BITRATE": "lots"},
+		"nonpositive remux bitrate": {"PROXY_MAX_REMUX_BITRATE": "0"},
+		"negative remux bitrate":    {"PROXY_MAX_REMUX_BITRATE": "-1"},
 	}
 	for name, m := range cases {
 		t.Run(name, func(t *testing.T) {
