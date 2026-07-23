@@ -1,0 +1,117 @@
+[
+  {
+    "name": "plain-phrase",
+    "note": "clean Persian, no changes expected",
+    "in": "سلام دنیا"
+  },
+  {
+    "name": "mi-prefix-verb",
+    "note": "ZWNJ verb prefix mi- preserved",
+    "in": "می‌روم"
+  },
+  {
+    "name": "plural-ha",
+    "note": "ZWNJ plural -ha preserved",
+    "in": "کتاب‌ها"
+  },
+  {
+    "name": "comparative-tar",
+    "note": "ZWNJ comparative -tar preserved",
+    "in": "بزرگ‌تر"
+  },
+  {
+    "name": "nemi-negation",
+    "note": "two morphological ZWNJ (negated mi- verb + perfect suffix -am), both preserved",
+    "in": "نمی‌خواسته‌ام"
+  },
+  {
+    "name": "arabic-kaf-yeh",
+    "note": "Arabic kaf+yeh folded to Persian forms",
+    "in": "كيميا"
+  },
+  {
+    "name": "alef-maksura",
+    "note": "alef maksura -> farsi yeh",
+    "in": "مصطفى"
+  },
+  {
+    "name": "arabic-indic-digits",
+    "note": "Arabic-Indic digits -> Persian digits",
+    "in": "سال ١٤٠٢"
+  },
+  {
+    "name": "persian-digits",
+    "note": "Persian digits already canonical",
+    "in": "۱۴۰۲"
+  },
+  {
+    "name": "latin-code-preserved",
+    "note": "Latin digits/letters untouched",
+    "in": "HTTP 200 در سال 2024"
+  },
+  {
+    "name": "tatweel-kashida",
+    "note": "tatweel elongation removed",
+    "in": "سلاــم"
+  },
+  {
+    "name": "double-zwnj",
+    "note": "consecutive ZWNJ collapsed",
+    "in": "می‌‌آید"
+  },
+  {
+    "name": "zwnj-after-alef",
+    "note": "ZWNJ after non-joining alef dropped",
+    "in": "با‌هم"
+  },
+  {
+    "name": "zwnj-after-dal",
+    "note": "ZWNJ after non-joining dal dropped",
+    "in": "مد‌رسه"
+  },
+  {
+    "name": "zwnj-boundaries",
+    "note": "leading/trailing ZWNJ dropped",
+    "in": "‌خانه‌"
+  },
+  {
+    "name": "zwnj-near-space",
+    "note": "ZWNJ adjacent to space dropped",
+    "in": "خانه‌ بزرگ"
+  },
+  {
+    "name": "bom-prefixed",
+    "note": "BOM stripped",
+    "in": "﻿عنوان"
+  },
+  {
+    "name": "bidi-marks",
+    "note": "LRM/RLM stripped",
+    "in": "مبلغ‏ ‎۵۰۰"
+  },
+  {
+    "name": "zwsp-shy",
+    "note": "ZWSP and SHY stripped",
+    "in": "در​باره­"
+  },
+  {
+    "name": "harakat-kept",
+    "note": "harakat preserved (pronunciation)",
+    "in": "مُعَلِّم"
+  },
+  {
+    "name": "zwj-kept",
+    "note": "ZWJ preserved (semantic join-causing)",
+    "in": "ب‍م"
+  },
+  {
+    "name": "mixed-real",
+    "note": "realistic mixed sentence",
+    "in": "او می‌گوید سال ٢٠٢٥ کتاب‌های كوچک را خواند."
+  },
+  {
+    "name": "empty",
+    "note": "empty string",
+    "in": ""
+  }
+]

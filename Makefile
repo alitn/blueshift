@@ -123,13 +123,22 @@ e2e:
 	fi
 
 # Offline golden evals: WER, diarization anchor stability, caption fidelity,
-# ZWNJ idempotence, .ass byte-exactness. Real target lands with the pipeline.
+# ZWNJ idempotence, .ass byte-exactness. The Go golden suite (./eval/...) is the
+# live entry today — currently the lang-normalization / ZWNJ idempotency goldens
+# under eval/lang; goldens fail closed on drift and regenerate only via -update
+# (see eval/README.md). The Python pipeline suite (tools/eval/run.py) is added
+# as it lands and runs alongside. Runtime stays well under 30s.
 eval:
-	@if [ -f tools/eval/run.py ]; then \
+	@set -e; \
+	if [ -f go.mod ]; then \
+		echo "--> eval: Go golden suite (./eval/...)"; \
+		go test ./eval/... -count=1; \
+	fi; \
+	if [ -f tools/eval/run.py ]; then \
+		echo "--> eval: Python pipeline suite"; \
 		python3 tools/eval/run.py --fixtures fixtures/; \
-	else \
-		echo "skip: eval (tools/eval/run.py not present yet — arrives with M1 pipeline)"; \
 	fi
+	@echo "eval: GREEN"
 
 # Boot the full stack locally with deterministic seeded data so agents (and
 # humans) can drive every flow offline. Postgres is resolved in this order:

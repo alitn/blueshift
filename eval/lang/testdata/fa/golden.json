@@ -1,0 +1,140 @@
+[
+  {
+    "name": "plain-phrase",
+    "note": "clean Persian, no changes expected",
+    "in": "سلام دنیا",
+    "out": "سلام دنیا"
+  },
+  {
+    "name": "mi-prefix-verb",
+    "note": "ZWNJ verb prefix mi- preserved",
+    "in": "می‌روم",
+    "out": "می‌روم"
+  },
+  {
+    "name": "plural-ha",
+    "note": "ZWNJ plural -ha preserved",
+    "in": "کتاب‌ها",
+    "out": "کتاب‌ها"
+  },
+  {
+    "name": "comparative-tar",
+    "note": "ZWNJ comparative -tar preserved",
+    "in": "بزرگ‌تر",
+    "out": "بزرگ‌تر"
+  },
+  {
+    "name": "nemi-negation",
+    "note": "two morphological ZWNJ (negated mi- verb + perfect suffix -am), both preserved",
+    "in": "نمی‌خواسته‌ام",
+    "out": "نمی‌خواسته‌ام"
+  },
+  {
+    "name": "arabic-kaf-yeh",
+    "note": "Arabic kaf+yeh folded to Persian forms",
+    "in": "كيميا",
+    "out": "کیمیا"
+  },
+  {
+    "name": "alef-maksura",
+    "note": "alef maksura -\u003e farsi yeh",
+    "in": "مصطفى",
+    "out": "مصطفی"
+  },
+  {
+    "name": "arabic-indic-digits",
+    "note": "Arabic-Indic digits -\u003e Persian digits",
+    "in": "سال ١٤٠٢",
+    "out": "سال ۱۴۰۲"
+  },
+  {
+    "name": "persian-digits",
+    "note": "Persian digits already canonical",
+    "in": "۱۴۰۲",
+    "out": "۱۴۰۲"
+  },
+  {
+    "name": "latin-code-preserved",
+    "note": "Latin digits/letters untouched",
+    "in": "HTTP 200 در سال 2024",
+    "out": "HTTP 200 در سال 2024"
+  },
+  {
+    "name": "tatweel-kashida",
+    "note": "tatweel elongation removed",
+    "in": "سلاــم",
+    "out": "سلام"
+  },
+  {
+    "name": "double-zwnj",
+    "note": "consecutive ZWNJ collapsed",
+    "in": "می‌‌آید",
+    "out": "می‌آید"
+  },
+  {
+    "name": "zwnj-after-alef",
+    "note": "ZWNJ after non-joining alef dropped",
+    "in": "با‌هم",
+    "out": "باهم"
+  },
+  {
+    "name": "zwnj-after-dal",
+    "note": "ZWNJ after non-joining dal dropped",
+    "in": "مد‌رسه",
+    "out": "مدرسه"
+  },
+  {
+    "name": "zwnj-boundaries",
+    "note": "leading/trailing ZWNJ dropped",
+    "in": "‌خانه‌",
+    "out": "خانه"
+  },
+  {
+    "name": "zwnj-near-space",
+    "note": "ZWNJ adjacent to space dropped",
+    "in": "خانه‌ بزرگ",
+    "out": "خانه بزرگ"
+  },
+  {
+    "name": "bom-prefixed",
+    "note": "BOM stripped",
+    "in": "﻿عنوان",
+    "out": "عنوان"
+  },
+  {
+    "name": "bidi-marks",
+    "note": "LRM/RLM stripped",
+    "in": "مبلغ‏ ‎۵۰۰",
+    "out": "مبلغ ۵۰۰"
+  },
+  {
+    "name": "zwsp-shy",
+    "note": "ZWSP and SHY stripped",
+    "in": "در​باره­",
+    "out": "درباره"
+  },
+  {
+    "name": "harakat-kept",
+    "note": "harakat preserved (pronunciation)",
+    "in": "مُعَلِّم",
+    "out": "مُعَلِّم"
+  },
+  {
+    "name": "zwj-kept",
+    "note": "ZWJ preserved (semantic join-causing)",
+    "in": "ب‍م",
+    "out": "ب‍م"
+  },
+  {
+    "name": "mixed-real",
+    "note": "realistic mixed sentence",
+    "in": "او می‌گوید سال ٢٠٢٥ کتاب‌های كوچک را خواند.",
+    "out": "او می‌گوید سال ۲۰۲۵ کتاب‌های کوچک را خواند."
+  },
+  {
+    "name": "empty",
+    "note": "empty string",
+    "in": "",
+    "out": ""
+  }
+]
