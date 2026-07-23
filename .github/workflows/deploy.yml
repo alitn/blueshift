@@ -1,6 +1,6 @@
 # Deploy pipeline (§7): push to main -> build ONE image (app+worker) -> deploy the
 # single prod project with --no-traffic (tag: candidate) -> additive migrations
-# (Cloud SQL Auth Proxy) -> candidate-tag smoke (healthz/readyz//) -> 10% traffic
+# (Cloud SQL Auth Proxy) -> candidate-tag smoke (readyz//) -> 10% traffic
 # -> scripted 10-min watch (candidate-tag url + Error Reporting) -> 100%. Main
 # auto-deploys THROUGH the whole progressive rollout; there is no manual promote.
 # Rollback = re-point traffic to the prior revision (workflow_dispatch input
@@ -110,6 +110,11 @@ jobs:
           # --no-traffic is rejected when creating a service and there are no users
           # or prior revision, so serve 100% immediately. --tag candidate is kept in
           # both paths so the smoke can address the new revision.
+          #
+          # --no-invoker-iam-check: the org enforces domain-restricted sharing,
+          # which forbids allUsers IAM bindings (FAILED_PRECONDITION), so the
+          # service can't be made public that way. Disable the invoker IAM check
+          # instead — the app does its own auth.
           NO_TRAFFIC="--no-traffic"
           if [ "$BOOTSTRAP" = "true" ]; then
             NO_TRAFFIC=""
@@ -117,6 +122,7 @@ jobs:
           gcloud run deploy blueshift-app \
             --image "$IMAGE:${{ github.sha }}" --region "$REGION" \
             $NO_TRAFFIC --tag candidate \
+            --no-invoker-iam-check \
             --service-account "$RUNTIME_SA" \
             --add-cloudsql-instances "$SQL_INSTANCE" \
             --set-env-vars "ENV=prod,AUTH_MODE=identity,BLOB_MODE=gcs,GCS_BUCKET=$BUCKET,WORKER_TRIGGER=cloudrun,WORKER_JOB_NAME=blueshift-worker,WORKER_JOB_REGION=$REGION,WORKER_JOB_PROJECT=$PROJECT" \
@@ -152,11 +158,14 @@ jobs:
           ./migrate -path migrations -database "$DATABASE_URL" up
           kill "$PROXY_PID" 2>/dev/null || true
 
-      - name: Smoke the candidate revision (healthz/readyz//)
+      - name: Smoke the candidate revision (readyz//)
         # Probe the candidate's TAGGED url BEFORE shifting any traffic: at
         # --no-traffic the base url still serves the previous revision, so only
         # the candidate tag url exercises the newly-deployed code. Checks
-        # liveness, readiness (DB check wired), and that the SPA shell is served.
+        # readiness (DB check wired) and that the SPA shell is served.
+        # NOTE: Google Frontend intercepts /healthz on *.run.app edge urls and
+        # returns its own 404 (the app never sees it), so the smoke gates on
+        # /readyz — which is also the stronger check since it verifies the DB.
         # This is a smoke, not the full functional/visual suite. The Playwright
         # harness (playwright.config.ts, from m0-demo-seed) always boots
         # `make demo` as its webServer and diffs baselines generated on that
@@ -181,11 +190,9 @@ jobs:
           echo "smoking candidate: $URL"
           code() { curl -s -o /dev/null -w '%{http_code}' "$1"; }
 
-          for path in /healthz /readyz; do
-            c=$(code "$URL$path")
-            echo "$path -> $c"
-            [ "$c" = "200" ] || { echo "::error::$path returned $c (want 200)"; exit 1; }
-          done
+          readyz=$(code "$URL/readyz")
+          echo "/readyz -> $readyz"
+          [ "$readyz" = "200" ] || { echo "::error::/readyz returned $readyz (want 200)"; exit 1; }
 
           root_code=$(code "$URL/")
           root_ct=$(curl -s -o /dev/null -w '%{content_type}' "$URL/")
@@ -204,21 +211,23 @@ jobs:
           gcloud run services update-traffic blueshift-app \
             --region "$REGION" --to-tags candidate=10 --quiet
 
-      - name: Watch 10 minutes (healthz + Error Reporting)
+      - name: Watch 10 minutes (readyz + Error Reporting)
         if: ${{ success() && steps.detect.outputs.bootstrap == 'false' }}
         run: |
           set -euo pipefail
           # Probe the candidate's TAGGED url, not the service base: at 10% traffic
           # ~90% of base-url probes would hit the stable revision and let a broken
           # candidate pass. The tag url always routes to the candidate revision.
+          # /readyz (not /healthz): Google Frontend intercepts /healthz on
+          # *.run.app edge urls; /readyz reaches the app and also verifies the DB.
           URL=$(gcloud run services describe blueshift-app --region "$REGION" --format=json \
             | jq -r '.status.traffic[] | select(.tag=="candidate") | .url' | head -n1)
           [ -n "$URL" ] || { echo "::error::could not resolve candidate tag url"; exit 1; }
           echo "watching candidate: $URL"
           for i in $(seq 1 20); do
-            code=$(curl -s -o /dev/null -w '%{http_code}' "$URL/healthz")
-            echo "[$i/20] healthz=$code"
-            [ "$code" = "200" ] || { echo "healthz failed — leaving traffic at 10%, rollback:"; \
+            code=$(curl -s -o /dev/null -w '%{http_code}' "$URL/readyz")
+            echo "[$i/20] readyz=$code"
+            [ "$code" = "200" ] || { echo "readyz failed — leaving traffic at 10%, rollback:"; \
               echo "  gcloud run services update-traffic blueshift-app --region $REGION --to-tags candidate=0"; exit 1; }
             # Honest reporting: on query failure, say so — never silently print 0.
             if out=$(gcloud beta error-reporting events list --limit 5 \

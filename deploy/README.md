@@ -137,13 +137,21 @@ Every push to `main` runs one `rollout` job that follows the §7 safety order:
 2. **Deploy** `blueshift-app` **`--no-traffic --tag candidate`** and update
    `blueshift-worker` (same image).
 3. **Migrate** (additive-only) via the Cloud SQL Auth Proxy.
-4. **Smoke the candidate tag url** (`/healthz`, `/readyz`, `/` html): at
-   `--no-traffic` the base url still serves the previous revision, so only the
+4. **Smoke the candidate tag url** (`/readyz` 200, `/` 200 `text/html` non-empty):
+   at `--no-traffic` the base url still serves the previous revision, so only the
    tag url exercises the new code. The rollout gates on this smoke.
-5. Shift **10%** to the candidate, **watch ~10 min** (candidate-tag `/healthz` +
+5. Shift **10%** to the candidate, **watch ~10 min** (candidate-tag `/readyz` +
    Error Reporting), then shift **100%**.
 
 There is no `docker build` outside step 1.
+
+**Two `*.run.app` platform quirks the rollout accommodates.** (a) Google Frontend
+intercepts `/healthz` at the edge and returns its own 404, so the smoke and watch
+gate on **`/readyz`** (which also verifies the DB); `/healthz` still exists in the
+app for local/internal use. (b) The org enforces domain-restricted sharing, which
+forbids `allUsers` IAM bindings, so `blueshift-app` deploys with
+**`--no-invoker-iam-check`** rather than a public invoker binding — the app does
+its own auth.
 
 **First-ever deploy (bootstrap).** The very first push creates `blueshift-app`
 from nothing, where the §7 order needs two tweaks Cloud Run forces: `--no-traffic`
