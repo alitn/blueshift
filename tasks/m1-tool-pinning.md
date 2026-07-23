@@ -13,32 +13,44 @@ and CLI can silently drift, every machine can run a different `migrate`, and PAT
 ambiguity is the exact class of problem that produced a segfaulting decade-old Intel
 `migrate` on the human's machine.
 
-## Approach (Go 1.24+ tool directive — no new dependency)
+## Approach (REVISED 2026-07-23 — `go run -tags postgres`, not the `tool` directive)
 
-Go 1.26 is the toolchain. Use the `tool` directive so the CLI is version-locked in
-go.mod/go.sum alongside the already-required library, reproducible for every dev and CI,
-with no PATH dependency and no gitignored binary.
+The `go tool` directive CANNOT work for golang-migrate v4.19.1: every DB/source driver is
+behind a build tag (`//go:build postgres` etc.), `go tool` provides no way to pass build
+tags, and `go get -tool …/cmd/migrate` explodes go.sum 180→866 lines (~90 unwanted DB
+drivers) — contradicting "no new dependency". Verified empirically by the Implementer.
 
-## Scope
+**Approved mechanism:** `go run -tags 'postgres' github.com/golang-migrate/migrate/v4/cmd/migrate
+-path migrations -database "$URL" up`. It stays version-locked to the existing
+`require github.com/golang-migrate/migrate/v4 v4.19.1` (tool == library, cannot drift),
+`go run` accepts `-tags` so the pq driver compiles in, args are unchanged, and it adds
+ZERO new deps (`github.com/lib/pq` is already in go.sum; `internal/dbtest` already
+blank-imports migrate drivers). No PATH binary, reproducible per dev/CI.
 
-1. **go.mod:** add the migrate CLI as a tool — `go get -tool
-   github.com/golang-migrate/migrate/v4/cmd/migrate` — pinning it to the same module
-   version already required (v4.19.1; if `go get -tool` bumps the module, keep the bump
-   minimal and note it — the library require and the tool must stay the same version).
-   Commit the resulting go.mod/go.sum changes.
-2. **Invoke via `go tool`:** replace the bare `migrate …` invocations with
-   `go tool migrate …` in `Makefile` (`migrate-up`) and `tools/demo/lib.sh`
-   (`demo_migrate_seed`) and `tools/demo/*.sh` if any others call it. Keep the `-path
-   migrations -database "$URL" up` args identical.
-3. **make setup:** drop the "TODO: brew install golang-migrate" note; setup no longer
-   needs a global migrate (go tool builds/caches it on first use). If a warmup is wanted,
-   `go build` of the tool is optional — keep setup minimal.
-4. **CI (pr.yml + any workflow running migrations):** ensure the migrate step uses
-   `go tool migrate` (or `make migrate-up`) — verify no workflow relies on a separately
-   installed migrate binary; adjust minimally if so.
-5. **Docs:** update docs/RUNBOOK.md / docs/ENVIRONMENTS.md wherever they tell a human to
-   install or run `migrate` to reflect `go tool migrate` (Architect owns docs/ — the
-   implementer proposes the wording in the report; the Architect applies doc edits).
+## Scope (revised)
+
+1. **go.mod/go.sum:** NO change (no `tool` directive). Keep the existing
+   `require github.com/golang-migrate/migrate/v4 v4.19.1`. `go run` resolves the CLI from
+   that require.
+2. **Makefile `migrate-up`:** drop the `command -v migrate` guard; run
+   `go run -tags 'postgres' github.com/golang-migrate/migrate/v4/cmd/migrate -path
+   migrations -database "$$DATABASE_URL" up` (a `MIGRATE :=` var + a one-line comment
+   noting the `postgres` tag registers the pq driver). Update the nearby comment block.
+3. **tools/demo/lib.sh `demo_migrate_seed`:** drop the `command -v migrate … die` guard;
+   invoke via `( cd "$REPO_ROOT" && go run -tags 'postgres' …/cmd/migrate -path migrations
+   -database "$DB_URL" up )` (explicit cd so `go run` resolves the module + relative
+   `migrations`). Keep args identical. up.sh/dev.sh need no change (verify).
+4. **make setup:** delete the "TODO: brew install golang-migrate" line; keep setup minimal
+   (no mandatory prebuild).
+5. **CI:** delete the "Install golang-migrate" steps in pr.yml and baselines.yml (both
+   already have setup-go; make demo → demo_migrate_seed now uses go run).
+6. **deploy.yml (prod migration step): LEAVE AS-IS** — it already downloads a pinned
+   v4.19.1 release binary that matches the library require and runs in an isolated CI
+   runner (no PATH drift). Converting the sensitive prod deploy path is a deliberate
+   non-goal here (Architect decision 2026-07-23: don't touch the working prod migration
+   path in a tooling task); note the deliberate asymmetry in a Makefile/CI comment.
+7. **Docs:** RUNBOOK/ENVIRONMENTS have no migrate install/run instructions to change
+   (verified); Architect will add a one-line note to docs/DEMO.md if wanted.
 
 ## Out of scope
 

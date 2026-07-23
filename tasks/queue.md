@@ -65,7 +65,10 @@ cited patterns in its spec. "Staging" in SPEC-M1's gate = the PoC prod service
 | 4d | m1-test-hygiene | scratch-DB isolation for DB tests; residue-tolerant asserts | committed |
 | 5a | m1-stage-machine | multi-stage worker: current_stage, registry, auto-advance chaining | committed |
 | 5 | m1-transcribe-stage | worker stage: audio → verbatim word-timed segments (migration 0007) | committed |
-| 5b | m1-tool-pinning | pin migrate CLI via go.mod tool directive (human-directed) | spec-ready |
+| 5b | m1-tool-pinning | pin migrate CLI via `go run -tags postgres` (go tool infeasible) | in-progress (mechanism revised) |
+| 5c | m1-stages-config-gate | REGRESSION MITIGATION: PIPELINE_STAGES config, default ingest-only; un-break prod+e2e | in-progress |
+| 5d | m1-e2e-gates-trunk | Playwright e2e gates push-to-main rollout, fail-closed (process fix) | spec-ready |
+| 5e | m1-transcribe-reenable | re-enable transcribe: demo env fix + two-stage e2e + (gated) prod ASR | spec-ready (human-gated) |
 | 6 | m1-diarize-stage | text-anchored LLM diarization, anchor-merge + golden stability tests in make eval | queued |
 | 7 | m1-speaker-naming | naming evidence (intro quote + lower-third crop), speaker_directory merge (migration: speakers) | queued |
 | 8 | m1-shots-stage | scdet shot boundaries + per-shot 9:16 bbox proposals stored (migration: shots) | queued |
@@ -251,6 +254,26 @@ cited patterns in its spec. "Staging" in SPEC-M1's gate = the PoC prod service
   m1-test-hygiene specced (per-run scratch DB + tolerant asserts). Human directives:
   probe-first ingest fastpath (remux compatible masters in seconds; veryfast preset for
   transcodes) specced as m1-ingest-fastpath.
+- 2026-07-23 (night) — **REGRESSION found + owned.** The transcribe stage (c641226) was
+  wired into the worker auto-advance chain AND deployed, but was not deployment-ready:
+  (1) the prod worker Job has NO ASR env, so with ENV=prod (ASRMode default `speech`) the
+  transcribe engine can't build → a NEW prod upload gets stuck in processing/transcribe
+  (existing READY episodes unaffected); (2) the demo/CI upload→READY auto-advance path
+  doesn't run the transcribe worker in fake mode → main's Playwright e2e went RED
+  (flow.spec upload→READY timeout + token-conformance stale single-stage bar expectation).
+  Surfaced by a FAILED baselines.yml run (the artifact's PNGs were byte-identical to
+  committed, which was the tell — a failed regen, not a clean drift; NOT committed).
+  **Root process gap:** `make check` (commit gate) excludes Playwright e2e, and the loop
+  pushes directly to main, so pr.yml's e2e job never ran on the commits — AC5/visual gates
+  have not actually guarded the trunk since the M0 proof PR. Architect miss: authorized the
+  transcribe push on the implementer's "flow.spec still holds" claim without an e2e gate.
+  Response: m1-stages-config-gate (mitigation, PIPELINE_STAGES default ingest-only —
+  restores prod + trunk green, transcribe code parked not deleted; MANDATORY make e2e in
+  its acceptance); m1-e2e-gates-trunk (make Playwright e2e gate push-to-main, fail-closed);
+  m1-transcribe-reenable (demo auto-advance fake-env fix + two-stage e2e + prod ASR, the
+  last GATED on a human decision about paid Cloud Speech in prod). tool-pinning also
+  revised: `go tool` directive is infeasible for golang-migrate v4 (drivers build-tag
+  gated; go.sum 180→866) → `go run -tags postgres` (zero new deps, version-locked).
 - 2026-07-23 (evening) — Fastpath wave deployed green (rollout of 40fdb42+2e857e8+8127b0b
   +81bbc1d): compatible masters now remux in seconds (the human's 170MB/44-min file
   class); pipeline bars honest per design. Visual baselines: 2 library PNGs regenerated
