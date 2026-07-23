@@ -84,6 +84,42 @@ cat > /tmp/blueshift-lifecycle.json <<'EOF'
 EOF
 gcloud storage buckets update "$BUCKET" --lifecycle-file=/tmp/blueshift-lifecycle.json
 
+# ---- GCS: CORS on the prod bucket (browser uploads/playback go direct) -------
+# The browser PUTs masters through a resumable upload and streams proxies
+# straight from GCS via V4 signed URLs, so the bucket must allow those
+# cross-origin requests from the app origin — a signed URL does NOT exempt the
+# browser from the same-origin policy. Without CORS the resumable POST/PUT is
+# blocked at the preflight and uploads fail in the browser.
+#
+# Origin is the app's Cloud Run URL. Before the first deploy the service does not
+# exist yet, so fall back to Cloud Run's deterministic URL
+# (https://<service>-<project_number>.<region>.run.app); once the service is
+# deployed a re-run of this script picks up the live URL verbatim. A future
+# custom domain is a one-line addition to CORS_ORIGINS below. Re-applying the
+# same policy is idempotent (it overwrites the bucket CORS in place).
+PROJECT_NUMBER="$(gcloud projects describe "$PROJECT" --format 'value(projectNumber)')"
+APP_URL="$(gcloud run services describe blueshift-app --region "$REGION" \
+  --format 'value(status.url)' 2>/dev/null || true)"
+APP_URL="${APP_URL:-https://blueshift-app-${PROJECT_NUMBER}.${REGION}.run.app}"
+CORS_ORIGINS=("$APP_URL")
+# Future custom domain: add one line, e.g.
+#   CORS_ORIGINS+=("https://studio.example.com")
+cors_origins_json=""
+for o in "${CORS_ORIGINS[@]}"; do
+  cors_origins_json="${cors_origins_json:+$cors_origins_json, }\"$o\""
+done
+cat > /tmp/blueshift-cors.json <<EOF
+[
+  {
+    "origin": [$cors_origins_json],
+    "method": ["PUT", "POST", "GET", "HEAD"],
+    "responseHeader": ["Content-Type", "x-goog-resumable", "Location"],
+    "maxAgeSeconds": 3600
+  }
+]
+EOF
+gcloud storage buckets update "$BUCKET" --cors-file=/tmp/blueshift-cors.json
+
 # ---- GCS: dev-experiments scratch bucket (local fixture capture only) --------
 # The dev-experiments@ SA (below) uploads extracted audio here to capture
 # ASR/LLM fixtures from a laptop, then deletes the temp object. It is throwaway —
@@ -125,12 +161,42 @@ grant "$RUNTIME" roles/speech.client
 grant "$RUNTIME" roles/secretmanager.secretAccessor
 grant "$RUNTIME" roles/logging.logWriter
 grant "$RUNTIME" roles/errorreporting.writer
-# The app executes the worker Cloud Run Job (POST jobs/{job}:run, see
-# internal/pipeline/trigger.go), which needs run.jobs.run. roles/run.invoker
-# grants it. A job-scoped binding would be tighter but the worker Jobs do not
-# exist until deploy.yml's first run, so this project-level grant is the
-# idempotent choice runnable before any image/job exists.
+# The app executes the worker Cloud Run Job with per-execution arg overrides
+# (episode public_id + stage; see internal/pipeline/trigger.go). That call is
+# run.jobs.runWithOverrides, which roles/run.invoker does NOT grant — invoker
+# only covers the plain run.jobs.run path — and the only predefined role that
+# does (roles/run.developer) is far too broad to hold at runtime. So we mint a
+# least-privilege custom role with exactly the two execute permissions and bind
+# it to the runtime SA at PROJECT level. A job-scoped binding would be tighter,
+# but the worker Job does not exist until deploy.yml's first run, so a
+# project-level grant is the idempotent choice runnable before any image/job
+# exists. roles/run.invoker stays (harmless, still covers the run.jobs.run path).
 grant "$RUNTIME" roles/run.invoker
+WORKER_ROLE_ID="blueshiftWorkerRunner"
+WORKER_ROLE_PERMS="run.jobs.run,run.jobs.runWithOverrides"
+# describe || create; if it already exists with a different permission set,
+# converge it (roles update). value(includedPermissions) renders ';'-separated
+# and alphabetically sorted, which matches WORKER_ROLE_PERMS after ';'->','.
+WORKER_ROLE_CURRENT="$(gcloud iam roles describe "$WORKER_ROLE_ID" --project "$PROJECT" \
+  --format 'value(includedPermissions)' 2>/dev/null | tr ';' ',' || true)"
+if [ -z "$WORKER_ROLE_CURRENT" ]; then
+  gcloud iam roles create "$WORKER_ROLE_ID" --project "$PROJECT" \
+    --title "Blueshift Worker Runner" \
+    --description "Execute the blueshift-worker Cloud Run Job, including arg overrides." \
+    --permissions "$WORKER_ROLE_PERMS" --stage GA >/dev/null
+elif [ "$WORKER_ROLE_CURRENT" != "$WORKER_ROLE_PERMS" ]; then
+  gcloud iam roles update "$WORKER_ROLE_ID" --project "$PROJECT" \
+    --permissions "$WORKER_ROLE_PERMS" >/dev/null
+fi
+grant "$RUNTIME" "projects/$PROJECT/roles/$WORKER_ROLE_ID"
+# CLEANUP (Architect runs once, after this custom role is live): drop the
+# stopgap job-scoped roles/run.developer binding that was applied operationally
+# to unblock the worker trigger before this role existed.
+echo "CLEANUP: after '$WORKER_ROLE_ID' is live, remove the stopgap binding with:"
+echo "  gcloud run jobs remove-iam-policy-binding blueshift-worker \\"
+echo "    --region $REGION \\"
+echo "    --member serviceAccount:$RUNTIME \\"
+echo "    --role roles/run.developer"
 # V4 signed URLs (master upload, proxy playback) are signed on Cloud Run with NO
 # private key: the storage client calls the IAM Credentials signBlob API on the
 # runtime SA itself. That requires iam.serviceAccounts.signBlob ON THE SA (not a

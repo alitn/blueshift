@@ -56,13 +56,33 @@ Created empty by `deploy/gcloud.sh`; values are filled by the human (see
 
 | SA                         | Roles                                                                                                                                              | Why                                                                          |
 | -------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------- | ---------------------------------------------------------------------------- |
-| `app-runtime@<project>`    | `cloudsql.client`, `storage.objectAdmin`, `aiplatform.user`, `speech.client`, `secretmanager.secretAccessor`, `logging.logWriter`, `errorreporting.writer`, **`run.invoker`** (project) + **`iam.serviceAccountTokenCreator` on _itself_** (SA-scoped) | DB, blob, AI, secrets, logs; `run.invoker` so the app can execute the worker Job (`jobs/{job}:run`); the self-scoped `serviceAccountTokenCreator` grants `iam.serviceAccounts.signBlob` so Cloud Run can mint V4 signed URLs (master upload, proxy playback) with no private key — without it `POST /api/episodes` 503s on a signing 403 |
+| `app-runtime@<project>`    | `cloudsql.client`, `storage.objectAdmin`, `aiplatform.user`, `speech.client`, `secretmanager.secretAccessor`, `logging.logWriter`, `errorreporting.writer`, **`run.invoker`** (project), **custom `blueshiftWorkerRunner`** (project) + **`iam.serviceAccountTokenCreator` on _itself_** (SA-scoped) | DB, blob, AI, secrets, logs; the app executes the worker Job with per-execution arg overrides (`run.jobs.runWithOverrides`), granted by the custom `blueshiftWorkerRunner` role (exactly `run.jobs.run` + `run.jobs.runWithOverrides`, no wildcards); `run.invoker` stays for the plain `run.jobs.run` path; the self-scoped `serviceAccountTokenCreator` grants `iam.serviceAccounts.signBlob` so Cloud Run can mint V4 signed URLs (master upload, proxy playback) with no private key — without it `POST /api/episodes` 503s on a signing 403 |
 | `deployer@<project>`       | `run.admin`, `artifactregistry.writer`, `iam.serviceAccountUser`, `cloudsql.client`, **`errorreporting.viewer`**, + `secretmanager.secretAccessor` on **only** `database-url` | Build/deploy service+jobs, act as runtime SA, run `migrate up` via auth proxy, and read Error Reporting during the rollout watch |
 | `dev-experiments@<project>`| `aiplatform.user`, `speech.client` (project-scoped invocation) + `storage.objectAdmin` on **only** `<project>-media-dev` (bucket-scoped) | Local ASR/LLM fixture capture. **No Cloud SQL, no Cloud Run, no access to the prod bucket** — the storage binding is scoped to the dev bucket alone and no project-level storage role is granted. |
 
-The worker-Job execute permission is project-scoped `run.invoker` rather than a
-per-Job binding: the worker Jobs do not exist when `gcloud.sh` runs (deploy.yml
-creates them), so a job-scoped binding could not be applied idempotently there.
+The worker-Job execute permission is project-scoped rather than a per-Job
+binding: the worker Job does not exist when `gcloud.sh` runs (deploy.yml creates
+it), so a job-scoped binding could not be applied idempotently there. The app
+triggers the Job with per-execution arg overrides (episode + stage), which is
+`run.jobs.runWithOverrides` — a permission `roles/run.invoker` does not grant and
+that only the far-too-broad `roles/run.developer` carries among predefined roles.
+`gcloud.sh` therefore mints a least-privilege **custom role**
+`blueshiftWorkerRunner` (permissions: exactly `run.jobs.run` and
+`run.jobs.runWithOverrides`, no wildcards) idempotently — `gcloud iam roles
+describe … || create`, with a `roles update` convergence path if it already
+exists with a different permission set — and binds it to `app-runtime` at project
+level. `roles/run.invoker` is kept (harmless, still covers `run.jobs.run`).
+
+A `roles/run.developer` binding scoped to the Job was applied operationally as a
+stopgap before this custom role existed; once `blueshiftWorkerRunner` is live the
+Architect removes it. `gcloud.sh` prints the exact removal command on every run:
+
+```
+gcloud run jobs remove-iam-policy-binding blueshift-worker \
+  --region <region> \
+  --member serviceAccount:app-runtime@<project>.iam.gserviceaccount.com \
+  --role roles/run.developer
+```
 
 The signing grant is deliberately **SA-scoped, not project-wide**: `gcloud.sh`
 adds `app-runtime` as a member with `roles/iam.serviceAccountTokenCreator` on the
@@ -89,6 +109,28 @@ gcloud auth application-default login \
 
 Default local development stays on recorded fixtures and needs none of this
 (`docs/ENVIRONMENTS.md`).
+
+## Prod bucket CORS
+
+The browser talks to GCS directly — it PUTs masters through a resumable upload
+and streams proxies from V4 signed URLs — so `<project>-media` carries a CORS
+policy. A signed URL does **not** exempt the browser from the same-origin policy;
+without CORS the resumable `POST`/`PUT` is blocked at the preflight and uploads
+fail. `gcloud.sh` applies it idempotently (overwrites the bucket CORS in place):
+
+| Field            | Value                                          |
+| ---------------- | ---------------------------------------------- |
+| `origin`         | the app's Cloud Run URL (resolved below)       |
+| `method`         | `PUT`, `POST`, `GET`, `HEAD`                    |
+| `responseHeader` | `Content-Type`, `x-goog-resumable`, `Location` |
+| `maxAgeSeconds`  | `3600`                                          |
+
+The origin is resolved at provisioning time: `gcloud.sh` uses the live
+`blueshift-app` service URL if it already exists, otherwise Cloud Run's
+deterministic URL `https://blueshift-app-<project_number>.<region>.run.app`
+(so CORS can be set before the first deploy; a later re-run picks up the live URL
+verbatim). A future custom domain is a one-line addition to the `CORS_ORIGINS`
+array in `gcloud.sh`.
 
 ## Cloud Run service — `blueshift-app`
 
