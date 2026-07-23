@@ -21,7 +21,6 @@ import (
 // safety comes from the orphan shape plus the age floor.
 func TestSweepAbandonedEpisodes(t *testing.T) {
 	dsn := requireDB(t)
-	applyMigrations(t, dsn)
 
 	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
 	defer cancel()
@@ -30,7 +29,7 @@ func TestSweepAbandonedEpisodes(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Open: %v", err)
 	}
-	defer st.Close()
+	t.Cleanup(st.Close)
 	applyDevSeed(t, st, ctx)
 
 	var orgID, showID int64
@@ -52,6 +51,7 @@ func TestSweepAbandonedEpisodes(t *testing.T) {
 		if err != nil {
 			t.Fatalf("InsertEpisode: %v", err)
 		}
+		deleteEpisodeOnCleanup(t, st, ep.ID)
 		return ep
 	}
 	// age backdates a row's created_at to now() - d using the DB clock, matching
@@ -102,12 +102,16 @@ func TestSweepAbandonedEpisodes(t *testing.T) {
 	age(t, oldAdvanced.ID, 7*time.Hour)
 	setStatus(t, oldAdvanced, "processing")
 
+	// The sweep is system-level (all tenants) and the scratch DB carries orphan
+	// residue from sibling tests, so assert on the rows this test created plus a
+	// >= floor — never an exact global count (TestSweepStuckProcessingEpisodes
+	// relies on the same gate-scoped shape for the same reason).
 	n, err := st.SweepAbandonedEpisodes(ctx, 6*time.Hour)
 	if err != nil {
 		t.Fatalf("SweepAbandonedEpisodes: %v", err)
 	}
-	if n != 1 {
-		t.Fatalf("swept %d rows, want exactly 1 (only the old orphan)", n)
+	if n < 1 {
+		t.Fatalf("swept %d rows, want >= 1 (at least this test's old orphan)", n)
 	}
 
 	if !exists(t, young.PublicID) {
@@ -123,9 +127,17 @@ func TestSweepAbandonedEpisodes(t *testing.T) {
 		t.Error("old advanced row was swept (must only touch 'uploaded')")
 	}
 
-	// A second sweep now finds nothing.
-	if n, err := st.SweepAbandonedEpisodes(ctx, 6*time.Hour); err != nil || n != 0 {
-		t.Errorf("second sweep = (%d, %v), want (0, nil)", n, err)
+	// A second sweep is idempotent: it must not error and must leave this test's
+	// survivors in place while the swept orphan stays gone. Asserted per-row
+	// rather than as a global count, since the sweep spans all tenants.
+	if _, err := st.SweepAbandonedEpisodes(ctx, 6*time.Hour); err != nil {
+		t.Fatalf("second SweepAbandonedEpisodes: %v", err)
+	}
+	if exists(t, oldOrphan.PublicID) {
+		t.Error("old orphan reappeared after a second sweep")
+	}
+	if !exists(t, young.PublicID) || !exists(t, oldKeyed.PublicID) || !exists(t, oldAdvanced.PublicID) {
+		t.Error("a second sweep wrongly removed a survivor")
 	}
 }
 
@@ -137,7 +149,6 @@ func TestSweepAbandonedEpisodes(t *testing.T) {
 // retry API/UI can rescue them.
 func TestSweepStuckProcessingEpisodes(t *testing.T) {
 	dsn := requireDB(t)
-	applyMigrations(t, dsn)
 
 	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
 	defer cancel()
@@ -146,7 +157,7 @@ func TestSweepStuckProcessingEpisodes(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Open: %v", err)
 	}
-	defer st.Close()
+	t.Cleanup(st.Close)
 	applyDevSeed(t, st, ctx)
 
 	var orgID, showID int64
@@ -168,6 +179,7 @@ func TestSweepStuckProcessingEpisodes(t *testing.T) {
 		if err != nil {
 			t.Fatalf("InsertEpisode: %v", err)
 		}
+		deleteEpisodeOnCleanup(t, st, ep.ID)
 		return ep
 	}
 	// setState forces status and claimed_at directly (via the DB clock for the age

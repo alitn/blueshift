@@ -10,55 +10,38 @@ import (
 	"testing"
 	"time"
 
-	"github.com/golang-migrate/migrate/v4"
-	_ "github.com/golang-migrate/migrate/v4/database/pgx/v5"
-	_ "github.com/golang-migrate/migrate/v4/source/file"
 	"github.com/jackc/pgx/v5/pgtype"
 
+	"blueshift/internal/dbtest"
 	"blueshift/internal/store"
 	"blueshift/internal/store/db"
 )
 
-// requireDB returns TEST_DATABASE_URL or skips. These tests run under CI/`make
+// TestMain routes every DB-backed test in this package through a per-run scratch
+// database (created, migrated, and dropped by dbtest), so the tests never touch
+// the database named in TEST_DATABASE_URL.
+func TestMain(m *testing.M) {
+	os.Exit(dbtest.RunMain(m))
+}
+
+// requireDB returns the per-run scratch database DSN, or skips when no server
+// was configured (TEST_DATABASE_URL unset). These tests run under CI/`make
 // demo` where a scratch Postgres is provisioned; locally they no-op so `make
 // check` is green without a database (mirrors the store package convention).
 func requireDB(t *testing.T) string {
 	t.Helper()
-	dsn := strings.TrimSpace(os.Getenv("TEST_DATABASE_URL"))
+	dsn := dbtest.DSN()
 	if dsn == "" {
 		t.Skip("skip: TEST_DATABASE_URL not set (DB-backed audit test needs a scratch Postgres)")
 	}
 	return dsn
 }
 
-func migrateURL(dsn string) string {
-	if i := strings.Index(dsn, "://"); i >= 0 {
-		return "pgx5" + dsn[i:]
-	}
-	return dsn
-}
-
-func applyMigrations(t *testing.T, dsn string) {
-	t.Helper()
-	m, err := migrate.New("file://../../migrations", migrateURL(dsn))
-	if err != nil {
-		t.Fatalf("migrate.New: %v", err)
-	}
-	defer func() {
-		if serr, derr := m.Close(); serr != nil || derr != nil {
-			t.Logf("migrate close: source=%v db=%v", serr, derr)
-		}
-	}()
-	if err := m.Up(); err != nil && !errors.Is(err, migrate.ErrNoChange) {
-		t.Fatalf("migrate up: %v", err)
-	}
-}
-
-// openStore migrates and opens the store, returning it plus the seed org id.
+// openStore opens the store against the scratch database (already migrated by
+// TestMain) and returns it plus the seed org id.
 func openStore(t *testing.T, ctx context.Context) (*store.Store, int64) {
 	t.Helper()
 	dsn := requireDB(t)
-	applyMigrations(t, dsn)
 	st, err := store.Open(ctx, dsn)
 	if err != nil {
 		t.Fatalf("store.Open: %v", err)
@@ -90,6 +73,21 @@ func createEpisode(t *testing.T, st *store.Store, ctx context.Context, orgID int
 	if err != nil {
 		t.Fatalf("InsertEpisode: %v", err)
 	}
+	// Belt (the scratch DB is dropped on a green run — suspenders): delete the
+	// llm_calls this episode accumulates, then the episode. Registered after
+	// openStore's t.Cleanup(st.Close) so it runs first (cleanups are LIFO) while
+	// the pool is still open; a fresh context because the test's ctx is already
+	// cancelled by the time cleanups run.
+	t.Cleanup(func() {
+		cctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+		defer cancel()
+		if _, err := st.Pool().Exec(cctx, `DELETE FROM llm_calls WHERE episode_id = $1`, ep.ID); err != nil {
+			t.Logf("cleanup: delete llm_calls for episode %d: %v", ep.ID, err)
+		}
+		if _, err := st.Pool().Exec(cctx, `DELETE FROM episodes WHERE id = $1`, ep.ID); err != nil {
+			t.Logf("cleanup: delete episode %d: %v", ep.ID, err)
+		}
+	})
 	return ep.ID
 }
 

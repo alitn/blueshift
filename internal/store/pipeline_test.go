@@ -16,7 +16,6 @@ import (
 // TEST_DATABASE_URL is unset, like the other DB-backed store tests.
 func TestPipelineClaimFinalize(t *testing.T) {
 	dsn := requireDB(t)
-	applyMigrations(t, dsn)
 
 	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
 	defer cancel()
@@ -25,7 +24,7 @@ func TestPipelineClaimFinalize(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Open: %v", err)
 	}
-	defer st.Close()
+	t.Cleanup(st.Close)
 	applyDevSeed(t, st, ctx)
 
 	var orgID, showID int64
@@ -49,6 +48,7 @@ func TestPipelineClaimFinalize(t *testing.T) {
 		if err != nil {
 			t.Fatalf("InsertEpisode: %v", err)
 		}
+		deleteEpisodeOnCleanup(t, st, ep.ID)
 		return ep
 	}
 
@@ -139,7 +139,6 @@ func TestPipelineClaimFinalize(t *testing.T) {
 // claimed_at means exactly "a fresh claim is currently being processed".
 func TestClaimStampsClaimedAt(t *testing.T) {
 	dsn := requireDB(t)
-	applyMigrations(t, dsn)
 
 	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
 	defer cancel()
@@ -148,7 +147,7 @@ func TestClaimStampsClaimedAt(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Open: %v", err)
 	}
-	defer st.Close()
+	t.Cleanup(st.Close)
 	applyDevSeed(t, st, ctx)
 
 	var orgID, showID int64
@@ -171,6 +170,7 @@ func TestClaimStampsClaimedAt(t *testing.T) {
 	if err != nil {
 		t.Fatalf("InsertEpisode: %v", err)
 	}
+	deleteEpisodeOnCleanup(t, st, ep.ID)
 	epEncoded := ids.Encode(ids.Episode, ep.PublicID.Bytes)
 
 	// Freshly created: not yet claimed.

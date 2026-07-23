@@ -4,56 +4,53 @@ import (
 	"context"
 	"errors"
 	"os"
-	"strings"
 	"testing"
 	"time"
 
-	"github.com/golang-migrate/migrate/v4"
-	_ "github.com/golang-migrate/migrate/v4/database/pgx/v5"
-	_ "github.com/golang-migrate/migrate/v4/source/file"
 	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgtype"
 
+	"blueshift/internal/dbtest"
 	"blueshift/internal/store/db"
 )
 
-// migrateURL rewrites a standard postgres DSN to the scheme golang-migrate's
-// pgx/v5 driver registers ("pgx5").
-func migrateURL(dsn string) string {
-	if i := strings.Index(dsn, "://"); i >= 0 {
-		return "pgx5" + dsn[i:]
-	}
-	return dsn
+// TestMain routes every DB-backed test in this package through a per-run scratch
+// database (created, migrated, and dropped by dbtest), so the tests never touch
+// the database named in TEST_DATABASE_URL.
+func TestMain(m *testing.M) {
+	os.Exit(dbtest.RunMain(m))
 }
 
-// requireDB returns TEST_DATABASE_URL or skips the test with a logged reason.
-// These tests run under `make demo`/CI where a scratch Postgres is provisioned;
-// locally they no-op so `make check` is green without a database.
+// requireDB returns the per-run scratch database DSN, or skips when no server
+// was configured (TEST_DATABASE_URL unset). These tests run under `make
+// demo`/CI where a scratch Postgres is provisioned; locally they no-op so `make
+// check` is green without a database.
 func requireDB(t *testing.T) string {
 	t.Helper()
-	dsn := strings.TrimSpace(os.Getenv("TEST_DATABASE_URL"))
+	dsn := dbtest.DSN()
 	if dsn == "" {
 		t.Skip("skip: TEST_DATABASE_URL not set (DB-backed store test needs a scratch Postgres)")
 	}
 	return dsn
 }
 
-// applyMigrations runs every up migration against dsn. A clean re-run reports
-// migrate.ErrNoChange, which is fine.
-func applyMigrations(t *testing.T, dsn string) {
+// deleteEpisodeOnCleanup registers a t.Cleanup that removes the episode and any
+// llm_calls children it accumulated (belt — the scratch database is dropped on a
+// green run anyway, suspenders). It runs before the store's own t.Cleanup(Close)
+// (cleanups are LIFO) so the pool is still open, and it uses a fresh context
+// because the test's ctx is already cancelled by the time cleanups run.
+func deleteEpisodeOnCleanup(t *testing.T, st *Store, id int64) {
 	t.Helper()
-	m, err := migrate.New("file://../../migrations", migrateURL(dsn))
-	if err != nil {
-		t.Fatalf("migrate.New: %v", err)
-	}
-	defer func() {
-		if serr, derr := m.Close(); serr != nil || derr != nil {
-			t.Logf("migrate close: source=%v db=%v", serr, derr)
+	t.Cleanup(func() {
+		ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+		defer cancel()
+		if _, err := st.Pool().Exec(ctx, `DELETE FROM llm_calls WHERE episode_id = $1`, id); err != nil {
+			t.Logf("cleanup: delete llm_calls for episode %d: %v", id, err)
 		}
-	}()
-	if err := m.Up(); err != nil && !errors.Is(err, migrate.ErrNoChange) {
-		t.Fatalf("migrate up: %v", err)
-	}
+		if _, err := st.Pool().Exec(ctx, `DELETE FROM episodes WHERE id = $1`, id); err != nil {
+			t.Logf("cleanup: delete episode %d: %v", id, err)
+		}
+	})
 }
 
 // applyDevSeed loads the dev/demo user identities. Migration 0002 no longer
@@ -72,7 +69,6 @@ func applyDevSeed(t *testing.T, st *Store, ctx context.Context) {
 
 func TestMigrationsAndQueries(t *testing.T) {
 	dsn := requireDB(t)
-	applyMigrations(t, dsn)
 
 	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
 	defer cancel()
@@ -81,7 +77,7 @@ func TestMigrationsAndQueries(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Open: %v", err)
 	}
-	defer st.Close()
+	t.Cleanup(st.Close)
 
 	if err := st.Ping(ctx); err != nil {
 		t.Fatalf("Ping: %v", err)
@@ -150,6 +146,7 @@ func TestMigrationsAndQueries(t *testing.T) {
 	if err != nil {
 		t.Fatalf("InsertEpisode: %v", err)
 	}
+	deleteEpisodeOnCleanup(t, st, ep.ID)
 	if ep.Status != "uploaded" {
 		t.Errorf("new episode status = %q, want uploaded", ep.Status)
 	}
@@ -191,7 +188,6 @@ func TestMigrationsAndQueries(t *testing.T) {
 // key) and leaves any keyed, advanced, or other-org row untouched.
 func TestDeleteOrphanEpisode(t *testing.T) {
 	dsn := requireDB(t)
-	applyMigrations(t, dsn)
 
 	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
 	defer cancel()
@@ -200,7 +196,7 @@ func TestDeleteOrphanEpisode(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Open: %v", err)
 	}
-	defer st.Close()
+	t.Cleanup(st.Close)
 	applyDevSeed(t, st, ctx)
 
 	var orgID, showID int64
@@ -222,6 +218,7 @@ func TestDeleteOrphanEpisode(t *testing.T) {
 		if err != nil {
 			t.Fatalf("InsertEpisode: %v", err)
 		}
+		deleteEpisodeOnCleanup(t, st, ep.ID)
 		return ep
 	}
 	deleteOrphan := func(t *testing.T, pub pgtype.UUID, org int64) int64 {
@@ -293,7 +290,6 @@ func TestDeleteOrphanEpisode(t *testing.T) {
 // row counts do not change.
 func TestSeedIdempotent(t *testing.T) {
 	dsn := requireDB(t)
-	applyMigrations(t, dsn)
 
 	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
 	defer cancel()
