@@ -99,7 +99,17 @@ setup:
 	@command -v golangci-lint >/dev/null || echo "TODO: install golangci-lint (brew install golangci-lint)"
 	@command -v migrate >/dev/null || echo "TODO: install golang-migrate (brew install golang-migrate)"
 	@command -v sqlc >/dev/null || echo "TODO: install sqlc (brew install sqlc) — codegen only, not a runtime dep"
-	@command -v ffmpeg >/dev/null || echo "TODO: install ffmpeg (brew install ffmpeg)"
+	@if command -v ffmpeg >/dev/null; then \
+		ver=$$(ffmpeg -version 2>/dev/null | head -1 | sed -nE 's/^ffmpeg version n?([0-9]+)\.([0-9]+).*/\1 \2/p'); \
+		set -- $$ver; major=$$1; minor=$$2; \
+		if [ -z "$$major" ]; then \
+			echo "WARN: could not parse local ffmpeg version — prod/CI pin ffmpeg 8.1.x (ADR 0002)"; \
+		elif [ "$$major" -lt 8 ] || [ "$$major" -eq 8 -a "$$minor" -lt 1 ]; then \
+			echo "WARN: local ffmpeg $$major.$$minor < 8.1 — prod/CI pin 8.1.x (ADR 0002); run 'brew upgrade ffmpeg'"; \
+		fi; \
+	else \
+		echo "TODO: install ffmpeg 8.1+ (brew install ffmpeg) — prod/CI pin 8.1.x (ADR 0002)"; \
+	fi
 	@command -v bun >/dev/null || { echo "TODO: install bun — the web package manager (brew install oven-sh/bun/bun)"; }
 	@if [ -f web/package.json ]; then command -v bun >/dev/null && (cd web && bun install) || echo "skip: web deps (bun not installed)"; fi
 	@echo "setup: done (git hooks -> .githooks)"

@@ -65,12 +65,33 @@ jobs:
         with:
           node-version: "22"
 
-      # ffmpeg: the worker's media stage (and the demo's sample-episode
-      # generation) shell out to it. migrate CLI: `make demo` applies migrations.
-      - name: Install system tools (ffmpeg, golang-migrate)
+      # Pinned 8.1.x BtbN static GPL build (ADR 0002) for dev/prod/CI parity —
+      # NOT apt ffmpeg (bookworm ships 5.x/6.x). Pinned to an immutable dated
+      # autobuild tag + sha256 (never the rolling `latest`); a wrong checksum
+      # fails `sha256sum -c` here. LOCKSTEP: this run block is byte-identical in
+      # pr.yml (both jobs) and baselines.yml; the Dockerfile `ffmpeg` stage pins
+      # the same tag + asset + sha256 (different shell) — bump all four together.
+      - name: Install ffmpeg (pinned 8.1.x, checksum-gated)
         run: |
-          sudo apt-get update
-          sudo apt-get install -y --no-install-recommends ffmpeg
+          set -euo pipefail
+          FF_TAG=autobuild-2026-07-22-13-36
+          FF_ASSET=ffmpeg-n8.1.2-30-g45f1910444-linux64-gpl-8.1.tar.xz
+          FF_SHA=4ad0d6eb98bde796841050cf12bf9428e188446bd518b245fb4aa02f25b633a0
+          curl -sSfL -o "$FF_ASSET" \
+            "https://github.com/BtbN/FFmpeg-Builds/releases/download/${FF_TAG}/${FF_ASSET}"
+          echo "${FF_SHA}  ${FF_ASSET}" | sha256sum -c -
+          tar -xf "$FF_ASSET" --strip-components=1 -C /tmp
+          sudo install -m0755 /tmp/bin/ffmpeg  /usr/local/bin/ffmpeg
+          sudo install -m0755 /tmp/bin/ffprobe /usr/local/bin/ffprobe
+          hash -r
+          ffmpeg -version | head -1
+          ffmpeg -version | head -1 | grep -qE ' n?8\.1' \
+            || { echo "::error::ffmpeg is not 8.1.x after pinned install"; exit 1; }
+
+      # LOCKSTEP with pr.yml: the golang-migrate CLI (`make demo` applies
+      # migrations). ffmpeg is installed by the pinned step above.
+      - name: Install golang-migrate
+        run: |
           curl -sSfL https://github.com/golang-migrate/migrate/releases/download/v4.19.1/migrate.linux-amd64.tar.gz \
             | tar -xz migrate
           sudo mv migrate /usr/local/bin/migrate
