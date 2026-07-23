@@ -29,7 +29,7 @@
 <div class="flex h-full min-h-0 flex-col">
   <!-- Column header -->
   <div
-    class="flex flex-none items-center border-b border-border-subtle px-6 py-2 font-semibold text-[10.5px] tracking-[0.14em] text-text-faint"
+    class="flex flex-none items-center border-b border-border-subtle px-6 py-2 font-semibold text-[10.5px] tracking-[0.14em] text-accent"
   >
     <div class="min-w-0 flex-1">EPISODE</div>
     <div class="w-[80px] flex-none">UPLOADED</div>
