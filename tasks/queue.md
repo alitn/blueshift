@@ -41,6 +41,9 @@ spec file `tasks/<slug>.md` = one Implementer dispatch = one Reviewer verdict = 
 | m0-prod-hardening-2 | CORS + least-priv worker-runner role | committed | tasks/m0-prod-hardening-2.md |
 | m0-ffmpeg-pin | ffmpeg 8.1 static pin Docker+CI (ADR 0002) | committed | tasks/m0-ffmpeg-pin.md |
 | m0-client-errors | FE errors → own API → Cloud Logging | committed | tasks/m0-client-errors.md |
+| m0-abandoned-uploads | TTL sweep + AWAITING UPLOAD state | committed | tasks/m0-abandoned-uploads.md |
+| m0-upload-protocol | server-initiated upload session (AC1 blocker) | committed | tasks/m0-upload-protocol.md |
+| m0-cors-both-origins | both run.app CORS origins + PUBLIC_BASE_URL env | spec-ready | tasks/m0-cors-both-origins.md |
 
 ## Backlog
 
@@ -156,3 +159,15 @@ M1 decomposition happens after the M0 gate (see docs/SPEC-M1.md §Task decomposi
   M1 backlog adds: abandoned-upload TTL sweep + AWAITING UPLOAD state (human-found CORS
   orphan class — no transaction can span browser+GCS), updated_at trigger, LISTEN/NOTIFY
   for status push instead of polling.
+- 2026-07-23 — AC1 attempts 2–3 (human): (a) bucket CORS listed only the legacy hash
+  run.app origin while the human browsed the deterministic project-number form — both
+  forms now allowed, preflights verified for each (codify: m0-cors-both-origins);
+  (b) real bug behind the "CORS" 400: client sent file bytes as the body of the signed
+  resumable-INITIATION POST — provider requires a bodyless init (Content-Length: 0).
+  Researched provider docs + issue trackers before respeccing: adopted the documented
+  server-initiated-session pattern (server does the init POST carrying the browser's
+  Origin — that Origin is what makes session-URI PUTs pass browser CORS — and returns
+  the session URI as a plain PUT). Client + DTO + local backend unchanged; closes the
+  mock-vs-real contract gap that let this pass demo/e2e/curl smoke.
+  m0-abandoned-uploads committed (a04722b): sweep gate race-safe vs concurrent
+  master-key set; AWAITING UPLOAD chip; APPROVE first pass, no findings.
