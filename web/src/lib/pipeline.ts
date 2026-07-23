@@ -1,13 +1,20 @@
 /**
- * M0 status -> five-bar pipeline view. The Library shows a fixed five-step
- * pipeline; in M0 only ingest runs, so the mapping is deliberate (per the
- * Architect ruling) rather than derived from real per-stage progress. Colors are
- * token classes, resolved by DESIGN.md's pipeline-step spec:
+ * Display state -> five-bar pipeline view. The Library shows a fixed five-bar
+ * pipeline, but today (M1) only one real stage exists: ingest. So bar 1 tracks
+ * the ingest stage's actual state, and bars 2-5 stand for the future stages
+ * (transcribe, moments, etc.) that have not been built or reached yet — they are
+ * honestly "not reached", never falsely "done". This replaces the earlier
+ * all-done READY mapping, which rendered five identical bars.
+ *
+ * Colors are token classes, resolved by DESIGN.md's pipeline-step spec:
  *   done -> step-done · active -> accent · pending -> border-default · failed -> danger
+ * DESIGN.md defines no separate "not-reached" fill (the prototype paints every
+ * not-yet-reached bar with border-default), so `unreached` reuses border-default;
+ * a distinct token would be an Architect-authorised DESIGN.md change.
  */
 import type { DisplayState } from './episodes';
 
-export type StepState = 'done' | 'active' | 'pending' | 'failed';
+export type StepState = 'done' | 'active' | 'pending' | 'unreached' | 'failed';
 export type LabelTone = 'ok' | 'accent' | 'danger' | 'muted';
 
 export type PipelineView = {
@@ -19,31 +26,44 @@ export type PipelineView = {
 const D: StepState = 'done';
 const A: StepState = 'active';
 const P: StepState = 'pending';
+const U: StepState = 'unreached';
 const F: StepState = 'failed';
 
-/** pipelineView maps a display state to its five bars, stage label, and tone. */
+/**
+ * pipelineView maps a display state to its five bars, stage label, and tone.
+ * Bar 1 = the ingest stage; bars 2-5 = downstream stages not reached in M1.
+ */
 export function pipelineView(state: DisplayState): PipelineView {
   switch (state) {
     case 'awaiting_upload':
-      // Upload never completed: step 1 (upload) is still pending, not done, so
-      // the row reads honestly as awaiting the master rather than queued.
-      return { steps: [P, P, P, P, P], label: 'AWAITING UPLOAD', tone: 'muted' };
+      // No master landed, so ingest cannot start: every bar is unreached and the
+      // row reads honestly as awaiting the master rather than queued.
+      return { steps: [U, U, U, U, U], label: 'AWAITING UPLOAD', tone: 'muted' };
     case 'uploaded':
-      return { steps: [D, P, P, P, P], label: 'QUEUED', tone: 'muted' };
+      // Master landed; ingest is queued (pending) but has not run.
+      return { steps: [P, U, U, U, U], label: 'QUEUED', tone: 'muted' };
     case 'processing':
-      return { steps: [D, A, P, P, P], label: 'INGEST…', tone: 'accent' };
+      // Ingest is running.
+      return { steps: [A, U, U, U, U], label: 'INGEST…', tone: 'accent' };
     case 'ready':
-      return { steps: [D, D, D, D, D], label: 'READY', tone: 'ok' };
+      // Ingest is done; downstream stages do not exist yet, so they stay unreached.
+      return { steps: [D, U, U, U, U], label: 'READY', tone: 'ok' };
     case 'failed':
-      return { steps: [D, F, P, P, P], label: 'FAILED — INGEST', tone: 'danger' };
+      // Ingest failed; downstream stages were never reached.
+      return { steps: [F, U, U, U, U], label: 'FAILED — INGEST', tone: 'danger' };
   }
 }
 
-/** Tailwind background class for each step state (token-backed, no raw hex). */
+/**
+ * Tailwind background class for each step state (token-backed, no raw hex).
+ * `unreached` shares border-default with `pending` because DESIGN.md defines no
+ * separate not-reached fill; done/active/pending are the three distinct fills.
+ */
 export const STEP_BG: Record<StepState, string> = {
   done: 'bg-step-done',
   active: 'bg-accent',
   pending: 'bg-border-default',
+  unreached: 'bg-border-default',
   failed: 'bg-danger'
 };
 

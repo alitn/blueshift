@@ -1,4 +1,5 @@
 import { test, expect, type Page, type Locator } from '@playwright/test';
+import { isolate, libraryRow, SAMPLE } from './helpers';
 
 // Token conformance: the computed styles of the chrome match the values in
 // tokens.css, read at runtime from the CSS custom properties — never compared
@@ -69,5 +70,28 @@ test.describe('token conformance', () => {
     expect(await cssProp(page.locator('footer'), 'font-family')).toContain('IBM Plex Mono');
     const button = page.getByRole('button', { name: 'UPLOAD MASTER' });
     expect(await cssProp(button, 'font-family')).toContain('Archivo');
+  });
+
+  test('pipeline bars use three distinct token fills; a READY row is not five identical bars', async ({
+    page
+  }) => {
+    // The three pipeline fills DESIGN.md defines are mutually distinct token
+    // colours (step-done done, accent active, border-default pending/unreached).
+    const stepDone = await tokenRgb(page, '--step-done');
+    const accent = await tokenRgb(page, '--accent');
+    const borderDefault = await tokenRgb(page, '--border-default');
+    expect(new Set([stepDone, accent, borderDefault]).size).toBe(3);
+
+    // The reported bug: a READY row must render bar 1 (ingest, done) distinct
+    // from bars 2-5 (not reached) — never five identical greys.
+    await isolate(page, SAMPLE.search);
+    const sample = libraryRow(page, SAMPLE.title);
+    await expect(sample.getByText('READY')).toBeVisible();
+    const bars = sample.getByTestId('pipeline-bar');
+    await expect(bars).toHaveCount(5);
+    expect(await cssProp(bars.nth(0), 'background-color')).toBe(stepDone);
+    for (let i = 1; i < 5; i++) {
+      expect(await cssProp(bars.nth(i), 'background-color')).toBe(borderDefault);
+    }
   });
 });

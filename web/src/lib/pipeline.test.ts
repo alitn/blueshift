@@ -8,51 +8,76 @@ import {
   TONE_TEXT
 } from './pipeline';
 
-describe('pipelineView (M0 status -> 5 bars)', () => {
-  it('awaiting_upload = all pending + AWAITING UPLOAD (upload step 1 not done)', () => {
+describe('pipelineView (M1 one-stage: bar 1 = ingest, bars 2-5 = not reached)', () => {
+  it('awaiting_upload = all unreached + AWAITING UPLOAD (ingest cannot start)', () => {
     const v = pipelineView('awaiting_upload');
-    expect(v.steps).toEqual(['pending', 'pending', 'pending', 'pending', 'pending']);
+    expect(v.steps).toEqual([
+      'unreached',
+      'unreached',
+      'unreached',
+      'unreached',
+      'unreached'
+    ]);
     expect(v.label).toBe('AWAITING UPLOAD');
     expect(v.tone).toBe('muted');
   });
 
-  it('uploaded = 1 done + QUEUED', () => {
+  it('uploaded = ingest pending, rest unreached + QUEUED', () => {
     const v = pipelineView('uploaded');
-    expect(v.steps).toEqual(['done', 'pending', 'pending', 'pending', 'pending']);
+    expect(v.steps).toEqual(['pending', 'unreached', 'unreached', 'unreached', 'unreached']);
     expect(v.label).toBe('QUEUED');
     expect(v.tone).toBe('muted');
   });
 
-  it('processing = 1 done, 2nd active + INGEST…', () => {
+  it('processing = ingest active, rest unreached + INGEST…', () => {
     const v = pipelineView('processing');
-    expect(v.steps).toEqual(['done', 'active', 'pending', 'pending', 'pending']);
+    expect(v.steps).toEqual(['active', 'unreached', 'unreached', 'unreached', 'unreached']);
     expect(v.label).toBe('INGEST…');
     expect(v.tone).toBe('accent');
   });
 
-  it('ready = all 5 done + READY (ok)', () => {
+  it('ready = ingest done, bars 2-5 not reached + READY (ok) — not five identical bars', () => {
     const v = pipelineView('ready');
-    expect(v.steps).toEqual(['done', 'done', 'done', 'done', 'done']);
+    expect(v.steps).toEqual(['done', 'unreached', 'unreached', 'unreached', 'unreached']);
     expect(v.label).toBe('READY');
     expect(v.tone).toBe('ok');
+    // The reported bug: a READY row must not render five identical bars. Bar 1
+    // (done) differs from bars 2-5 (unreached).
+    expect(v.steps[0]).not.toBe(v.steps[1]);
+    expect(new Set(v.steps).size).toBeGreaterThan(1);
   });
 
-  it('failed = 2nd danger + FAILED — INGEST (danger)', () => {
+  it('failed = ingest failed, rest unreached + FAILED — INGEST (danger)', () => {
     const v = pipelineView('failed');
-    expect(v.steps).toEqual(['done', 'failed', 'pending', 'pending', 'pending']);
+    expect(v.steps).toEqual(['failed', 'unreached', 'unreached', 'unreached', 'unreached']);
     expect(v.label).toBe('FAILED — INGEST');
     expect(v.tone).toBe('danger');
   });
 
-  it('maps step/tone classes to the DESIGN tokens', () => {
+  it('maps step/tone classes to the DESIGN tokens (no raw hex)', () => {
     expect(STEP_BG).toEqual({
       done: 'bg-step-done',
       active: 'bg-accent',
       pending: 'bg-border-default',
+      unreached: 'bg-border-default',
       failed: 'bg-danger'
     });
     expect(TONE_TEXT.ok).toBe('text-ok');
     expect(TONE_TEXT.danger).toBe('text-danger');
+  });
+
+  it('the three pipeline fills (done/active/pending) are three distinct token classes', () => {
+    // Token conformance at the mapping layer: DESIGN.md defines exactly two greys
+    // (step-done, border-default) plus accent, so done/active/pending resolve to
+    // three distinct token-derived fills. unreached reuses border-default because
+    // DESIGN.md has no separate not-reached fill (see pipeline.ts).
+    const distinct = new Set([STEP_BG.done, STEP_BG.active, STEP_BG.pending]);
+    expect(distinct.size).toBe(3);
+    expect(STEP_BG.unreached).toBe(STEP_BG.pending);
+    // Every fill is a token-backed Tailwind class, never a raw/arbitrary hex.
+    for (const cls of Object.values(STEP_BG)) {
+      expect(cls).toMatch(/^bg-[a-z-]+$/);
+    }
   });
 });
 

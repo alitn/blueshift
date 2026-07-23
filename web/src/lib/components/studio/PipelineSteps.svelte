@@ -12,7 +12,11 @@
 <div>
   <div class="flex gap-[3px]" aria-hidden="true">
     {#each view.steps as step, i (i)}
-      <div class="h-1 w-[22px] rounded-1 {STEP_BG[step]}"></div>
+      <div
+        class="h-1 w-[22px] rounded-1 {STEP_BG[step]}"
+        data-testid="pipeline-bar"
+        data-step={step}
+      ></div>
     {/each}
   </div>
   <div class="mt-1 font-mono text-[10.5px] tracking-[0.06em] {TONE_TEXT[view.tone]}">
