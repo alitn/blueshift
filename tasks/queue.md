@@ -58,8 +58,11 @@ cited patterns in its spec. "Staging" in SPEC-M1's gate = the PoC prod service
 | 1 | m1-lang-registry | /internal/lang registry + lang/fa normalization (ZWNJ, yeh/kaf, digits) + make eval scaffold | committed |
 | 2 | m1-llm-interface | /internal/llm: schema-validated calls, retry, llm_calls audit, two engine impls, record/replay | committed |
 | 2b | m1-pipeline-robustness | AC1 BLOCKER: worker 4vCPU/4h timeout, SIGTERM→failed, stale-claim sweeper | committed |
-| 3 | m1-asr-interface | /internal/asr engine interface (words+timestamps, glossary biasing), neutral labels, fixtures | queued |
-| 4 | m1-asr-impl | chirp_2@asia-southeast1 (fa word-timestamps live-verified); 20-min batch-cap experiment in-task | spec-ready |
+| 3 | m1-asr-interface | /internal/asr engine interface (words+timestamps, glossary biasing), neutral labels, fixtures | committed |
+| 4 | m1-asr-impl | batch speech engine, chunk-stitch, gated live smoke; region us-central1 (live-verified) | committed |
+| 4b | m1-pipeline-bars-fix | pipeline bars per-stage truth (human-found; design-faithful two greys) | committed |
+| 4c | m1-ingest-fastpath | probe→remux fastpath (compatible masters ingest in seconds) | committed |
+| 4d | m1-test-hygiene | scratch-DB isolation for DB tests; residue-tolerant asserts | spec-ready |
 | 5 | m1-transcribe-stage | worker stage: audio → segments+words rows + per-segment embeddings (migration: segments) | queued |
 | 6 | m1-diarize-stage | text-anchored LLM diarization, anchor-merge + golden stability tests in make eval | queued |
 | 7 | m1-speaker-naming | naming evidence (intro quote + lower-third crop), speaker_directory merge (migration: speakers) | queued |
@@ -223,6 +226,23 @@ cited patterns in its spec. "Staging" in SPEC-M1's gate = the PoC prod service
   NULL claimed_at = legacy stuck row → auto-unsticks the two prod episodes post-deploy).
   Human directive recorded permanently (memory + CLAUDE.md standing rule): research
   online before solving — never guess, never reinvent solved wheels.
+- 2026-07-23 (later) — m1-asr-impl interrupted mid-task by the account spend limit;
+  resumed by a fresh implementer that audited the inherited WIP, rewrote provenance
+  comments honestly (fixtures are schema-faithful, not live captures; chunking rests on
+  the documented ~20-min batch-with-timestamps cap), and finished tests + gated live
+  smoke. Committed 40fdb42 after 1 review cycle (date slip — Architect-caused — and a
+  missing panic-guard test). Region default switched to us-central1 after the Architect
+  live-verified fa-IR word offsets there (docs table lags rollout; human challenged the
+  region/feature coupling and chirp_3 rejection — re-researched, both answered: regions
+  are checkpoint-rollout artifacts; chirp_3 genuinely lacks word timestamps). ASR
+  foundation complete: interface + fake (1af1a22) + engine (40fdb42).
+  m1-pipeline-bars-fix committed 2e857e8 (human-found: READY showed 5 identical bars;
+  design defines exactly two greys — done vs border-default; Architect authorized
+  regeneration of the 2 library baselines via CI post-push). Dev test-DB purged a second
+  time (193 residue episodes; FK via llm_calls now breaks exact-count sweep asserts) →
+  m1-test-hygiene specced (per-run scratch DB + tolerant asserts). Human directives:
+  probe-first ingest fastpath (remux compatible masters in seconds; veryfast preset for
+  transcodes) specced as m1-ingest-fastpath.
 - 2026-07-23 — ASR engine decision de-risked empirically before spec: chirp_3 REJECTED
   (no word timestamps at all; fa preview-only). chirp_2 fa-IR is served only from
   asia-southeast1; Architect ran a live sync recognize on real Persian broadcast audio:
@@ -234,3 +254,12 @@ cited patterns in its spec. "Staging" in SPEC-M1's gate = the PoC prod service
   m1-llm-interface committed (2748508; APPROVE first pass; Claude structured outputs
   verified GA as output_config.format, no beta header; llm_calls gains additive status
   column, migration 0004). Dev DB purged of 38 test-residue rows (operational).
+- 2026-07-23 — **M0 GATE CLOSED — AC1 accepted.** The human's own browser upload of a
+  44-minute Persian master (ep_06frvp5anxrgbahax…) reached READY on prod with a playable
+  signed proxy (verified: proxy endpoint 200, GCS range request 206). Full recovery loop
+  proven live in sequence: stuck→failed via the new stale-claim sweeper on its first
+  post-deploy pass, retry via the existing API (200), re-ingest on the resized worker
+  (4 vCPU: ~20 min for the 44-min master vs >60-min timeout death before). All six M0
+  acceptance criteria now have recorded evidence (AC2–AC6 in the earlier acceptance
+  record). Rollout 29996850621 also applied migrations 0004+0005. M1 execution continues
+  per the decomposition above (human pre-authorized proceeding in absence).
