@@ -65,9 +65,9 @@ cited patterns in its spec. "Staging" in SPEC-M1's gate = the PoC prod service
 | 4d | m1-test-hygiene | scratch-DB isolation for DB tests; residue-tolerant asserts | committed |
 | 5a | m1-stage-machine | multi-stage worker: current_stage, registry, auto-advance chaining | committed |
 | 5 | m1-transcribe-stage | worker stage: audio → verbatim word-timed segments (migration 0007) | committed |
-| 5b | m1-tool-pinning | pin migrate CLI via `go run -tags postgres` (go tool infeasible) | in-progress (mechanism revised) |
-| 5c | m1-stages-config-gate | REGRESSION MITIGATION: PIPELINE_STAGES config, default ingest-only; un-break prod+e2e | in-progress |
-| 5d | m1-e2e-gates-trunk | Playwright e2e gates push-to-main rollout, fail-closed (process fix) | spec-ready |
+| 5b | m1-tool-pinning | pin migrate CLI via `go run -tags postgres` (go tool infeasible) | committed |
+| 5c | m1-stages-config-gate | REGRESSION MITIGATION: PIPELINE_STAGES config, default ingest-only; prod-verified fixed | committed |
+| 5d | m1-e2e-gates-trunk | Playwright e2e gates push-to-main rollout, fail-closed (process fix) | spec-ready (next) |
 | 5e | m1-transcribe-reenable | re-enable transcribe: demo env fix + two-stage e2e + (gated) prod ASR | spec-ready (human-gated) |
 | 6 | m1-diarize-stage | text-anchored LLM diarization, anchor-merge + golden stability tests in make eval | queued |
 | 7 | m1-speaker-naming | naming evidence (intro quote + lower-third crop), speaker_directory merge (migration: speakers) | queued |
