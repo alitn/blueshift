@@ -36,7 +36,17 @@ export default defineConfig({
 
   expect: {
     toHaveScreenshot: {
-      maxDiffPixelRatio: 0.01,
+      // Absolute budget, not a ratio. A ratio of 0.01 on a 1440x900 fullPage
+      // shot permits ~13k changed pixels, so a real token-misuse drift (e.g. a
+      // header recoloured text-text-faint -> text-accent, ~3k px) sails through
+      // the gate it exists to catch. 150 px is sized to reject any visible drift
+      // while tolerating sub-pixel anti-aliasing jitter: comparisons are
+      // same-platform only (baselines are the linux CI set, see
+      // snapshotPathTemplate), so with animations disabled and the caret hidden
+      // an identical build renders near-zero diff; the per-pixel threshold (0.2,
+      // Playwright default, left unset) already discards AA colour noise, and
+      // 150 leaves a ~20x margin below the smallest known real drift.
+      maxDiffPixels: 150,
       animations: 'disabled',
       caret: 'hide'
     }
