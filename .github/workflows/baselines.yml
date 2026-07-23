@@ -1,0 +1,113 @@
+# One-shot generator for the CI-canonical visual baselines.
+#
+# Pixel output differs by OS, so tests/__screenshots__/<project>/ must be
+# generated on the CI (Linux) runner where `make demo` runs — a committed darwin
+# set would false-fail PR CI. This runs the Playwright suite with
+# --update-snapshots against the same demo stack pr.yml's `make e2e` job boots,
+# then uploads the result as an artifact. The Architect downloads and commits it
+# (the standing one-time, Architect-only baseline authorisation). CI never
+# pushes or commits.
+#
+# LOCKSTEP: the runner env below (service container, DEMO_DATABASE_URL, and the
+# setup steps up to "Install Playwright browsers") is copied verbatim from
+# pr.yml's `check` job e2e path. A drift here yields baselines that fail PR CI,
+# so any change to those steps in pr.yml must be mirrored here.
+name: baselines
+
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  baselines:
+    runs-on: ubuntu-latest
+    timeout-minutes: 40
+
+    # LOCKSTEP with pr.yml: same Postgres 18 + pgvector service container. The
+    # demo stack Playwright boots resolves this via DEMO_DATABASE_URL (the
+    # default `postgres` database), before any docker fallback.
+    services:
+      postgres:
+        image: pgvector/pgvector:pg18
+        env:
+          POSTGRES_PASSWORD: postgres
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd "pg_isready -U postgres"
+          --health-interval 5s
+          --health-timeout 5s
+          --health-retries 20
+
+    # LOCKSTEP with pr.yml: only DEMO_DATABASE_URL is needed here — the go
+    # test suite (TEST_DATABASE_URL) is not run by this baseline generator.
+    env:
+      DEMO_DATABASE_URL: postgres://postgres:postgres@localhost:5432/postgres?sslmode=disable
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-go@v5
+        with:
+          go-version: "1.25"
+          cache: true
+
+      # bun is the web package manager + build/test/lint/type-check runtime
+      # (ADR 0001). setup-node stays because Playwright (make e2e) runs under
+      # Node, not bun.
+      - uses: oven-sh/setup-bun@v2
+        with:
+          bun-version: "1.3.14"
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "22"
+
+      # ffmpeg: the worker's media stage (and the demo's sample-episode
+      # generation) shell out to it. migrate CLI: `make demo` applies migrations.
+      - name: Install system tools (ffmpeg, golang-migrate)
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends ffmpeg
+          curl -sSfL https://github.com/golang-migrate/migrate/releases/download/v4.19.1/migrate.linux-amd64.tar.gz \
+            | tar -xz migrate
+          sudo mv migrate /usr/local/bin/migrate
+          migrate -version
+
+      - name: Install web deps
+        run: |
+          if [ -f web/package.json ]; then cd web && bun install --frozen-lockfile; fi
+
+      - name: Install Playwright browsers
+        run: |
+          if [ -f web/package.json ] && [ -d web/tests ]; then cd web && bunx --bun=false playwright install --with-deps chromium; fi
+
+      # Playwright's webServer runs `make demo`, which resolves Postgres from
+      # DEMO_DATABASE_URL (the service container) before any docker fallback.
+      # --update-snapshots writes the canonical Linux baselines into
+      # tests/__screenshots__/<project>/ (writing does not fail the run).
+      - name: Generate visual baselines
+        run: cd web && bunx --bun=false playwright test --update-snapshots
+
+      # The whole point of the run: hand the freshly generated baselines to the
+      # Architect to download and commit. Upload even on failure so a partial
+      # run is still inspectable; an empty artifact is a real defect, so error.
+      - name: Upload visual baselines
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: visual-baselines
+          path: web/tests/__screenshots__/
+          if-no-files-found: error
+          retention-days: 7
+
+      # Mirrors pr.yml's diff upload so a failed generation run is debuggable.
+      - name: Upload Playwright results on failure
+        if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: baselines-test-results
+          path: web/test-results/
+          if-no-files-found: ignore
