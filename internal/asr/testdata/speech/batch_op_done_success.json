@@ -1,0 +1,110 @@
+{
+  "name": "projects/PROJECT_NUM/locations/us-central1/operations/v2-OPERATION_ID",
+  "metadata": {
+    "@type": "type.googleapis.com/google.cloud.speech.v2.OperationMetadata",
+    "createTime": "2026-07-23T10:15:59.182462Z",
+    "updateTime": "2026-07-23T10:16:14.000000Z",
+    "resource": "projects/PROJECT_ID/locations/us-central1/recognizers/_",
+    "method": "google.cloud.speech.v2.Speech.BatchRecognize",
+    "progressPercent": 100
+  },
+  "done": true,
+  "response": {
+    "@type": "type.googleapis.com/google.cloud.speech.v2.BatchRecognizeResponse",
+    "results": {
+      "gs://BUCKET/org_demo/ep_demo/proxies/audio.flac": {
+        "inlineResult": {
+          "transcript": {
+            "results": [
+              {
+                "alternatives": [
+                  {
+                    "transcript": "سلام به برنامه خوش آمدید",
+                    "confidence": 0.90422,
+                    "words": [
+                      {
+                        "word": "سلام",
+                        "startOffset": "0s",
+                        "endOffset": "0.520s",
+                        "confidence": 0
+                      },
+                      {
+                        "word": "به",
+                        "startOffset": "0.600s",
+                        "endOffset": "0.720s",
+                        "confidence": 0
+                      },
+                      {
+                        "word": "برنامه",
+                        "startOffset": "0.760s",
+                        "endOffset": "1.280s",
+                        "confidence": 0
+                      },
+                      {
+                        "word": "خوش",
+                        "startOffset": "1.340s",
+                        "endOffset": "1.600s",
+                        "confidence": 0
+                      },
+                      {
+                        "word": "آمدید",
+                        "startOffset": "1.660s",
+                        "endOffset": "2.200s",
+                        "confidence": 0
+                      }
+                    ]
+                  }
+                ],
+                "resultEndOffset": "2.200s",
+                "languageCode": "fa-IR"
+              },
+              {
+                "alternatives": [
+                  {
+                    "transcript": "خیلی خوش‌حالم که اینجا هستم",
+                    "confidence": 0.91537,
+                    "words": [
+                      {
+                        "word": "خیلی",
+                        "startOffset": "2.600s",
+                        "endOffset": "2.900s",
+                        "confidence": 0
+                      },
+                      {
+                        "word": "خوش‌حالم",
+                        "startOffset": "2.960s",
+                        "endOffset": "3.540s",
+                        "confidence": 0
+                      },
+                      {
+                        "word": "که",
+                        "startOffset": "3.600s",
+                        "endOffset": "3.720s",
+                        "confidence": 0
+                      },
+                      {
+                        "word": "اینجا",
+                        "startOffset": "3.780s",
+                        "endOffset": "4.180s",
+                        "confidence": 0
+                      },
+                      {
+                        "word": "هستم",
+                        "startOffset": "4.240s",
+                        "endOffset": "4.600s",
+                        "confidence": 0
+                      }
+                    ]
+                  }
+                ],
+                "resultEndOffset": "4.600s",
+                "languageCode": "fa-IR"
+              }
+            ]
+          }
+        }
+      }
+    },
+    "totalBilledDuration": "5s"
+  }
+}

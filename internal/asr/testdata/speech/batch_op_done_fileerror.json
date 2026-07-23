@@ -1,0 +1,24 @@
+{
+  "name": "projects/PROJECT_NUM/locations/us-central1/operations/v2-OPERATION_ID",
+  "metadata": {
+    "@type": "type.googleapis.com/google.cloud.speech.v2.OperationMetadata",
+    "createTime": "2026-07-23T10:15:59.182462Z",
+    "updateTime": "2026-07-23T10:16:03.572310Z",
+    "resource": "projects/PROJECT_ID/locations/us-central1/recognizers/_",
+    "method": "google.cloud.speech.v2.Speech.BatchRecognize",
+    "progressPercent": 100
+  },
+  "done": true,
+  "response": {
+    "@type": "type.googleapis.com/google.cloud.speech.v2.BatchRecognizeResponse",
+    "results": {
+      "gs://BUCKET/org_demo/ep_demo/proxies/audio.flac": {
+        "error": {
+          "code": 7,
+          "message": "Service account `service-PROJECT_NUM@gcp-sa-speech.iam.gserviceaccount.com` does not have read permissions to object `gs://BUCKET/org_demo/ep_demo/proxies/audio.flac`."
+        }
+      }
+    },
+    "totalBilledDuration": "0s"
+  }
+}
