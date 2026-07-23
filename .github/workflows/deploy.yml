@@ -155,13 +155,21 @@ jobs:
           if [ "$BOOTSTRAP" = "true" ]; then
             NO_TRAFFIC=""
           fi
+          # PUBLIC_BASE_URL is the fallback upload-session Origin for non-browser
+          # callers of episode create (browsers send their own Origin). Set it to
+          # Cloud Run's deterministic url form, which is also in the bucket CORS
+          # allowlist emitted by deploy/gcloud.sh. --set-env-vars REPLACES the env
+          # on every deploy, so it must be listed alongside the others to survive
+          # each rollout.
+          PROJECT_NUMBER="$(gcloud projects describe "$PROJECT" --format='value(projectNumber)')"
+          PUBLIC_BASE_URL="https://blueshift-app-${PROJECT_NUMBER}.${REGION}.run.app"
           gcloud run deploy blueshift-app \
             --image "$IMAGE:${{ github.sha }}" --region "$REGION" \
             $NO_TRAFFIC --tag candidate \
             --no-invoker-iam-check \
             --service-account "$RUNTIME_SA" \
             --add-cloudsql-instances "$SQL_INSTANCE" \
-            --set-env-vars "ENV=prod,AUTH_MODE=identity,BLOB_MODE=gcs,GCS_BUCKET=$BUCKET,WORKER_TRIGGER=cloudrun,WORKER_JOB_NAME=blueshift-worker,WORKER_JOB_REGION=$REGION,WORKER_JOB_PROJECT=$PROJECT" \
+            --set-env-vars "ENV=prod,AUTH_MODE=identity,BLOB_MODE=gcs,GCS_BUCKET=$BUCKET,WORKER_TRIGGER=cloudrun,WORKER_JOB_NAME=blueshift-worker,WORKER_JOB_REGION=$REGION,WORKER_JOB_PROJECT=$PROJECT,PUBLIC_BASE_URL=$PUBLIC_BASE_URL" \
             --set-secrets "DATABASE_URL=database-url:latest,SESSION_SECRET=session-signing-key:latest,IDP_API_KEY=identity-platform-config:latest" \
             --quiet
           # Same image; ENTRYPOINT overridden to the worker. It never

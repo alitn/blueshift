@@ -120,17 +120,20 @@ fail. `gcloud.sh` applies it idempotently (overwrites the bucket CORS in place):
 
 | Field            | Value                                          |
 | ---------------- | ---------------------------------------------- |
-| `origin`         | the app's Cloud Run URL (resolved below)       |
+| `origin`         | **both** Cloud Run url forms (resolved below)  |
 | `method`         | `PUT`, `POST`, `GET`, `HEAD`                    |
 | `responseHeader` | `Content-Type`, `x-goog-resumable`, `Location` |
 | `maxAgeSeconds`  | `3600`                                          |
 
-The origin is resolved at provisioning time: `gcloud.sh` uses the live
-`blueshift-app` service URL if it already exists, otherwise Cloud Run's
-deterministic URL `https://blueshift-app-<project_number>.<region>.run.app`
-(so CORS can be set before the first deploy; a later re-run picks up the live URL
-verbatim). A future custom domain is a one-line addition to the `CORS_ORIGINS`
-array in `gcloud.sh`.
+A Cloud Run service answers on **two** url forms simultaneously — the
+deterministic `https://blueshift-app-<project_number>.<region>.run.app` and the
+legacy hash form that `status.url` reports — and because a browser may be on
+either while GCS CORS matches the `Origin` string exactly (no wildcards), **both
+must be in the origin list** or the upload preflight is blocked from whichever
+form the human is browsing. `gcloud.sh` therefore emits both: the deterministic
+form always (so CORS can be set before the first deploy) plus the `status.url`
+hash form once the service exists, de-duplicated when they coincide. A future
+custom domain is a one-line addition to the `CORS_ORIGINS` array in `gcloud.sh`.
 
 ## Cloud Run service — `blueshift-app`
 
@@ -146,6 +149,7 @@ ENTRYPOINT `/app/app`. Serves the embedded SPA + `/api`, `/healthz`, `/readyz`.
 | `WORKER_JOB_PROJECT`| `<project>`                        | `--set-env-vars`             |
 | `BLOB_MODE`         | `gcs`                              | `--set-env-vars`             |
 | `GCS_BUCKET`        | `<project>-media`                  | `--set-env-vars`             |
+| `PUBLIC_BASE_URL`   | deterministic `run.app` url        | `--set-env-vars`             |
 | `PORT`              | injected by Cloud Run              | platform (config reads it)   |
 | `DATABASE_URL`      | secret `database-url`              | `--set-secrets`              |
 | `SESSION_SECRET`    | secret `session-signing-key`       | `--set-secrets`              |
@@ -157,6 +161,13 @@ Also: `--add-cloudsql-instances <project>:<region>:blueshift-pg`,
 `WORKER_TRIGGER=cloudrun` makes the app start the worker Job (name/region/project
 above) instead of spawning a local process; those three vars are required by
 `config` whenever the trigger is `cloudrun`.
+
+`PUBLIC_BASE_URL` is set to Cloud Run's deterministic url
+(`https://blueshift-app-<project_number>.<region>.run.app`, which is also in the
+bucket CORS allowlist) and is only the fallback upload-session `Origin` for
+non-browser callers of episode create — browsers send their own `Origin` and
+never use it. It is optional in `config`, so only the service carries it, not the
+worker Job.
 
 ## Cloud Run Job — `blueshift-worker`
 

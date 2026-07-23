@@ -91,17 +91,28 @@ gcloud storage buckets update "$BUCKET" --lifecycle-file=/tmp/blueshift-lifecycl
 # browser from the same-origin policy. Without CORS the resumable POST/PUT is
 # blocked at the preflight and uploads fail in the browser.
 #
-# Origin is the app's Cloud Run URL. Before the first deploy the service does not
-# exist yet, so fall back to Cloud Run's deterministic URL
-# (https://<service>-<project_number>.<region>.run.app); once the service is
-# deployed a re-run of this script picks up the live URL verbatim. A future
-# custom domain is a one-line addition to CORS_ORIGINS below. Re-applying the
-# same policy is idempotent (it overwrites the bucket CORS in place).
+# A Cloud Run service answers on BOTH url forms at once: the deterministic
+# https://<service>-<project_number>.<region>.run.app AND the legacy hash form
+# https://<service>-<hash>-<regioncode>.a.run.app that status.url reports. A
+# browser may be on EITHER, and GCS CORS matches the Origin string exactly (no
+# wildcards), so BOTH must be in the allowlist — omitting the form the human is
+# browsing blocks the resumable-upload preflight (this bit AC1 twice). So emit
+# both: the deterministic form always (it needs no live service, so CORS can be
+# set before the first deploy) plus the status.url hash form once the service
+# exists; a later re-run adds it verbatim. De-duplicate when the two coincide.
+# A future custom domain is a one-line addition to CORS_ORIGINS below. Re-applying
+# the same policy is idempotent (it overwrites the bucket CORS in place).
 PROJECT_NUMBER="$(gcloud projects describe "$PROJECT" --format 'value(projectNumber)')"
-APP_URL="$(gcloud run services describe blueshift-app --region "$REGION" \
+DETERMINISTIC_URL="https://blueshift-app-${PROJECT_NUMBER}.${REGION}.run.app"
+STATUS_URL="$(gcloud run services describe blueshift-app --region "$REGION" \
   --format 'value(status.url)' 2>/dev/null || true)"
-APP_URL="${APP_URL:-https://blueshift-app-${PROJECT_NUMBER}.${REGION}.run.app}"
-CORS_ORIGINS=("$APP_URL")
+CORS_ORIGINS=()
+if [ -n "$STATUS_URL" ]; then
+  CORS_ORIGINS+=("$STATUS_URL")
+fi
+if [ "$STATUS_URL" != "$DETERMINISTIC_URL" ]; then
+  CORS_ORIGINS+=("$DETERMINISTIC_URL")
+fi
 # Future custom domain: add one line, e.g.
 #   CORS_ORIGINS+=("https://studio.example.com")
 cors_origins_json=""
@@ -330,7 +341,10 @@ echo "  stores the transcript in LOCAL Postgres, and deletes the temp object."
 # watch -> 100%); there is no separate promote and no cross-project image copy.
 # Env/secret wiring per service is in deploy/README.md and must match the secret
 # ids created above (database-url / session-signing-key / identity-platform-config)
-# and $RUNTIME as the service account.
+# and $RUNTIME as the service account. deploy.yml also sets PUBLIC_BASE_URL on the
+# service to Cloud Run's deterministic url (the same deterministic form emitted
+# into the bucket CORS above) — the fallback upload Origin for non-browser callers
+# of episode create. The service env is set by deploy.yml, not here.
 #
 # Migrations: there is NO separate migrate binary or migrate Job. deploy.yml
 # runs `migrate up` from the CI runner against Cloud SQL through the Cloud SQL
