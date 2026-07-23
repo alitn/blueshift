@@ -30,7 +30,13 @@ spec file `tasks/<slug>.md` = one Implementer dispatch = one Reviewer verdict = 
 | m0-dev-watch | Go auto-restart in make dev | committed | tasks/m0-dev-watch.md |
 | m0-deploy-bootstrap | live-rollout fixes (5 findings, 3 commits) | committed | tasks/m0-deploy-bootstrap.md |
 | m0-baselines-ci | workflow_dispatch baselines generator | committed | tasks/m0-baselines-ci.md |
-| m0-gate-proofs | Deliberate-failure proofs (AC 2/3/4/6) | spec-ready | tasks/m0-gate-proofs.md |
+| m0-ci-lint-pin | pin golangci-lint installer | committed | tasks/m0-ci-lint-pin.md |
+| m0-store-org-noop | unknown org = no-op in finalizers | committed | tasks/m0-store-org-noop.md |
+| m0-sveltekit-sync | explicit sync before svelte-check | committed | tasks/m0-sveltekit-sync.md |
+| m0-visual-gate-tighten | 150px budget + 0.05 threshold | committed | tasks/m0-visual-gate-tighten.md |
+| m0-ci-speed | parallel jobs, caching, docs skip | committed | tasks/m0-ci-speed.md |
+| m0-deploy-triggers | deploy on runtime changes only, 5m watch | committed | tasks/m0-deploy-triggers.md |
+| m0-gate-proofs | Deliberate-failure proofs (AC 2/3/4/6) | done (evidence in log) | tasks/m0-gate-proofs.md |
 
 ## Backlog
 
@@ -115,3 +121,22 @@ M1 decomposition happens after the M0 gate (see docs/SPEC-M1.md §Task decomposi
   Rollout #4 green end to end (no-traffic → migrate → smoke → 10% → watch → 100%);
   identity-mode sign-in verified against prod; demo user mapped approver in Cloud SQL.
   m0-baselines-ci committed. Remaining: baselines commit, gate proofs, AC1 prod demo.
+- 2026-07-23 — M0 ACCEPTANCE RECORD (all six criteria):
+  AC1 prod upload→Ready: PENDING human gate demo (app live, sign-in verified, pipeline green).
+  AC2 red PR cannot merge: PR #1 held mergeStateStatus=BLOCKED on failing required check
+  through 7 runs (human accepted generic-red evidence in lieu of a dedicated red-test PR).
+  AC3 drifted screenshot blocks merge: PR #1 run 29977290396 — e2e FAILED at toHaveScreenshot,
+  45,070 px differing (budget 150), merge BLOCKED, diff artifact uploaded. Required TWO gate
+  calibrations found by the proof itself: ratio→absolute budget, pixel threshold 0.2→0.05
+  (dark-theme deltas sat under pixelmatch default — VG-1).
+  AC4 red commit impossible: both hooks blocked a seeded failing test with verbatim red
+  make check output (PreToolUse gate + .githooks/pre-commit exit 2); reverted clean.
+  AC5 offline demo + e2e upload-to-Ready: CI runs the full Playwright flow green on the
+  demo stack (baselines run + every PR e2e job).
+  AC6 vendor/hex gates fire: seeded 'gemini' string and raw hex each failed make check at
+  the respective gate; reverted clean.
+  First full-CI hardening (all found by gates, fixed through the loop): lint-installer
+  checksum pin, cross-org store ErrNoRows leak, bun-blocked svelte-kit sync, visual-gate
+  calibration. CI wall-clock: ~13m (early, incl. deploys-on-every-push) → 2m54s measured
+  (parallel check/e2e + caches). Deploys now fire only on runtime paths, 5m tunable watch,
+  serialized. Ruleset requires check + e2e. PR #1 closed, proof branches deleted.
