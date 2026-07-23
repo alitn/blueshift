@@ -1,7 +1,8 @@
 # Deploy pipeline (§7): push to main -> build ONE image (app+worker) -> deploy the
 # single prod project with --no-traffic (tag: candidate) -> additive migrations
 # (Cloud SQL Auth Proxy) -> candidate-tag smoke (readyz//) -> 10% traffic
-# -> scripted 10-min watch (candidate-tag url + Error Reporting) -> 100%. Main
+# -> scripted watch (WATCH_MINUTES, default 5m; candidate-tag url + Error
+# Reporting) -> 100%. Main
 # auto-deploys THROUGH the whole progressive rollout; there is no manual promote.
 # Rollback = re-point traffic to the prior revision (workflow_dispatch input
 # below, or the command printed at the end of a run).
@@ -30,6 +31,29 @@ name: deploy
 on:
   push:
     branches: [main]
+    # Only run the ~13-min progressive rollout when the shipped runtime can
+    # actually change. Docs/tasks/design, *.md, and the PR-only workflow never
+    # alter the image, so pushes touching only those skip deploy entirely.
+    # web/tests/** is excluded on purpose: it is not part of the built artifact.
+    # Dockerfile stage 1 runs `vite build` from web/ src + config into web/build,
+    # and the Playwright specs, helpers, and committed baselines under web/tests/
+    # are outside that entry graph (vite roots at src/, vitest globs src/**);
+    # stage 2 embeds only web/build into internal/webembed/dist and the Go
+    # binaries never reference web/tests; stage 3 ships only the two binaries.
+    # So a test-only change cannot alter the image bytes. workflow_dispatch below
+    # stays as the manual override for any case this filter misses.
+    paths:
+      - 'cmd/**'
+      - 'internal/**'
+      - 'migrations/**'
+      - 'web/**'
+      - '!web/tests/**'
+      - 'go.mod'
+      - 'go.sum'
+      - 'Dockerfile'
+      - '.dockerignore'
+      - 'deploy/**'
+      - '.github/workflows/deploy.yml'
   workflow_dispatch:
     inputs:
       rollback_to_revision:
@@ -50,6 +74,14 @@ jobs:
     if: ${{ vars.GCP_PROJECT != '' && (github.event_name == 'push' || (github.event_name == 'workflow_dispatch' && inputs.rollback_to_revision == '')) }}
     runs-on: ubuntu-latest
     timeout-minutes: 45
+    # Serialize rollouts: stacked pushes to main queue instead of racing the
+    # traffic-split steps against each other. cancel-in-progress: false so a
+    # running rollout is never cancelled mid-flight. Scoped to this job (not the
+    # workflow) so the manual `rollback` escape hatch is never made to wait
+    # behind an in-progress rollout.
+    concurrency:
+      group: deploy-main
+      cancel-in-progress: false
     env:
       REGION: ${{ vars.GCP_REGION || 'us-central1' }}
       PROJECT: ${{ vars.GCP_PROJECT }}
@@ -57,6 +89,10 @@ jobs:
       RUNTIME_SA: app-runtime@${{ vars.GCP_PROJECT }}.iam.gserviceaccount.com
       SQL_INSTANCE: ${{ vars.GCP_PROJECT }}:${{ vars.GCP_REGION || 'us-central1' }}:blueshift-pg
       BUCKET: ${{ vars.GCP_PROJECT }}-media
+      # Candidate watch length in minutes (one /readyz probe per 30s). Default 5
+      # is enough for the traffic-free PoC; production scale can set 10+ via the
+      # repo variable with no code change.
+      WATCH_MINUTES: ${{ vars.WATCH_MINUTES || '5' }}
     steps:
       - uses: actions/checkout@v4
 
@@ -211,7 +247,7 @@ jobs:
           gcloud run services update-traffic blueshift-app \
             --region "$REGION" --to-tags candidate=10 --quiet
 
-      - name: Watch 10 minutes (readyz + Error Reporting)
+      - name: Watch candidate (WATCH_MINUTES; readyz + Error Reporting)
         if: ${{ success() && steps.detect.outputs.bootstrap == 'false' }}
         run: |
           set -euo pipefail
@@ -220,13 +256,17 @@ jobs:
           # candidate pass. The tag url always routes to the candidate revision.
           # /readyz (not /healthz): Google Frontend intercepts /healthz on
           # *.run.app edge urls; /readyz reaches the app and also verifies the DB.
+          #
+          # Watch length is WATCH_MINUTES (vars.WATCH_MINUTES, default 5). One
+          # probe every 30s, so the loop count is WATCH_MINUTES * 2.
+          ITERS=$(( WATCH_MINUTES * 2 ))
           URL=$(gcloud run services describe blueshift-app --region "$REGION" --format=json \
             | jq -r '.status.traffic[] | select(.tag=="candidate") | .url' | head -n1)
           [ -n "$URL" ] || { echo "::error::could not resolve candidate tag url"; exit 1; }
-          echo "watching candidate: $URL"
-          for i in $(seq 1 20); do
+          echo "watching candidate for ${WATCH_MINUTES}m ($ITERS probes @30s): $URL"
+          for i in $(seq 1 "$ITERS"); do
             code=$(curl -s -o /dev/null -w '%{http_code}' "$URL/readyz")
-            echo "[$i/20] readyz=$code"
+            echo "[$i/$ITERS] readyz=$code"
             [ "$code" = "200" ] || { echo "readyz failed — leaving traffic at 10%, rollback:"; \
               echo "  gcloud run services update-traffic blueshift-app --region $REGION --to-tags candidate=0"; exit 1; }
             # Honest reporting: on query failure, say so — never silently print 0.

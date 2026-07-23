@@ -10,8 +10,8 @@
 #
 # LOCKSTEP: the runner env below (service container, DEMO_DATABASE_URL, and the
 # setup steps up to "Install Playwright browsers") is copied verbatim from
-# pr.yml's `check` job e2e path. A drift here yields baselines that fail PR CI,
-# so any change to those steps in pr.yml must be mirrored here.
+# pr.yml's `e2e` job. A drift here yields baselines that fail PR CI, so any
+# change to those steps in pr.yml must be mirrored here.
 name: baselines
 
 on:
