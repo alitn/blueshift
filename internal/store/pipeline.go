@@ -50,9 +50,14 @@ func (s *Store) Claim(ctx context.Context, episodePublicID string) (pipeline.Epi
 // 'ready'. Org-scoped and gated on 'processing'; a mismatch (wrong org, already
 // finalized) is a no-op, so a lost race never corrupts another run or tenant.
 func (s *Store) MarkReady(ctx context.Context, orgID, episodePublicID, proxyObjectKey string, durationMs int64) error {
-	orgInternal, epUUID, err := s.resolveOrgAndEpisode(ctx, orgID, episodePublicID)
+	orgInternal, epUUID, ok, err := s.resolveOrgAndEpisode(ctx, orgID, episodePublicID)
 	if err != nil {
 		return err
+	}
+	if !ok {
+		// Unknown/foreign org: it names no tenant we can finalize, so there is
+		// nothing to write. A clean no-op, matching the lost-race contract.
+		return nil
 	}
 	_, err = s.MarkEpisodeReady(ctx, db.MarkEpisodeReadyParams{
 		PublicID:       pgUUID(epUUID),
@@ -72,9 +77,14 @@ func (s *Store) MarkReady(ctx context.Context, orgID, episodePublicID, proxyObje
 // MarkFailed finalizes an exhausted run: neutral error_id, status 'failed'.
 // Same org-scoping and 'processing' gate as MarkReady.
 func (s *Store) MarkFailed(ctx context.Context, orgID, episodePublicID, errorID string) error {
-	orgInternal, epUUID, err := s.resolveOrgAndEpisode(ctx, orgID, episodePublicID)
+	orgInternal, epUUID, ok, err := s.resolveOrgAndEpisode(ctx, orgID, episodePublicID)
 	if err != nil {
 		return err
+	}
+	if !ok {
+		// Unknown/foreign org: nothing to finalize. A clean no-op, matching the
+		// lost-race contract.
+		return nil
 	}
 	_, err = s.MarkEpisodeFailed(ctx, db.MarkEpisodeFailedParams{
 		PublicID: pgUUID(epUUID),
@@ -91,19 +101,28 @@ func (s *Store) MarkFailed(ctx context.Context, orgID, episodePublicID, errorID 
 }
 
 // resolveOrgAndEpisode decodes the encoded public ids the pipeline carries back
-// into the internal org id and episode uuid the finalizer queries need.
-func (s *Store) resolveOrgAndEpisode(ctx context.Context, orgID, episodePublicID string) (int64, [16]byte, error) {
+// into the internal org id and episode uuid the finalizer queries need. ok is
+// false (with a nil error) when the org public id, though well-formed, names no
+// org: an unknown or foreign tenant is not a fault but a no-op, so a lost race
+// or a cross-org id never errors the run — this is the same not-found semantic
+// the rest of the package uses, and pgx.ErrNoRows must not leak past it. A
+// malformed id remains a fault: the pipeline only ever round-trips ids it minted
+// during Claim, so a bad one is a real bug, not untrusted input.
+func (s *Store) resolveOrgAndEpisode(ctx context.Context, orgID, episodePublicID string) (int64, [16]byte, bool, error) {
 	orgUUID, err := ids.Decode(ids.Org, orgID)
 	if err != nil {
-		return 0, [16]byte{}, fmt.Errorf("store: bad org id: %w", err)
+		return 0, [16]byte{}, false, fmt.Errorf("store: bad org id: %w", err)
 	}
 	org, err := s.GetOrgByPublicID(ctx, pgUUID(orgUUID))
+	if errors.Is(err, pgx.ErrNoRows) {
+		return 0, [16]byte{}, false, nil
+	}
 	if err != nil {
-		return 0, [16]byte{}, fmt.Errorf("store: resolve org: %w", err)
+		return 0, [16]byte{}, false, fmt.Errorf("store: resolve org: %w", err)
 	}
 	epUUID, err := ids.Decode(ids.Episode, episodePublicID)
 	if err != nil {
-		return 0, [16]byte{}, fmt.Errorf("store: bad episode id: %w", err)
+		return 0, [16]byte{}, false, fmt.Errorf("store: bad episode id: %w", err)
 	}
-	return org.ID, epUUID, nil
+	return org.ID, epUUID, true, nil
 }

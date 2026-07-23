@@ -98,6 +98,32 @@ func TestPipelineClaimFinalize(t *testing.T) {
 	if mid.Status != "processing" {
 		t.Errorf("ep2 status after cross-org MarkFailed = %q, want processing (untouched)", mid.Status)
 	}
+
+	// --- unknown-org MarkReady is a no-op too (same resolve-org path) ---
+	// A well-formed org id that names no org must not surface pgx.ErrNoRows as an
+	// error; it finalizes nothing. This is the MarkReady twin of the MarkFailed
+	// cross-org case above, and the exact regression the first full CI run hit.
+	if err := st.MarkReady(ctx, otherOrg, ep2Encoded, "k/proxies/nope.mp4", 999); err != nil {
+		t.Fatalf("MarkReady unknown-org returned error: %v", err)
+	}
+
+	// --- unknown-episode finalize is a no-op, never an error ---
+	// A well-formed episode id (owning org) that matches no row must no-op via
+	// the finalizer's own ErrNoRows guard, leaving ep2 untouched.
+	unknownEp := ids.Encode(ids.Episode, [16]byte{9, 9, 9, 9, 9, 9, 9, 9, 9, 9, 9, 9, 9, 9, 9, 9})
+	if err := st.MarkReady(ctx, orgEncoded, unknownEp, "k/proxies/ghost.mp4", 12); err != nil {
+		t.Fatalf("MarkReady unknown-episode returned error: %v", err)
+	}
+	if err := st.MarkFailed(ctx, orgEncoded, unknownEp, "feedfacefeedface"); err != nil {
+		t.Fatalf("MarkFailed unknown-episode returned error: %v", err)
+	}
+
+	// None of the no-op finalizers above may have touched ep2.
+	still, _ := st.GetEpisodeByPublicID(ctx, db.GetEpisodeByPublicIDParams{PublicID: ep2.PublicID, OrgID: orgID})
+	if still.Status != "processing" {
+		t.Errorf("ep2 status after unknown-target finalizers = %q, want processing (untouched)", still.Status)
+	}
+
 	// The owning org finalizes it.
 	if err := st.MarkFailed(ctx, orgEncoded, ep2Encoded, "deadbeefdeadbeef"); err != nil {
 		t.Fatalf("MarkFailed: %v", err)
