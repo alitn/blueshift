@@ -283,6 +283,28 @@ cited patterns in its spec. "Staging" in SPEC-M1's gate = the PoC prod service
   m1-test-hygiene specced (per-run scratch DB + tolerant asserts). Human directives:
   probe-first ingest fastpath (remux compatible masters in seconds; veryfast preset for
   transcodes) specced as m1-ingest-fastpath.
+- 2026-07-24 (morning) — **Transcript slice shipped; real-Chirp activation ready.**
+  segments-api (4feb2a8) + transcript-ui (12c3dae; 1 cycle — bg-2 canvas ruling) + episode
+  baselines (21cddd0) deployed; view live in prod + :5173 (/episode/<id> via Library row).
+  m1-transcribe-reenable committed (a6e8851; APPROVE): the SECOND implementer (first died
+  at spend limit) found the TRUE root cause of the original regression's e2e failure — not
+  env propagation (Architect's earlier hypothesis, now corrected): ExecTrigger's io.Discard
+  stdio = parent-owned pipes; short-lived ingest parent exits → detached transcribe child
+  takes fatal SIGPIPE pre-claim (proven rc=-13). Fix: nil Stdout/Stderr/Env (null-device
+  stdio, inherited env), pinned by test. Prod worker env verified key-exact vs config
+  (ASR_ENGINE_MODE=speech, chirp_2, fa=fa-IR, PIPELINE_STAGES=ingest,transcribe, cloudrun
+  self-trigger). Cost-safety proven in-chain (1 attempt; re-drive bills zero).
+  OPERATIONAL: Speech service-agent bucket grant was documented in RUNBOOK but NOT live —
+  Architect granted + verified roles/storage.objectViewer for the speech service agent
+  (verify-don't-assume vindicated). Human budget alert set 2026-07-24.
+  **chirp_3 re-verified on human challenge (receipts):** fa-IR transcription = Preview ✓
+  exists, BUT the feature table marks word-level timestamps "not supported" for chirp_3,
+  and the diarization language list (zh, de, en-GB/IN/US, es-ES/US, fr-CA/FR, hi, it, ja,
+  ko, pt-BR) does NOT include Persian. chirp_2 + text-anchored LLM diarize (~1–2¢/episode)
+  stands on facts; engine swappable behind /internal/asr if chirp_3+ gains fa timestamps
+  +diarization. BACKLOG: no reprocess path exists for old READY episodes (claim gate
+  correctly refuses ready; RUNBOOK SQL reset needs DB access) — small m1-reprocess-api
+  task later; fresh uploads flow through the full chain automatically.
 - 2026-07-23 (night) — **REGRESSION found + owned.** The transcribe stage (c641226) was
   wired into the worker auto-advance chain AND deployed, but was not deployment-ready:
   (1) the prod worker Job has NO ASR env, so with ENV=prod (ASRMode default `speech`) the
