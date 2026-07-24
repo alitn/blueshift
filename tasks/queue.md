@@ -107,6 +107,7 @@ cited patterns in its spec. "Staging" in SPEC-M1's gate = the PoC prod service
 | 12e | m1-diarize-scale | range-turn diarize contract (fixes 249-segment prod failure); scale fixture | in-review |
 | 12f | m1-reprocess-api | POST /reprocess ready|failed→uploaded; skips bill zero; Library action | spec-ready |
 | 12g | m1-youtube-ingest | YouTube URL ingestion via youtubedr (ADR 0003) | spec-ready |
+| 12h | m1-llm-token-budget | thinking eats maxOutputTokens → truncation (probe-receipted); caps 32k + distinct truncation error | committed 68c0a81 |
 | 7 | m1-speaker-naming | DEFERRED behind moments (not a moments prereq): evidence-gated naming, lower-third frames | queued |
 | 8 | m1-shots-stage | DEFERRED behind moments (render-time concern): scdet shots + 9:16 bboxes | queued |
 | 13 | m1-editor-trim | sentence-selection trim on segment/word data; J/K/L transport | queued |
@@ -141,6 +142,23 @@ cited patterns in its spec. "Staging" in SPEC-M1's gate = the PoC prod service
   LLM queries), instant latency, timeline heat-strips/browse affordances — NOT needed at
   single-episode scale (free-prompt covers that, shipped as m1-prompt-moments). (5) Vocal
   emotion needs the future audio-LLM pass. Confirm with the human before speccing.
+- m1-diagnostics-workflow (Architect-proposed 2026-07-24, after the human challenged the
+  local-gcloud dependency): a workflow_dispatch GitHub Action running under the CI WIF
+  identity that fetches recent worker/app logs (and optionally llm_calls triage rows) for
+  a given episode and uploads them as a run artifact — Architect triggers via `gh`,
+  removing the dependence on the human's 24h-expiring local gcloud session for failure
+  diagnosis. Prod operation never depended on local auth (CI deploys use WIF; pipeline
+  uses service accounts) — this closes the last human-in-the-loop diagnostic gap.
+- llm cost undercount (reviewer-observed 2026-07-24, pre-existing): gemini
+  usage.outputTokens = candidatesTokenCount only, omitting thoughtsTokenCount — audit
+  cost_cents undercounts billed thinking (bounded by retry/attempt caps regardless).
+  Fix = add thoughts to output count; small, additive to m1-llm-token-budget's area.
+- llm_calls truncation status (implementer-raised 2026-07-24): truncated attempts audit
+  as status='invalid' (sentinel + WARN log carry the distinction); optional additive
+  CHECK extension to a first-class 'truncated' status for SQL triage — one-liner if wanted.
+- thinkingLevel pin (implementer-raised 2026-07-24): optionally pin thinking to MEDIUM
+  (today's default) to be immune to provider default drift; needs live re-verification
+  post-deploy; deliberately NOT wired in m1-llm-token-budget.
 - m1-deleted-gc (human-raised 2026-07-24): soft-deleted episodes keep their GCS objects —
   storage accumulates invisibly. Two-phase design: soft delete (m1-episode-delete, done
   first — reversible, audit-preserving) + a THIRD sweeper gate purging the storage prefix
@@ -405,3 +423,17 @@ cited patterns in its spec. "Staging" in SPEC-M1's gate = the PoC prod service
   (8cc7318+6c3e05b+04a97c3+architect) → one deploy → RETRY the failed full episode
   (transcribe skips free) → moments on the 44-min. Human action pending: gcloud auth
   login (24h org expiry; Architect log reads blocked, deploys unaffected).
+- 2026-07-24 (later — NEWEST) — **Diarize failure #2 root-caused by live probes; fixed.**
+  Post-deploy retry of the 44-min episode failed again at diarize (3 stage attempts,
+  6/6 engine calls "failed validation", 12¢, attempts now 7/10). Provenance API +
+  Cloud Logging narrowed it; three wire-identical Architect probes settled it:
+  finishReason MAX_TOKENS on 2/3 — THINKING tokens (5.6–7.9k at 249 segments) count
+  against maxOutputTokens=8192, truncating the answer JSON; the range contract itself
+  is fine (probe 1: valid 27-turn tiling, S1–S3, 1,103 answer tokens). Fix
+  m1-llm-token-budget (68c0a81, APPROVE first pass): caps 32k in diarize/moments/
+  compose, distinct neutral truncation error keyed on the provider finish signal
+  (short-circuits before decode), thinkingLevel researched + documented (not wired —
+  Gemini-3 coarse levels only; default MEDIUM is what probes ran), Temperature:0
+  omitempty lie removed. Reviewer observation backlogged: audit cost omits
+  thoughtsTokenCount (undercount, pre-existing). Next: push → deploy → FINAL retry
+  (one full stage cycle left before the attempt cap).
