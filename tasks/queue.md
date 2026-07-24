@@ -10,17 +10,19 @@
 > **STRATEGY PIVOT (human-directed 2026-07-23):** build in **verifiable vertical slices**,
 > not backend-first-then-UI — each backend capability ships its API+UI increment so the
 > human verifies REAL data in the live UI (no fake). Real Chirp IS the plan (human wants
-> real transcripts; ~$0.96/hr standard batch). Two HARD prerequisites before any real
-> billable engine goes live: **(A) `m1-cost-safety`** (idempotent billable calls, per-episode
-> attempt cap, kill switch, GCP budget+quota backstops) and **(B) GCP billing budget alert**
-> — Architect CANNOT set the budget (ali@3tn.co lacks billing-admin on
-> billingAccounts/01969C-DCED4A-DCAE6E); **HUMAN must create it in the console** or grant
-> billing admin.
-> **NEXT ORDER:** finish in-flight `m1-diarize-stage` (backend, parked) → `m1-cost-safety`
-> → then the **transcript slice** with REAL Chirp: reenable transcribe (real engine, prod
-> ASR config) + `m1-segments-api` + `m1-transcript-ui`, human-verifies a real transcript in
-> the UI → then diarize speaker-labels UI → moments → editor → render, each visible.
-> To resume: read this block + the `## Log` (newest at bottom). HEAD at/after `a2d0c28`.
+> real transcripts; ~$0.96/hr standard batch). Both HARD prerequisites before real billable
+> engine goes live are now MET: **(A) `m1-cost-safety`** committed (4d4aa6d) ✓; **(B) GCP
+> billing budget alert** SET by the human 2026-07-24 ✓. (Architect TODO: add project-level
+> Speech/LLM quota caps as a second backstop — nice-to-have, not blocking.) **Real Chirp is
+> UNBLOCKED.**
+> **NEXT ORDER (updated 2026-07-24):** committed so far: diarize (f3fe3aa), cost-safety
+> (4d4aa6d), `m1-segments-api` (4feb2a8, unpushed — batch w/ transcript-ui). IN FLIGHT:
+> `m1-transcript-ui` (the transcript view). THEN: batch-push segments-api+transcript-ui (1
+> deploy) → `m1-transcribe-reenable` = REAL Chirp activation (wire SpeechEngine in cmd/worker,
+> prod worker ASR env in deploy.yml, fix demo auto-advance env, add `transcribe` to
+> PIPELINE_STAGES, two-stage e2e) → human uploads/reprocesses → sees a REAL transcript in the
+> UI. THEN diarize speaker-labels UI → moments → editor → render, each visible.
+> To resume: read this block + the `## Log` (newest at bottom). HEAD at/after `4feb2a8`.
 
 Single source of truth for task state. Only the Architect edits this file. One task = one
 spec file `tasks/<slug>.md` = one Implementer dispatch = one Reviewer verdict = one commit.
