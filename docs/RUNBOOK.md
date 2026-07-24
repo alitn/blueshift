@@ -81,6 +81,25 @@ the worker transcribe stage; the parameters and their operational defaults are):
 stage (later task) cuts the audio into ≤15-min chunks and merges the per-chunk transcripts
 with `asr.StitchTranscripts`; the engine itself transcribes one object per call.
 
+### Deliberate reprocess of an episode (billable — read first)
+
+A capped or already-processed episode is skipped by design: the transcribe/diarize
+stages call the paid engine only when their output is missing, and a per-episode
+`process_attempts` counter (`MAX_PROCESS_ATTEMPTS`, default 5) hard-stops runaway
+re-drives before any paid call. To force a fresh billable run of one episode:
+
+```
+# 1. reset the counter for that episode
+UPDATE episodes SET process_attempts = 0 WHERE public_id = '<uuid>';
+# 2. run a single Job execution with reprocess on (per-execution only — NEVER a standing default):
+PIPELINE_REPROCESS=true worker <episode_public_id> <stage>
+```
+
+Never set `PIPELINE_REPROCESS` as a standing worker env — it would re-bill on every
+retry/auto-advance. In dev the exec trigger inherits the parent env, so a reprocess
+run cascades to auto-advanced child stages (harmless — the attempt cap still bounds
+cost); the prod cloudrun trigger uses per-execution env and does not cascade.
+
 ### Nightly live smoke
 
 `internal/asr/speech_live_test.go` is a real end-to-end call, compiled only under

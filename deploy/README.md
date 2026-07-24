@@ -183,9 +183,34 @@ Same image, `--command /app/worker`, invoked per stage as
 | `DATABASE_URL`   | secret `database-url`             | `--set-secrets`     |
 | `SESSION_SECRET` | secret `session-signing-key`      | `--set-secrets`     |
 | `IDP_API_KEY`    | secret `identity-platform-config` | `--set-secrets`     |
+| `PIPELINE_STAGES`      | `ingest` (kill switch — omit billable stages until human-gated) | `--set-env-vars` |
+| `MAX_PROCESS_ATTEMPTS` | `5` (per-episode billable-attempt ceiling)                      | `--set-env-vars` |
+| `PIPELINE_REPROCESS`   | unset / `false` (deliberate reprocess only, per-execution)      | `--set-env-vars` |
 
 Also: `--set-cloudsql-instances`, `--service-account app-runtime`,
-`--max-retries 2 --task-timeout 3600`.
+`--cpu 4 --memory 2Gi --max-retries 2 --task-timeout 4h` (sized for a real
+transcode with a per-attempt deadline; see the pipeline-robustness change).
+
+**Cost safety (billable stages).** `PIPELINE_STAGES=ingest` is the kill switch —
+the worker constructs no ASR/LLM engine and makes no paid call while the active
+chain excludes `transcribe`/`diarize`, and switching back to `ingest` needs no
+deploy. Billable calls are idempotent (a plain retry/re-drive re-bills nothing;
+force a fresh run only with `PIPELINE_REPROCESS=true` on a single execution) and
+bounded per episode by `MAX_PROCESS_ATTEMPTS`. GCP-level backstops below bound cost
+even if the code guards fail — they MUST be live before a billable stage is added
+to `PIPELINE_STAGES`:
+
+```
+# Billing budget + alert — HUMAN action (ali@3tn.co lacks billing-admin on the
+# billing account, so the Architect cannot create this; do it in Console →
+# Billing → Budgets & alerts, or grant billing admin then run):
+gcloud billing budgets create --billing-account=<BILLING_ACCOUNT> \
+  --display-name="blueshift-poc" --budget-amount=50USD \
+  --threshold-rule=percent=0.5 --threshold-rule=percent=0.9 --threshold-rule=percent=1.0
+# Speech-to-Text v2 quota cap (Console → IAM & Admin → Quotas → Cloud Speech-to-Text
+#   API): cap batchRecognize requests per minute + per day to PoC volume.
+# Vertex AI (LLM) quota cap: cap generate-content requests per minute to a low PoC ceiling.
+```
 
 The worker never authenticates, but `config.Load()` validates the auth env in a
 prod-like `ENV` (identity mode requires `SESSION_SECRET` and `IDP_API_KEY`), so
