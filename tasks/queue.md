@@ -22,13 +22,14 @@
 > KNOWN GAP: provider returned the 4-min audio as ONE segment → next task is
 > deterministic pause-based segmentation (word-gap splits; ASR-only timestamps) BEFORE
 > diarize activation (diarize needs real segment boundaries).
-> **NEXT ORDER (updated 2026-07-24):** committed so far: diarize (f3fe3aa), cost-safety
-> (4d4aa6d), `m1-segments-api` (4feb2a8, unpushed — batch w/ transcript-ui). IN FLIGHT:
-> `m1-transcript-ui` (the transcript view). THEN: batch-push segments-api+transcript-ui (1
-> deploy) → `m1-transcribe-reenable` = REAL Chirp activation (wire SpeechEngine in cmd/worker,
-> prod worker ASR env in deploy.yml, fix demo auto-advance env, add `transcribe` to
-> PIPELINE_STAGES, two-stage e2e) → human uploads/reprocesses → sees a REAL transcript in the
-> UI. THEN diarize speaker-labels UI → moments → editor → render, each visible.
+> **NEXT ORDER (updated 2026-07-24 evening):** ALL SHIPPED + LIVE: full 4-stage pipeline
+> (ingest→transcribe[chirp_3]→diarize[gemini-3.5-flash]→moments, all cost-guarded), episode
+> view with transcript, speaker chips, two-way player sync, episode delete, MOMENTS RAIL
+> (ranked cards, verbatim quotes, word-accurate bounds, Approve/Dismiss + A/D keys).
+> Library = human's 44-min original + the diarized 3-speaker sample. NEXT: editor-trim
+> slice → captions → fidelity → render (the golden-path finish); deferred: speaker-naming,
+> shots/reframe, deleted-gc, trigger-test flakes, M2 ideas (segment SIGNALS indexing +
+> free-prompt moment composition — human-proposed, analysis in chat 2026-07-24).
 > To resume: read this block + the `## Log` (newest at bottom). HEAD at/after `4feb2a8`.
 
 Single source of truth for task state. Only the Architect edits this file. One task = one
@@ -109,8 +110,8 @@ cited patterns in its spec. "Staging" in SPEC-M1's gate = the PoC prod service
 | 11 | m1-transcript-ui | /episode/[id] view: RTL transcript pane + proxy player | committed |
 | 11b | m1-episode-delete | org-scoped soft delete + Library remove action; prod library cleaned | committed |
 | 11c | m1-transcript-sync | two-way player↔transcript sync, play-state preserved (human-specified) | committed |
-| 9 | m1-moments-stage | FAST-TRACKED: LLM ranked moments, quote-anchored word-accurate bounds (migration: moments) | in-progress |
-| 12 | m1-moments-rail | FAST-TRACKED: moments API + rail; Approve/Dismiss + single-key (Adjust deferred to editor) | spec-ready (next) |
+| 9 | m1-moments-stage | LLM ranked moments, quote-anchored word-accurate bounds (migration 0010) | committed |
+| 12 | m1-moments-rail | moments API + rail; Approve/Dismiss + A/D keys (Adjust deferred to editor) | committed |
 | 7 | m1-speaker-naming | DEFERRED behind moments (not a moments prereq): evidence-gated naming, lower-third frames | queued |
 | 8 | m1-shots-stage | DEFERRED behind moments (render-time concern): scdet shots + 9:16 bboxes | queued |
 | 13 | m1-editor-trim | sentence-selection trim on segment/word data; J/K/L transport | queued |
