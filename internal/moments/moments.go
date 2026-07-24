@@ -49,9 +49,28 @@ import (
 const (
 	promptID      = "moments.rank"
 	promptVersion = "v1"
-	// maxOutputTokens caps the selection output. At most eight small objects;
-	// this is a generous ceiling that never truncates a real proposal set.
-	maxOutputTokens = 8192
+	// maxOutputTokens caps the generation's output-token budget for BOTH the stage
+	// selector (SelectMoments) and the free-prompt compose call (compose.go). This
+	// budget is NOT answer-tokens-alone: on the prod model generation the model's
+	// internal "thinking" tokens are billed as output and counted against this same
+	// cap (verified 2026-07-24 against cloud.google.com/vertex-ai/generative-ai/
+	// docs/thinking — "Thinking generates 'thoughts' as part of the Token Output" —
+	// and ai.google.dev/gemini-api/docs/thinking — "response pricing is the sum of
+	// output tokens and thinking tokens"), and thinking scales with INPUT size. The
+	// proposal set itself is at most eight small objects, but a full-episode
+	// transcript drives thinking into the several-thousand-token range, so the old
+	// 8192 answer-only budget could truncate the JSON (finishReason MAX_TOKENS)
+	// exactly as it did for the sibling diarize stage at 249 segments. 32768
+	// budgets thinking + answer together with wide headroom and sits well under the
+	// model's documented 65,536 output-token ceiling (Gemini 3.5 Flash model card,
+	// cloud.google.com/vertex-ai/generative-ai/docs/models/gemini/3-5-flash). Cost
+	// stays bounded by the /internal/llm one-retry cap and the per-episode attempt
+	// cap. Thinking is not bounded with a generation knob (gemini-3.5-flash's only
+	// control is the coarse thinkingConfig.thinkingLevel, default MEDIUM — the level
+	// the observed thinking was measured at; the token thinkingBudget is a
+	// 2.5-generation feature that errors on Gemini-3 models); the raised cap is the
+	// structural budget. See internal/diarize for the full research trail.
+	maxOutputTokens = 32768
 	// minMoments/maxMoments bound the proposal count (the SPEC's 3..8 window).
 	// The lower bound clamps to the transcript size: a transcript of n < 3
 	// segments can hold at most n non-overlapping spans, so demanding 3 would
@@ -193,11 +212,13 @@ func (e Engine) SelectMoments(ctx context.Context, language string, orgID, episo
 		System:        systemPrompt,
 		Parts:         []string{parts},
 		Schema:        outputSchema,
-		Temperature:   0,
-		MaxTokens:     maxOutputTokens,
-		OrgID:         orgID,
-		EpisodeID:     episodeID,
-		Out:           &out,
+		// Temperature deliberately unset — a zero is dropped by omitempty on the
+		// wire, so we do not claim a pin we cannot send (see
+		// llm.Request.Temperature). All moment traffic runs at the engine default.
+		MaxTokens: maxOutputTokens,
+		OrgID:     orgID,
+		EpisodeID: episodeID,
+		Out:       &out,
 		// Validate runs after a successful strict decode; a non-nil error is
 		// treated exactly like a decode failure by the Client (retry once, then
 		// hard fail). This is where the count window, contiguous ranks, span

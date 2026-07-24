@@ -32,6 +32,15 @@ import (
 // with responseSchema it makes the output parse and match server-side.
 const geminiResponseMimeType = "application/json"
 
+// geminiFinishMaxTokens is the candidate finishReason the platform reports when
+// generation stopped because it reached maxOutputTokens (the output was cut off).
+// On this model generation "thinking" tokens are billed as output and counted
+// against maxOutputTokens, so a large thinking pass can trigger this before the
+// answer JSON completes. Verified 2026-07-24 against
+// cloud.google.com/vertex-ai/generative-ai/docs (generateContent finishReason
+// enum) and the wire-identical prod replays in the m1-llm-token-budget receipts.
+const geminiFinishMaxTokens = "MAX_TOKENS"
+
 // geminiDefaultMaxTokens caps output when the caller sets no MaxTokens.
 const geminiDefaultMaxTokens = 2048
 
@@ -90,6 +99,7 @@ type geminiResponse struct {
 		Content struct {
 			Parts []geminiPart `json:"parts"`
 		} `json:"content"`
+		FinishReason string `json:"finishReason"`
 	} `json:"candidates"`
 	UsageMetadata struct {
 		PromptTokenCount     int `json:"promptTokenCount"`
@@ -160,22 +170,38 @@ func (g *geminiEngine) generate(ctx context.Context, c call) (result, error) {
 	if err := json.Unmarshal(raw, &parsed); err != nil {
 		return result{rawBody: raw}, fmt.Errorf("llm: decode response envelope: %w", err)
 	}
-	if len(parsed.Candidates) == 0 || len(parsed.Candidates[0].Content.Parts) == 0 {
+	if len(parsed.Candidates) == 0 {
 		return result{rawBody: raw}, errors.New("llm: response has no output")
 	}
-	output := parsed.Candidates[0].Content.Parts[0].Text
+	cand := parsed.Candidates[0]
+	u := usage{
+		inputTokens:  parsed.UsageMetadata.PromptTokenCount,
+		outputTokens: parsed.UsageMetadata.CandidatesTokenCount,
+	}
+
+	// Budget truncation is signalled by finishReason, not by a bad body: return the
+	// (possibly partial, possibly empty) output with truncated=true and NO error so
+	// the Client costs the billable call and fails the attempt with ErrTruncated.
+	// This must precede the empty-output checks below: a run that spent the whole
+	// budget on thinking can come back with zero answer parts and IS a truncation,
+	// not a generic "no output".
+	if cand.FinishReason == geminiFinishMaxTokens {
+		var partial []byte
+		if len(cand.Content.Parts) > 0 {
+			partial = []byte(cand.Content.Parts[0].Text)
+		}
+		return result{rawBody: raw, output: partial, usage: u, truncated: true}, nil
+	}
+
+	if len(cand.Content.Parts) == 0 {
+		return result{rawBody: raw}, errors.New("llm: response has no output")
+	}
+	output := cand.Content.Parts[0].Text
 	if output == "" {
 		return result{rawBody: raw}, errors.New("llm: response output is empty")
 	}
 
-	return result{
-		rawBody: raw,
-		output:  []byte(output),
-		usage: usage{
-			inputTokens:  parsed.UsageMetadata.PromptTokenCount,
-			outputTokens: parsed.UsageMetadata.CandidatesTokenCount,
-		},
-	}, nil
+	return result{rawBody: raw, output: []byte(output), usage: u}, nil
 }
 
 // buildGeminiBase returns the generateContent endpoint prefix (up to

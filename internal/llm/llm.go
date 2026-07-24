@@ -54,6 +54,19 @@ var (
 	// ErrInvalidOutput means the model's output failed strict local validation
 	// on both the initial call and its one retry.
 	ErrInvalidOutput = errors.New("llm: model output failed validation")
+	// ErrTruncated means the engine stopped because it hit the output-token
+	// budget (maxTokens) — the answer was cut off mid-value — on both attempts.
+	// It is a DISTINCT sentinel from ErrInvalidOutput so a budget failure is
+	// diagnosable from the returned error and one server log line, instead of
+	// masquerading as a schema/decode failure (the truncated JSON would fail
+	// strict decode with a generic parse error otherwise). On this model
+	// generation the model's internal "thinking" tokens are billed as output and
+	// counted against the same budget, so a large thinking pass on a big input can
+	// exhaust maxTokens before the answer completes; the cure is a budget that
+	// covers thinking + answer (see the raised maxOutputTokens caps in
+	// internal/diarize and internal/moments), and this sentinel makes the NEXT
+	// such failure legible at a glance. Neutral outward like every sentinel.
+	ErrTruncated = errors.New("llm: engine output truncated")
 	// ErrUnavailable means the engine could not be reached or answer (transport
 	// failure, non-2xx, or an unparseable response) on both attempts. The raw
 	// cause is logged server-side only.
@@ -90,7 +103,13 @@ type Request struct {
 	// output. It is required: server-side enforcement is the whole point.
 	Schema json.RawMessage
 	// Temperature and MaxTokens are generation controls. MaxTokens <= 0 lets the
-	// engine apply its default.
+	// engine apply its default. Temperature has NO unset-vs-zero distinction on the
+	// wire: both provider engines serialize it with `omitempty`, which drops the
+	// float64 zero value, so Temperature == 0 sends nothing and the engine applies
+	// its own default — identical to leaving it unset. A caller that needs a
+	// deterministic pin must set a non-zero value (there is no way to force a
+	// literal 0 through this path today); setting 0 to "pin determinism" is a
+	// no-op, so callers that want the default simply omit it.
 	Temperature float64
 	MaxTokens   int
 	// OrgID scopes the audit row to a tenant (required). EpisodeID is optional
@@ -158,6 +177,12 @@ type result struct {
 	rawBody []byte
 	output  []byte
 	usage   usage
+	// truncated is set when the provider reported it stopped at the output-token
+	// budget (Gemini finishReason MAX_TOKENS, Claude stop_reason max_tokens): the
+	// output is a partial value and must not be decoded. It is a successful,
+	// BILLABLE provider call (usage is set), so the Client costs it and then fails
+	// the attempt with ErrTruncated rather than a generic decode error.
+	truncated bool
 }
 
 // engine is one fully-configured, provider-backed model binding. Implementations
@@ -268,6 +293,25 @@ func (c *Client) Generate(ctx context.Context, req Request) (Response, error) {
 		// The call returned a body; it is billable regardless of whether the
 		// output validates, so cost is computed now.
 		cost := c.cost(ctx, req.Engine, reg, res.usage)
+
+		// Budget truncation: the engine stopped at maxTokens, so the output is a
+		// partial value. Record the (billable) attempt, log the one line that makes
+		// a budget failure obvious, and retry — a truncated attempt is still an
+		// attempt. Short-circuiting here (before decodeStrict) keeps the truncated
+		// JSON from surfacing as a generic decode failure. Recorded as 'invalid':
+		// the output is present but unusable, exactly like a schema violation, so no
+		// new audit status (or migration) is needed; the ErrTruncated sentinel and
+		// this log line are what distinguish a budget failure from a contract one.
+		if res.truncated {
+			c.record(ctx, req, reg, inputHash, res.rawBody, cost, latency, statusInvalid)
+			c.log.LogAttrs(ctx, slog.LevelWarn, "llm output truncated at token budget",
+				slog.String("engine", req.Engine),
+				slog.Int("attempt", attempt),
+				slog.Int("output_tokens", res.usage.outputTokens),
+				slog.Int("max_tokens", req.MaxTokens))
+			lastErr = ErrTruncated
+			continue
+		}
 
 		if decErr := decodeStrict(res.output, req.Out); decErr != nil {
 			c.record(ctx, req, reg, inputHash, res.rawBody, cost, latency, statusInvalid)

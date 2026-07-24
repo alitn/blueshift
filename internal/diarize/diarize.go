@@ -59,10 +59,36 @@ import (
 const (
 	promptID      = "diarize.turns"
 	promptVersion = "v2"
-	// maxOutputTokens caps the diarization output. A turn range per speaker
-	// change is tiny even for a feature-length transcript; this is a generous
-	// ceiling that never truncates a real episode.
-	maxOutputTokens = 8192
+	// maxOutputTokens caps the generation's output-token budget. This budget is
+	// NOT answer-tokens-alone: on the prod model generation the model's internal
+	// "thinking" tokens are billed as output and counted against this same cap
+	// (verified 2026-07-24 against cloud.google.com/vertex-ai/generative-ai/docs/
+	// thinking — "Thinking generates 'thoughts' as part of the Token Output" — and
+	// ai.google.dev/gemini-api/docs/thinking — "response pricing is the sum of
+	// output tokens and thinking tokens"). Thinking scales with INPUT size: at a
+	// real 249-segment episode it runs ~5.6–7.9k tokens (wire-identical prod
+	// replays, m1-llm-token-budget receipts), while the turn-range answer itself is
+	// ~1.1k. The old 8192 cap budgeted for the answer alone, so a normal thinking
+	// pass truncated the JSON mid-array (finishReason MAX_TOKENS) → strict decode
+	// failed → the stage hard-failed. 32768 budgets thinking + answer together with
+	// ≥20k headroom over the worst observed thinking, and sits well under the
+	// model's documented 65,536 output-token ceiling (Gemini 3.5 Flash model card,
+	// cloud.google.com/vertex-ai/generative-ai/docs/models/gemini/3-5-flash). Cost
+	// stays bounded by the /internal/llm one-retry cap and the per-episode
+	// attempt cap regardless (worst case ≈30¢/call, typical ≈8¢).
+	//
+	// Thinking is NOT bounded with a generation knob here, by design. gemini-3.5-
+	// flash is a Gemini-3 model whose only thinking control is the COARSE
+	// thinkingConfig.thinkingLevel (MINIMAL|LOW|MEDIUM|HIGH, default MEDIUM); the
+	// fine-grained token thinkingBudget is a Gemini-2.5-and-earlier feature and
+	// specifying it on a Gemini-3 model is a documented error (same docs). The
+	// levels do not hard-cap thinking to a token count; the default (MEDIUM) is
+	// what the probes ran at and what produced the observed-adequate ~6–8k, so
+	// lowering to LOW risks starving thinking below observed need and MINIMAL risks
+	// a 400 (it requires prior thought signatures our stateless single-turn call
+	// has none of). The raised cap is therefore the structural budget; no other
+	// generation knob changes.
+	maxOutputTokens = 32768
 )
 
 // systemPrompt instructs the model to group segments into speaker turns anchored
@@ -205,11 +231,14 @@ func (e Engine) Diarize(ctx context.Context, language string, orgID, episodeID i
 		System:        systemPrompt,
 		Parts:         []string{parts},
 		Schema:        outputSchema,
-		Temperature:   0,
-		MaxTokens:     maxOutputTokens,
-		OrgID:         orgID,
-		EpisodeID:     episodeID,
-		Out:           &out,
+		// Temperature is deliberately left unset: on the wire it is dropped by
+		// omitempty when zero, so a literal 0 would send nothing and run at the
+		// engine default anyway (see llm.Request.Temperature). We do not claim a
+		// pin we cannot send; all diarize traffic runs at the engine default.
+		MaxTokens: maxOutputTokens,
+		OrgID:     orgID,
+		EpisodeID: episodeID,
+		Out:       &out,
 		// Validate runs after a successful strict decode; a non-nil error is treated
 		// exactly like a decode failure by the Client (retry once, then hard fail).
 		// This is where the exact-tiling contract is enforced against the real

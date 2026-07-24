@@ -329,6 +329,32 @@ func TestDiarizeAtScale(t *testing.T) {
 	}
 }
 
+// TestDiarizeMaxOutputTokenBudget pins the output-token budget the diarize
+// request wires. It is a regression guard for m1-llm-token-budget: the prod
+// model's "thinking" tokens are billed as output and counted against
+// maxOutputTokens, and at 249 segments thinking alone is ~5.6–7.9k, so an
+// answer-only 8192 cap truncated the JSON and hard-failed the stage. The budget
+// must cover thinking + answer (>= 32768) and is asserted on the VALUE that
+// actually crossed the seam, not just the constant.
+func TestDiarizeMaxOutputTokenBudget(t *testing.T) {
+	const floor = 32768
+	if maxOutputTokens < floor {
+		t.Fatalf("maxOutputTokens = %d, want >= %d (must budget thinking + answer, not answer alone)", maxOutputTokens, floor)
+	}
+	out := `{"turns":[{"start_idx":0,"end_idx":2,"speaker_key":"S1"}]}`
+	eng, fe, _ := newEngine(t, out)
+	if _, err := eng.Diarize(context.Background(), "fa", 1, 1, fixtureSegments()); err != nil {
+		t.Fatalf("Diarize: %v", err)
+	}
+	calls := fe.Calls()
+	if len(calls) != 1 {
+		t.Fatalf("engine calls = %d, want 1", len(calls))
+	}
+	if calls[0].MaxTokens < floor {
+		t.Errorf("request MaxTokens = %d, want >= %d", calls[0].MaxTokens, floor)
+	}
+}
+
 // TestBuildRequestOnlyIdxAndText is a direct unit check that the request builder
 // serializes only idx+text, in idx order, regardless of input order, and returns
 // the segment count the tiling is validated against.

@@ -111,6 +111,29 @@ func newEngine(t *testing.T, output string) (Engine, *llm.FakeEngine, *captureAu
 	return Engine{Gen: client, Labels: LangLabelResolver{Label: "bs-lm-1"}}, fe, aud
 }
 
+// TestSelectMomentsMaxOutputTokenBudget pins the output-token budget the moment
+// selection request wires (m1-llm-token-budget regression guard): thinking tokens
+// are billed as output and counted against maxOutputTokens, so the budget must
+// cover thinking + the proposal set (>= 32768), asserted on the value that
+// crossed the seam.
+func TestSelectMomentsMaxOutputTokenBudget(t *testing.T) {
+	const floor = 32768
+	if maxOutputTokens < floor {
+		t.Fatalf("maxOutputTokens = %d, want >= %d (must budget thinking + answer)", maxOutputTokens, floor)
+	}
+	eng, fe, _ := newEngine(t, validOutput)
+	if _, err := eng.SelectMoments(context.Background(), "fa", 1, 1, fixtureSegments()); err != nil {
+		t.Fatalf("SelectMoments: %v", err)
+	}
+	calls := fe.Calls()
+	if len(calls) != 1 {
+		t.Fatalf("engine calls = %d, want 1", len(calls))
+	}
+	if calls[0].MaxTokens < floor {
+		t.Errorf("request MaxTokens = %d, want >= %d", calls[0].MaxTokens, floor)
+	}
+}
+
 // TestSelectMomentsProposesRanked: a valid recorded proposal set decodes to the
 // exact rank-ordered proposals, and the single call is audited 'ok' with the
 // right scope.

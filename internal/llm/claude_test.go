@@ -67,6 +67,37 @@ func TestClaudeGenerateSuccess(t *testing.T) {
 	}
 }
 
+// TestClaudeTruncationDetected proves the engine reads stop_reason max_tokens and
+// returns a billable truncated result (no error), the Claude analogue of Gemini's
+// MAX_TOKENS detection that the Client maps to the neutral ErrTruncated.
+func TestClaudeTruncationDetected(t *testing.T) {
+	srv := fixtureServer(t, http.StatusOK, loadFixture(t, "claude_truncated.json"), nil)
+	defer srv.Close()
+
+	e := &claudeEngine{lbl: "bs-lm-2", mdl: "m", base: srv.URL, apiKey: "k", version: claudeDefaultVersion, hc: srv.Client()}
+	res, err := e.generate(context.Background(), call{parts: []string{"x"}, schema: sampleSchema, maxTokens: 8192})
+	if err != nil {
+		t.Fatalf("generate returned an error for a max_tokens response; want a truncated result: %v", err)
+	}
+	if !res.truncated {
+		t.Error("res.truncated = false, want true for stop_reason max_tokens")
+	}
+	if res.usage.inputTokens != 13235 || res.usage.outputTokens != 316 {
+		t.Errorf("usage = %+v, want input 13235 / output 316", res.usage)
+	}
+	// A normal end_turn fixture is NOT truncated.
+	stopSrv := fixtureServer(t, http.StatusOK, loadFixture(t, "claude_success.json"), nil)
+	defer stopSrv.Close()
+	e.base = stopSrv.URL
+	stopRes, err := e.generate(context.Background(), call{parts: []string{"x"}, schema: sampleSchema})
+	if err != nil {
+		t.Fatalf("generate (end_turn): %v", err)
+	}
+	if stopRes.truncated {
+		t.Error("res.truncated = true for a stop_reason end_turn response, want false")
+	}
+}
+
 func TestClaudeNon2xxNeutral(t *testing.T) {
 	body := loadFixture(t, "claude_error.json")
 	srv := fixtureServer(t, http.StatusUnauthorized, body, nil)

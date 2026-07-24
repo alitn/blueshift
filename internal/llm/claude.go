@@ -41,6 +41,12 @@ const claudeDefaultVersion = "2023-06-01"
 // claudeOutputFormatType selects JSON-schema-constrained generation.
 const claudeOutputFormatType = "json_schema"
 
+// claudeStopMaxTokens is the Messages API stop_reason reported when generation
+// stopped because it reached max_tokens (the output was cut off). It is the
+// Claude analogue of Gemini's MAX_TOKENS finishReason; the Client maps both to
+// the neutral ErrTruncated. Verified against the Messages API stop_reason values.
+const claudeStopMaxTokens = "max_tokens"
+
 // claudeEngine binds one neutral label to one concrete model on the Messages API.
 type claudeEngine struct {
 	lbl     string
@@ -93,7 +99,8 @@ type claudeResponse struct {
 		Type string `json:"type"`
 		Text string `json:"text"`
 	} `json:"content"`
-	Usage struct {
+	StopReason string `json:"stop_reason"`
+	Usage      struct {
 		InputTokens  int `json:"input_tokens"`
 		OutputTokens int `json:"output_tokens"`
 	} `json:"usage"`
@@ -155,19 +162,25 @@ func (e *claudeEngine) generate(ctx context.Context, c call) (result, error) {
 	if err := json.Unmarshal(raw, &parsed); err != nil {
 		return result{rawBody: raw}, fmt.Errorf("llm: decode response envelope: %w", err)
 	}
+	u := usage{
+		inputTokens:  parsed.Usage.InputTokens,
+		outputTokens: parsed.Usage.OutputTokens,
+	}
+
+	// Budget truncation: stop_reason max_tokens means the output was cut off. Return
+	// the (partial, possibly empty) text with truncated=true and NO error so the
+	// Client costs the billable call and fails the attempt with ErrTruncated,
+	// exactly as for Gemini's MAX_TOKENS. This precedes the empty-output check.
+	if parsed.StopReason == claudeStopMaxTokens {
+		return result{rawBody: raw, output: []byte(firstTextBlock(parsed)), usage: u, truncated: true}, nil
+	}
+
 	output := firstTextBlock(parsed)
 	if output == "" {
 		return result{rawBody: raw}, errors.New("llm: response has no output")
 	}
 
-	return result{
-		rawBody: raw,
-		output:  []byte(output),
-		usage: usage{
-			inputTokens:  parsed.Usage.InputTokens,
-			outputTokens: parsed.Usage.OutputTokens,
-		},
-	}, nil
+	return result{rawBody: raw, output: []byte(output), usage: u}, nil
 }
 
 // firstTextBlock returns the text of the first text content block (where the

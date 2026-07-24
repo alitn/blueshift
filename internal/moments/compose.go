@@ -106,10 +106,13 @@ func (e Engine) ComposeMoments(ctx context.Context, language string, orgID, epis
 		System:        composeSystemPrompt,
 		Parts:         []string{parts},
 		Schema:        outputSchema,
-		Temperature:   0,
-		MaxTokens:     maxOutputTokens,
-		OrgID:         orgID,
-		EpisodeID:     episodeID,
+		// Temperature deliberately unset — omitempty drops a zero on the wire, so we
+		// do not claim a pin we cannot send (see llm.Request.Temperature). Compose
+		// runs at the engine default like the stage selector; maxOutputTokens is the
+		// shared moments cap (thinking + answer budget — see moments.go).
+		MaxTokens: maxOutputTokens,
+		OrgID:     orgID,
+		EpisodeID: episodeID,
 		// The same semantic gate as the stage, minus the min-count clamp: the
 		// user prompt cannot talk the call out of the contract — an output that
 		// breaks it is invalid regardless (retry once, then hard fail).

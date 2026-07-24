@@ -122,6 +122,19 @@ func okStep(output string, in, out int) fakeStep {
 	}}
 }
 
+// truncatedStep builds a BILLABLE step the provider cut off at the output-token
+// budget: a valid envelope + usage, truncated=true, and a partial output that
+// must never be decoded. It exercises the Client's ErrTruncated branch without
+// HTTP.
+func truncatedStep(partial string, in, out int) fakeStep {
+	return fakeStep{res: result{
+		rawBody:   []byte(`{"finishReason":"MAX_TOKENS"}`),
+		output:    []byte(partial),
+		usage:     usage{inputTokens: in, outputTokens: out},
+		truncated: true,
+	}}
+}
+
 // errStep builds a failed (transport/non-2xx) step, optionally carrying a body.
 func errStep(rawBody string) fakeStep {
 	var raw []byte

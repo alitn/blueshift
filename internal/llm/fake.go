@@ -41,10 +41,12 @@ type FakeEngine struct {
 
 // RecordedCall is one generate call a FakeEngine received, exposed for tests that
 // assert what was actually sent to the model (Parts never contain timestamps for
-// a text-anchored request).
+// a text-anchored request; MaxTokens pins the output-token budget the caller
+// wired — the diarize/moments token-budget guard is asserted against it).
 type RecordedCall struct {
-	System string
-	Parts  []string
+	System    string
+	Parts     []string
+	MaxTokens int
 }
 
 // FakeOption customises a FakeEngine.
@@ -82,7 +84,7 @@ func (f *FakeEngine) generate(ctx context.Context, c call) (result, error) {
 		return result{}, err
 	}
 	f.mu.Lock()
-	f.calls = append(f.calls, RecordedCall{System: c.system, Parts: append([]string(nil), c.parts...)})
+	f.calls = append(f.calls, RecordedCall{System: c.system, Parts: append([]string(nil), c.parts...), MaxTokens: c.maxTokens})
 	f.mu.Unlock()
 	return result{
 		rawBody: append([]byte(nil), f.raw...),

@@ -137,6 +137,99 @@ func TestGenerateNeverExceedsMaxAttempts(t *testing.T) {
 	}
 }
 
+// TestGenerateTruncatedRetryThenFail: two budget-truncated responses -> hard
+// fail with the DISTINCT ErrTruncated sentinel (never ErrInvalidOutput), two
+// 'invalid' audit rows that still carry a cost (a truncated call is billable),
+// exactly one retry, and a neutral error carrying an internal id. This is the
+// path that makes the NEXT token-budget failure legible instead of masquerading
+// as a schema/decode failure.
+func TestGenerateTruncatedRetryThenFail(t *testing.T) {
+	fe := newFake()
+	tr := truncatedStep(`{"answer":"the capital is Lis`, 13235, 316) // partial, never decoded
+	fe.steps = []fakeStep{tr, tr}
+	aud := &memAuditor{}
+	c := newTestClient(fe, &Price{InputPerMTokCents: 1, OutputPerMTokCents: 1}, aud)
+
+	var out sampleOut
+	_, err := c.Generate(context.Background(), baseRequest(&out))
+	if !errors.Is(err, ErrTruncated) {
+		t.Fatalf("err = %v, want ErrTruncated", err)
+	}
+	// Distinctness: a budget truncation is NOT reported as a schema/validation
+	// failure — the whole point of the sentinel.
+	if errors.Is(err, ErrInvalidOutput) {
+		t.Errorf("truncation must not be reported as ErrInvalidOutput: %v", err)
+	}
+	assertNeutral(t, err)
+	if !strings.Contains(err.Error(), "[") {
+		t.Errorf("hard-fail error should carry an internal error id, got %q", err.Error())
+	}
+	if fe.calls != 2 {
+		t.Errorf("engine calls = %d, want exactly 2 (one retry; a truncated attempt is still an attempt)", fe.calls)
+	}
+	if len(aud.rows) != 2 {
+		t.Fatalf("audit rows = %d, want 2", len(aud.rows))
+	}
+	for i, r := range aud.rows {
+		if r.Status != statusInvalid {
+			t.Errorf("row %d status = %q, want invalid (truncated output is unusable)", i, r.Status)
+		}
+		if r.CostCents == nil {
+			t.Errorf("row %d cost = nil, want a recorded cost (a truncated call is billable)", i)
+		}
+		if len(r.RawResponse) == 0 {
+			t.Errorf("row %d raw_response empty, want the verbatim envelope for the audit", i)
+		}
+	}
+}
+
+// TestGenerateTruncatedThenSuccess: a truncated attempt then a clean one succeeds
+// on the retry — the truncation branch consumes exactly one attempt and does not
+// short-circuit the recovery.
+func TestGenerateTruncatedThenSuccess(t *testing.T) {
+	fe := newFake()
+	fe.steps = []fakeStep{
+		truncatedStep(`{"answer":"the capital is Lis`, 13235, 316),
+		okStep(`{"answer":"Lisbon","count":2}`, 13235, 40),
+	}
+	aud := &memAuditor{}
+	c := newTestClient(fe, &Price{InputPerMTokCents: 1, OutputPerMTokCents: 1}, aud)
+
+	var out sampleOut
+	resp, err := c.Generate(context.Background(), baseRequest(&out))
+	if err != nil {
+		t.Fatalf("Generate: %v", err)
+	}
+	if resp.Attempts != 2 {
+		t.Errorf("Attempts = %d, want 2", resp.Attempts)
+	}
+	if out.Answer != "Lisbon" || out.Count != 2 {
+		t.Errorf("decoded Out = %+v", out)
+	}
+	if aud.rows[0].Status != statusInvalid || aud.rows[1].Status != statusOK {
+		t.Errorf("statuses = %q,%q want invalid,ok", aud.rows[0].Status, aud.rows[1].Status)
+	}
+}
+
+// TestGenerateTruncatedNeverExceedsMaxAttempts pins the bounded-retry ceiling for
+// the truncation path too: even with more truncated steps available, the Client
+// makes at most maxAttempts billable calls (cost-safety: no unbounded billable
+// loop from a persistently over-budget request).
+func TestGenerateTruncatedNeverExceedsMaxAttempts(t *testing.T) {
+	fe := newFake()
+	tr := truncatedStep(`{"answer":"the capital is Lis`, 13235, 316)
+	fe.steps = []fakeStep{tr, tr, tr, tr}
+	c := newTestClient(fe, nil, &memAuditor{})
+
+	var out sampleOut
+	if _, err := c.Generate(context.Background(), baseRequest(&out)); !errors.Is(err, ErrTruncated) {
+		t.Fatalf("err = %v, want ErrTruncated", err)
+	}
+	if fe.calls != maxAttempts {
+		t.Errorf("engine calls = %d, want exactly maxAttempts=%d (bounded retries)", fe.calls, maxAttempts)
+	}
+}
+
 // TestGenerateTransportErrorTwice: two upstream failures -> ErrUnavailable, two
 // 'error' rows (cost NULL), neutral error.
 func TestGenerateTransportErrorTwice(t *testing.T) {

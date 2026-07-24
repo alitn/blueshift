@@ -1,0 +1,14 @@
+{
+  "id": "msg_test",
+  "type": "message",
+  "role": "assistant",
+  "model": "claude-opus-4-8",
+  "content": [
+    {
+      "type": "text",
+      "text": "{\"answer\":\"the capital is Lis"
+    }
+  ],
+  "stop_reason": "max_tokens",
+  "usage": { "input_tokens": 13235, "output_tokens": 316 }
+}

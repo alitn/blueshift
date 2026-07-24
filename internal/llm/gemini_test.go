@@ -99,6 +99,88 @@ func TestGeminiGenerateSuccess(t *testing.T) {
 	}
 }
 
+// TestGeminiTruncationDetected proves the engine reads finishReason MAX_TOKENS
+// and returns a BILLABLE result flagged truncated (usage populated, no error) —
+// the partial output is carried but must not be decoded. This is the provider-
+// specific detection the Client's neutral ErrTruncated path is built on.
+func TestGeminiTruncationDetected(t *testing.T) {
+	srv := fixtureServer(t, http.StatusOK, loadFixture(t, "gemini_truncated.json"), nil)
+	defer srv.Close()
+
+	g := &geminiEngine{
+		lbl: "bs-lm-1", mdl: "test-model", base: srv.URL,
+		token: func(context.Context) (string, error) { return "t", nil }, hc: srv.Client(),
+	}
+	res, err := g.generate(context.Background(), call{parts: []string{"x"}, schema: sampleSchema, maxTokens: 8192})
+	if err != nil {
+		t.Fatalf("generate returned an error for a MAX_TOKENS response; want a truncated result: %v", err)
+	}
+	if !res.truncated {
+		t.Error("res.truncated = false, want true for finishReason MAX_TOKENS")
+	}
+	// The call is billable: usage is populated from usageMetadata for costing.
+	if res.usage.inputTokens != 13235 || res.usage.outputTokens != 316 {
+		t.Errorf("usage = %+v, want input 13235 / output 316", res.usage)
+	}
+	// A normal STOP fixture is NOT truncated (guards against a mis-wired default).
+	stopSrv := fixtureServer(t, http.StatusOK, loadFixture(t, "gemini_success.json"), nil)
+	defer stopSrv.Close()
+	g.base = stopSrv.URL
+	stopRes, err := g.generate(context.Background(), call{parts: []string{"x"}, schema: sampleSchema})
+	if err != nil {
+		t.Fatalf("generate (STOP): %v", err)
+	}
+	if stopRes.truncated {
+		t.Error("res.truncated = true for a finishReason STOP response, want false")
+	}
+}
+
+// TestGeminiTruncatedRetryThenFail drives the WHOLE path — Client + real gemini
+// engine + a recorded MAX_TOKENS fixture served for both attempts. The Client
+// retries exactly once, then hard-fails with the neutral ErrTruncated (never
+// ErrInvalidOutput), recording two billable 'invalid' audit rows.
+func TestGeminiTruncatedRetryThenFail(t *testing.T) {
+	var hits int
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		hits++
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write(loadFixture(t, "gemini_truncated.json"))
+	}))
+	defer srv.Close()
+
+	aud := &memAuditor{}
+	c, err := New(Options{
+		Auditor: aud,
+		Logger:  discardLogger(),
+		Engines: []EngineConfig{{Label: "bs-lm-1", Provider: ProviderGemini, Model: "test-model", Price: &Price{InputPerMTokCents: 1, OutputPerMTokCents: 1}}},
+		Gemini:  GeminiOptions{Endpoint: srv.URL, Token: func(context.Context) (string, error) { return "t", nil }},
+	})
+	if err != nil {
+		t.Fatalf("New: %v", err)
+	}
+
+	var out sampleOut
+	_, gErr := c.Generate(context.Background(), baseRequest(&out))
+	if !errors.Is(gErr, ErrTruncated) {
+		t.Fatalf("err = %v, want ErrTruncated", gErr)
+	}
+	if errors.Is(gErr, ErrInvalidOutput) {
+		t.Errorf("truncation must not surface as ErrInvalidOutput: %v", gErr)
+	}
+	assertNeutral(t, gErr)
+	if hits != 2 {
+		t.Errorf("provider hits = %d, want 2 (initial + one retry)", hits)
+	}
+	if len(aud.rows) != 2 || aud.rows[0].Status != statusInvalid || aud.rows[1].Status != statusInvalid {
+		t.Fatalf("audit rows = %+v, want two invalid rows", aud.rows)
+	}
+	for i, r := range aud.rows {
+		if r.CostCents == nil {
+			t.Errorf("row %d cost = nil, want a recorded cost (truncated calls are billable)", i)
+		}
+	}
+}
+
 func TestGeminiNon2xxNeutral(t *testing.T) {
 	body := loadFixture(t, "gemini_error.json")
 	srv := fixtureServer(t, http.StatusInternalServerError, body, nil)

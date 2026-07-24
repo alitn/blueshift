@@ -1,0 +1,18 @@
+{
+  "candidates": [
+    {
+      "content": {
+        "role": "model",
+        "parts": [{ "text": "{\"answer\":\"the capital is Lis" }]
+      },
+      "finishReason": "MAX_TOKENS"
+    }
+  ],
+  "usageMetadata": {
+    "promptTokenCount": 13235,
+    "candidatesTokenCount": 316,
+    "thoughtsTokenCount": 7861,
+    "totalTokenCount": 21412
+  },
+  "modelVersion": "gemini-3.5-flash"
+}
