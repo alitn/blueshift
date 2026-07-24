@@ -108,6 +108,7 @@ cited patterns in its spec. "Staging" in SPEC-M1's gate = the PoC prod service
 | 12f | m1-reprocess-api | POST /reprocess ready|failed→uploaded; skips bill zero; Library action | spec-ready |
 | 12g | m1-youtube-ingest | YouTube URL ingestion via youtubedr (ADR 0003) | spec-ready |
 | 12h | m1-llm-token-budget | thinking eats maxOutputTokens → truncation (probe-receipted); caps 32k + distinct truncation error | committed 68c0a81 |
+| 12i | m1-engine-brand-label | hover card: BLUESHIFT·ASR 2 instead of BS·ASR 2 (human-directed; display-only) | committed 83e89de |
 | 7 | m1-speaker-naming | DEFERRED behind moments (not a moments prereq): evidence-gated naming, lower-third frames | queued |
 | 8 | m1-shots-stage | DEFERRED behind moments (render-time concern): scdet shots + 9:16 bboxes | queued |
 | 13 | m1-editor-trim | sentence-selection trim on segment/word data; J/K/L transport | queued |
@@ -437,3 +438,10 @@ cited patterns in its spec. "Staging" in SPEC-M1's gate = the PoC prod service
   omitempty lie removed. Reviewer observation backlogged: audit cost omits
   thoughtsTokenCount (undercount, pre-existing). Next: push → deploy → FINAL retry
   (one full stage cycle left before the attempt cap).
+- 2026-07-24 (night — NEWEST) — **MILESTONE: full 44-min episode READY end-to-end in
+  prod.** Post-fix final retry (attempt 8/10): ingest 5m07s → transcribe SKIP FREE 44ms
+  → diarize DONE at 249 segments first attempt 2m00s 3¢ → moments DONE 31s 4¢; 7 ranked
+  verbatim moments (S1×107/S2×51/S3×91 speaker split). Total run 7¢. The probe-driven
+  diagnosis→fix→deploy→retry loop closed in one evening; provenance card receipts in
+  the report. Human directive executed same-evening: m1-engine-brand-label (BLUESHIFT
+  instead of BS in UI engine labels, display-only) — in review at entry time.
