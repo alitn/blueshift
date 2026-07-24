@@ -72,6 +72,33 @@ func (s *Store) DeleteOrphanEpisode(ctx context.Context, orgPublicID, episodePub
 	return nil
 }
 
+// DeleteEpisode soft-deletes an org-scoped episode by stamping deleted_at (the
+// row is kept; every read/claim/finalize/sweep path filters deleted_at IS NULL,
+// so the episode becomes invisible to the API and unclaimable/unbillable by the
+// pipeline). found=false when the id is malformed or names no row in the org —
+// the handler's 404. Idempotent: an already-deleted row still reports
+// found=true (its original deleted_at is preserved), so a repeated DELETE stays
+// a 204. Storage objects are NOT removed — soft delete is row-level only, and
+// object GC for deleted episodes is a deliberate later concern.
+func (s *Store) DeleteEpisode(ctx context.Context, orgPublicID, episodePublicID string) (bool, error) {
+	org, err := s.resolveOrg(ctx, orgPublicID)
+	if err != nil {
+		return false, err
+	}
+	epUUID, err := ids.Decode(ids.Episode, episodePublicID)
+	if err != nil {
+		return false, nil
+	}
+	n, err := s.SoftDeleteEpisode(ctx, db.SoftDeleteEpisodeParams{
+		PublicID: pgUUID(epUUID),
+		OrgID:    org.ID,
+	})
+	if err != nil {
+		return false, fmt.Errorf("store: soft delete episode: %w", err)
+	}
+	return n > 0, nil
+}
+
 // SweepAbandonedEpisodes hard-deletes abandoned uploads across ALL orgs: rows a
 // create left at 'uploaded' with no master key whose client never completed the
 // PUT, older than ttl. This is a system-level maintenance sweep (not a tenant

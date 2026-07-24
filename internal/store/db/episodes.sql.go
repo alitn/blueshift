@@ -157,6 +157,7 @@ WHERE public_id = $1
   AND org_id = $2
   AND status = 'uploaded'
   AND master_object_key IS NULL
+  AND deleted_at IS NULL
 `
 
 type DeleteOrphanEpisodeParams struct {
@@ -170,6 +171,8 @@ type DeleteOrphanEpisodeParams struct {
 // gated — org-scoped, status still 'uploaded', and no master key yet — so it can
 // only ever remove a fresh orphan, never an episode that started uploading or
 // advanced. Returns the affected-row count so a caller can log a no-op.
+// deleted_at IS NULL: a soft-deleted row is a frozen record of a tenant action
+// and no hard-delete path may touch it.
 func (q *Queries) DeleteOrphanEpisode(ctx context.Context, arg DeleteOrphanEpisodeParams) (int64, error) {
 	result, err := q.db.Exec(ctx, deleteOrphanEpisode, arg.PublicID, arg.OrgID)
 	if err != nil {
@@ -578,11 +581,45 @@ func (q *Queries) SetEpisodeMasterKey(ctx context.Context, arg SetEpisodeMasterK
 	return i, err
 }
 
+const softDeleteEpisode = `-- name: SoftDeleteEpisode :execrows
+UPDATE episodes
+SET deleted_at = COALESCE(deleted_at, now()),
+    updated_at = CASE WHEN deleted_at IS NULL THEN now() ELSE updated_at END
+WHERE public_id = $1
+  AND org_id = $2
+`
+
+type SoftDeleteEpisodeParams struct {
+	PublicID pgtype.UUID
+	OrgID    int64
+}
+
+// Tenant-facing soft delete (CLAUDE.md soft-delete convention): stamp
+// deleted_at once and keep the row. Every read/claim/finalize/sweep path
+// filters deleted_at IS NULL, so a deleted episode is invisible to the API,
+// unclaimable by pipeline stages, and unbillable — deleting a mid-flight
+// episode cleanly starves its stage chain. Org-scoped: a caller can only ever
+// delete their own org's episode; an unknown/foreign id matches no row (the
+// handler's 404). Idempotent: an already-deleted row still matches (COALESCE
+// preserves the original deleted_at and updated_at is only bumped on the first
+// delete), so a repeated DELETE reports the row again (the handler's 204).
+// Storage objects (master/proxy) are deliberately NOT removed here: soft
+// delete is row-level only, and object GC for deleted episodes is a later,
+// separate concern.
+func (q *Queries) SoftDeleteEpisode(ctx context.Context, arg SoftDeleteEpisodeParams) (int64, error) {
+	result, err := q.db.Exec(ctx, softDeleteEpisode, arg.PublicID, arg.OrgID)
+	if err != nil {
+		return 0, err
+	}
+	return result.RowsAffected(), nil
+}
+
 const sweepAbandonedEpisodes = `-- name: SweepAbandonedEpisodes :execrows
 DELETE FROM episodes
 WHERE status = 'uploaded'
   AND master_object_key IS NULL
   AND created_at < now() - $1::interval
+  AND deleted_at IS NULL
 `
 
 // System-level TTL sweep of abandoned uploads: a create can succeed
@@ -594,6 +631,9 @@ WHERE status = 'uploaded'
 // orphan shape as the create-time rollback (status 'uploaded', no master key)
 // plus an age floor, so it can only ever remove a long-abandoned half-created
 // row — never an episode that started uploading or advanced. Returns the count.
+// deleted_at IS NULL: a soft-deleted row is a frozen record of a tenant action
+// (the user removed the episode); the sweep must neither resurrect nor
+// hard-delete it.
 func (q *Queries) SweepAbandonedEpisodes(ctx context.Context, ttl pgtype.Interval) (int64, error) {
 	result, err := q.db.Exec(ctx, sweepAbandonedEpisodes, ttl)
 	if err != nil {
@@ -644,6 +684,7 @@ SET status = $3,
     updated_at = now()
 WHERE public_id = $1
   AND org_id = $2
+  AND deleted_at IS NULL
 RETURNING id, public_id, org_id, show_id, title, source_filename, language, status, duration_ms, master_object_key, proxy_object_key, error_id, created_at, updated_at, deleted_at, master_size_bytes, claimed_at, current_stage, process_attempts
 `
 

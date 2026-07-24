@@ -95,6 +95,19 @@ export async function retryEpisode(id: string): Promise<boolean> {
   return res.ok;
 }
 
+/**
+ * deleteEpisode removes an episode from the library (server-side soft delete).
+ * The server answers 204 — including for a repeat of an already-removed
+ * episode, so a double-fire is harmless. Resolves true on success.
+ */
+export async function deleteEpisode(id: string): Promise<boolean> {
+  const res = await fetch(`/api/episodes/${encodeURIComponent(id)}`, {
+    method: 'DELETE',
+    credentials: 'same-origin'
+  });
+  return res.ok;
+}
+
 /** fetchProxyUrl returns a short-lived signed URL for a Ready episode's proxy. */
 export async function fetchProxyUrl(id: string): Promise<string | null> {
   const res = await fetch(`/api/episodes/${encodeURIComponent(id)}/proxy`, {

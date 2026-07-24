@@ -26,6 +26,10 @@ export type EpisodesStore = Readable<EpisodesState> & {
   start: () => void;
   /** Stop polling and detach listeners. */
   stop: () => void;
+  /** Drop one episode from the local list immediately (optimistic removal
+   *  after a confirmed delete — no refetch needed; the server excludes deleted
+   *  rows from every later poll anyway). */
+  remove: (id: string) => void;
 };
 
 /** A minimal document surface so tests can drive visibility without a real DOM. */
@@ -123,5 +127,13 @@ export function createEpisodesStore(opts: PollOptions = {}): EpisodesStore {
     doc?.removeEventListener('visibilitychange', onVisibility);
   }
 
-  return { subscribe: store.subscribe, refresh: poll, start, stop };
+  // remove drops one episode from the local list without a refetch: the 204 is
+  // the server's confirmation, and every later poll excludes the deleted row
+  // anyway. `pending` is left as-is — the next scheduled tick recomputes it
+  // from the fetched list, and touching it here could stall a live poll loop.
+  function remove(id: string) {
+    store.update((s) => ({ ...s, episodes: s.episodes.filter((e) => e.id !== id) }));
+  }
+
+  return { subscribe: store.subscribe, refresh: poll, start, stop, remove };
 }

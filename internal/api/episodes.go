@@ -82,6 +82,12 @@ type EpisodeRepo interface {
 	// gated (org-scoped, still 'uploaded', no master key) so it can only ever
 	// remove a fresh orphan. It is a no-op (no error) when nothing matched.
 	DeleteOrphanEpisode(ctx context.Context, orgPublicID, episodePublicID string) error
+	// DeleteEpisode soft-deletes an org-scoped episode (deleted_at stamped; the
+	// row and its storage objects are kept — object GC is a later concern).
+	// found=false when the episode is not visible to the org (unknown, foreign,
+	// or malformed id), which the handler turns into a 404. Idempotent: an
+	// already-deleted episode reports found=true again (the handler's repeat 204).
+	DeleteEpisode(ctx context.Context, orgPublicID, episodePublicID string) (found bool, err error)
 	GetEpisode(ctx context.Context, orgPublicID, episodePublicID string) (EpisodeRow, bool, error)
 	// EpisodeTranscript returns the episode's transcript segments in idx order,
 	// org-scoped (an episode not visible to the org yields an empty slice, never
@@ -460,6 +466,30 @@ func (h *handler) retryEpisode(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 	writeJSON(w, http.StatusOK, episodeDTOFrom(updated))
+}
+
+// deleteEpisode soft-deletes an org-scoped episode. Foreign or unknown ids are
+// a 404 (nothing about another org's rows is observable); success — including a
+// repeat of an already-deleted episode — is an empty 204, so the client can
+// treat DELETE as idempotent. The row is only stamped deleted_at: it drops out
+// of every list/read/claim path but its storage objects (master/proxy) are NOT
+// removed — object GC for deleted episodes is a deliberate later concern.
+func (h *handler) deleteEpisode(w http.ResponseWriter, r *http.Request) {
+	p, ok := auth.FromContext(r.Context())
+	if !ok {
+		writeJSON(w, http.StatusUnauthorized, errBody{Error: "unauthorized"})
+		return
+	}
+	found, err := h.deps.Episodes.DeleteEpisode(r.Context(), p.OrgPublicID, r.PathValue("id"))
+	if err != nil {
+		h.unavailable(w, r, "delete episode failed", err)
+		return
+	}
+	if !found {
+		writeJSON(w, http.StatusNotFound, errBody{Error: "not_found"})
+		return
+	}
+	w.WriteHeader(http.StatusNoContent)
 }
 
 // now returns the handler's clock, defaulting to time.Now when unset.

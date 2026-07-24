@@ -207,4 +207,24 @@ describe('createEpisodesStore', () => {
     await vi.advanceTimersByTimeAsync(9000);
     expect(fetcher).toHaveBeenCalledTimes(1);
   });
+
+  it('remove(id) drops exactly that episode locally, without a refetch', async () => {
+    const fetcher = vi.fn(async () => [ep('ep_a', 'ready'), ep('ep_b', 'ready')]);
+    const store = createEpisodesStore({ fetcher, intervalMs: 3000, doc: fakeDoc() });
+
+    store.start();
+    await vi.advanceTimersByTimeAsync(0);
+    expect(get(store).episodes.map((e) => e.id)).toEqual(['ep_a', 'ep_b']);
+
+    store.remove('ep_a');
+    expect(get(store).episodes.map((e) => e.id)).toEqual(['ep_b']);
+    // Optimistic: purely local — no extra fetch fired.
+    expect(fetcher).toHaveBeenCalledTimes(1);
+
+    // Removing an id that is not present is a harmless no-op.
+    store.remove('ep_missing');
+    expect(get(store).episodes.map((e) => e.id)).toEqual(['ep_b']);
+
+    store.stop();
+  });
 });

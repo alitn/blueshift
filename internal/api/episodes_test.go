@@ -21,8 +21,9 @@ import (
 // --- fake org-scoped episode repo -------------------------------------------
 
 type storedEpisode struct {
-	row   EpisodeRow
-	owner string // org public id that owns the row
+	row     EpisodeRow
+	owner   string // org public id that owns the row
+	deleted bool   // soft-deleted: invisible to every read path, like deleted_at
 }
 
 // fakeRepo emulates the store's org scoping: a row is only visible to the org
@@ -83,7 +84,7 @@ func (f *fakeRepo) DeleteOrphanEpisode(_ context.Context, orgPublicID, episodePu
 		return f.failDelete
 	}
 	s, ok := f.eps[episodePublicID]
-	if !ok || s.owner != orgPublicID || s.row.Status != "uploaded" || s.row.MasterKey != "" {
+	if !ok || s.owner != orgPublicID || s.deleted || s.row.Status != "uploaded" || s.row.MasterKey != "" {
 		return nil
 	}
 	delete(f.eps, episodePublicID)
@@ -94,10 +95,25 @@ func (f *fakeRepo) GetEpisode(_ context.Context, orgPublicID, episodePublicID st
 	f.mu.Lock()
 	defer f.mu.Unlock()
 	s, ok := f.eps[episodePublicID]
-	if !ok || s.owner != orgPublicID {
+	if !ok || s.owner != orgPublicID || s.deleted {
 		return EpisodeRow{}, false, nil
 	}
 	return s.row, true, nil
+}
+
+// DeleteEpisode soft-deletes, mirroring the store: org-scoped (a foreign or
+// unknown id reports found=false), idempotent (an already-deleted row reports
+// found=true again), and the row is kept — merely invisible to every read path.
+func (f *fakeRepo) DeleteEpisode(_ context.Context, orgPublicID, episodePublicID string) (bool, error) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	s, ok := f.eps[episodePublicID]
+	if !ok || s.owner != orgPublicID {
+		return false, nil
+	}
+	s.deleted = true
+	f.eps[episodePublicID] = s
+	return true, nil
 }
 
 // EpisodeTranscript returns the segments seeded for the episode via setTranscript,
@@ -111,7 +127,7 @@ func (f *fakeRepo) EpisodeTranscript(_ context.Context, orgPublicID, episodePubl
 		return nil, f.failTranscr
 	}
 	s, ok := f.eps[episodePublicID]
-	if !ok || s.owner != orgPublicID {
+	if !ok || s.owner != orgPublicID || s.deleted {
 		return nil, nil
 	}
 	return f.transcripts[episodePublicID], nil
@@ -129,7 +145,7 @@ func (f *fakeRepo) SetEpisodeMasterKey(_ context.Context, orgPublicID, episodePu
 	f.mu.Lock()
 	defer f.mu.Unlock()
 	s, ok := f.eps[episodePublicID]
-	if !ok || s.owner != orgPublicID {
+	if !ok || s.owner != orgPublicID || s.deleted {
 		return EpisodeRow{}, false, nil
 	}
 	s.row.MasterKey = key
@@ -147,7 +163,7 @@ func (f *fakeRepo) ListEpisodes(_ context.Context, orgPublicID string) ([]Episod
 	}
 	var out []EpisodeRow
 	for _, s := range f.eps {
-		if s.owner == orgPublicID {
+		if s.owner == orgPublicID && !s.deleted {
 			out = append(out, s.row)
 		}
 	}
@@ -161,7 +177,7 @@ func (f *fakeRepo) RetryEpisode(_ context.Context, orgPublicID, episodePublicID 
 	f.mu.Lock()
 	defer f.mu.Unlock()
 	s, ok := f.eps[episodePublicID]
-	if !ok || s.owner != orgPublicID || s.row.Status != "failed" {
+	if !ok || s.owner != orgPublicID || s.deleted || s.row.Status != "failed" {
 		return EpisodeRow{}, false, nil
 	}
 	s.row.Status = "uploaded"
@@ -937,6 +953,112 @@ func TestRetryCrossOrgIsolated(t *testing.T) {
 	// Org A's episode stays failed.
 	if repo.eps[id].row.Status != "failed" {
 		t.Errorf("org B changed org A's episode status to %q", repo.eps[id].row.Status)
+	}
+}
+
+// --- delete -------------------------------------------------------------------
+
+// deleteReq issues DELETE /api/episodes/{id}.
+func deleteReq(id string) *http.Request {
+	return httptest.NewRequest(http.MethodDelete, "/api/episodes/"+id, nil)
+}
+
+// TestDeleteEpisode204AndInvisible: a successful delete is an empty 204 and the
+// episode drops out of every read path — list, transcript, proxy, retry.
+func TestDeleteEpisode204AndInvisible(t *testing.T) {
+	repo := newFakeRepo()
+	router, _, _ := newEpisodeRouter(t, repo)
+	id := seedEpisode(t, router, orgA, "A", "a.mp4")
+	repo.setStatus(id, "ready", "org_x/ep_y/proxies/proxy.mp4")
+
+	rec := doAs(router, orgA, deleteReq(id))
+	if rec.Code != http.StatusNoContent {
+		t.Fatalf("delete status = %d, want 204 (body %s)", rec.Code, rec.Body.String())
+	}
+	if rec.Body.Len() != 0 {
+		t.Errorf("204 body = %q, want empty", rec.Body.String())
+	}
+
+	// List: gone.
+	lrec := doAs(router, orgA, httptest.NewRequest(http.MethodGet, "/api/episodes", nil))
+	var resp listEpisodesResponse
+	_ = json.Unmarshal(lrec.Body.Bytes(), &resp)
+	if len(resp.Episodes) != 0 {
+		t.Errorf("list after delete = %d episodes, want 0", len(resp.Episodes))
+	}
+	// Transcript, proxy, retry, upload-complete: all 404 — the deleted episode
+	// is indistinguishable from one that never existed.
+	for _, probe := range []*http.Request{
+		httptest.NewRequest(http.MethodGet, "/api/episodes/"+id+"/transcript", nil),
+		httptest.NewRequest(http.MethodGet, "/api/episodes/"+id+"/proxy", nil),
+		httptest.NewRequest(http.MethodPost, "/api/episodes/"+id+"/retry", nil),
+		httptest.NewRequest(http.MethodPost, "/api/episodes/"+id+"/upload-complete", nil),
+	} {
+		if rec := doAs(router, orgA, probe); rec.Code != http.StatusNotFound {
+			t.Errorf("%s %s after delete = %d, want 404", probe.Method, probe.URL.Path, rec.Code)
+		}
+	}
+	// The row itself survives (soft delete): only the deleted flag flipped.
+	if _, ok := repo.eps[id]; !ok {
+		t.Error("soft delete removed the row entirely; want it kept with deleted set")
+	}
+}
+
+// TestDeleteEpisodeIdempotent: deleting an already-deleted episode is a 204
+// again, never a 404 — DELETE is idempotent for the caller.
+func TestDeleteEpisodeIdempotent(t *testing.T) {
+	repo := newFakeRepo()
+	router, _, _ := newEpisodeRouter(t, repo)
+	id := seedEpisode(t, router, orgA, "A", "a.mp4")
+
+	for i := 1; i <= 2; i++ {
+		rec := doAs(router, orgA, deleteReq(id))
+		if rec.Code != http.StatusNoContent {
+			t.Fatalf("delete #%d status = %d, want 204", i, rec.Code)
+		}
+	}
+}
+
+// TestDeleteEpisodeCrossOrg404: org B cannot delete (or detect) org A's episode.
+func TestDeleteEpisodeCrossOrg404(t *testing.T) {
+	repo := newFakeRepo()
+	router, _, _ := newEpisodeRouter(t, repo)
+	id := seedEpisode(t, router, orgA, "A secret", "a.mp4")
+
+	rec := doAs(router, orgB, deleteReq(id))
+	if rec.Code != http.StatusNotFound {
+		t.Fatalf("cross-org delete status = %d, want 404", rec.Code)
+	}
+	// Org A still sees its episode.
+	lrec := doAs(router, orgA, httptest.NewRequest(http.MethodGet, "/api/episodes", nil))
+	var resp listEpisodesResponse
+	_ = json.Unmarshal(lrec.Body.Bytes(), &resp)
+	if len(resp.Episodes) != 1 {
+		t.Errorf("org A list after org B delete = %d episodes, want 1", len(resp.Episodes))
+	}
+}
+
+// TestDeleteEpisodeUnknown404: an unknown or malformed id is a 404 (never a 5xx,
+// never an observable difference from a foreign org's id).
+func TestDeleteEpisodeUnknown404(t *testing.T) {
+	repo := newFakeRepo()
+	router, _, _ := newEpisodeRouter(t, repo)
+	for _, id := range []string{"ep_" + strings.Repeat("0", 26), "not-an-id"} {
+		rec := doAs(router, orgA, deleteReq(id))
+		if rec.Code != http.StatusNotFound {
+			t.Errorf("delete %q status = %d, want 404", id, rec.Code)
+		}
+	}
+}
+
+func TestDeleteEpisodeUnauthenticated401(t *testing.T) {
+	repo := newFakeRepo()
+	router, _, _ := newEpisodeRouter(t, repo)
+	req := deleteReq("ep_" + strings.Repeat("0", 26))
+	rec := httptest.NewRecorder()
+	router.ServeHTTP(rec, req)
+	if rec.Code != http.StatusUnauthorized {
+		t.Fatalf("status = %d, want 401", rec.Code)
 	}
 }
 

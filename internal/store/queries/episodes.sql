@@ -24,7 +24,27 @@ SET status = $3,
     updated_at = now()
 WHERE public_id = $1
   AND org_id = $2
+  AND deleted_at IS NULL
 RETURNING *;
+
+-- name: SoftDeleteEpisode :execrows
+-- Tenant-facing soft delete (CLAUDE.md soft-delete convention): stamp
+-- deleted_at once and keep the row. Every read/claim/finalize/sweep path
+-- filters deleted_at IS NULL, so a deleted episode is invisible to the API,
+-- unclaimable by pipeline stages, and unbillable — deleting a mid-flight
+-- episode cleanly starves its stage chain. Org-scoped: a caller can only ever
+-- delete their own org's episode; an unknown/foreign id matches no row (the
+-- handler's 404). Idempotent: an already-deleted row still matches (COALESCE
+-- preserves the original deleted_at and updated_at is only bumped on the first
+-- delete), so a repeated DELETE reports the row again (the handler's 204).
+-- Storage objects (master/proxy) are deliberately NOT removed here: soft
+-- delete is row-level only, and object GC for deleted episodes is a later,
+-- separate concern.
+UPDATE episodes
+SET deleted_at = COALESCE(deleted_at, now()),
+    updated_at = CASE WHEN deleted_at IS NULL THEN now() ELSE updated_at END
+WHERE public_id = $1
+  AND org_id = $2;
 
 -- name: DeleteOrphanEpisode :execrows
 -- Compensating rollback for a create that failed AFTER the row was inserted but
@@ -33,11 +53,14 @@ RETURNING *;
 -- gated — org-scoped, status still 'uploaded', and no master key yet — so it can
 -- only ever remove a fresh orphan, never an episode that started uploading or
 -- advanced. Returns the affected-row count so a caller can log a no-op.
+-- deleted_at IS NULL: a soft-deleted row is a frozen record of a tenant action
+-- and no hard-delete path may touch it.
 DELETE FROM episodes
 WHERE public_id = $1
   AND org_id = $2
   AND status = 'uploaded'
-  AND master_object_key IS NULL;
+  AND master_object_key IS NULL
+  AND deleted_at IS NULL;
 
 -- name: SweepAbandonedEpisodes :execrows
 -- System-level TTL sweep of abandoned uploads: a create can succeed
@@ -49,10 +72,14 @@ WHERE public_id = $1
 -- orphan shape as the create-time rollback (status 'uploaded', no master key)
 -- plus an age floor, so it can only ever remove a long-abandoned half-created
 -- row — never an episode that started uploading or advanced. Returns the count.
+-- deleted_at IS NULL: a soft-deleted row is a frozen record of a tenant action
+-- (the user removed the episode); the sweep must neither resurrect nor
+-- hard-delete it.
 DELETE FROM episodes
 WHERE status = 'uploaded'
   AND master_object_key IS NULL
-  AND created_at < now() - sqlc.arg(ttl)::interval;
+  AND created_at < now() - sqlc.arg(ttl)::interval
+  AND deleted_at IS NULL;
 
 -- name: SetEpisodeMasterKey :one
 -- Record the verified master object key after the client confirms the upload

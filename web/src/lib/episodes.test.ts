@@ -1,6 +1,7 @@
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import {
   contentTypeFor,
+  deleteEpisode,
   displayState,
   isTerminal,
   listEpisodes,
@@ -113,5 +114,24 @@ describe('retryEpisode / fetchProxyUrl', () => {
     expect(await fetchProxyUrl('ep_a')).toBe('/signed');
     mockFetch(() => ({ ok: false, status: 404 }));
     expect(await fetchProxyUrl('ep_a')).toBeNull();
+  });
+});
+
+describe('deleteEpisode', () => {
+  it('DELETEs the episode resource and reports success on 204', async () => {
+    vi.stubGlobal(
+      'fetch',
+      vi.fn(async (url: string, init?: RequestInit) => {
+        expect(url).toBe('/api/episodes/ep_a');
+        expect(init?.method).toBe('DELETE');
+        return { ok: true, status: 204, json: async () => ({}) } as Response;
+      })
+    );
+    expect(await deleteEpisode('ep_a')).toBe(true);
+  });
+
+  it('reports failure on a non-OK response', async () => {
+    mockFetch(() => ({ ok: false, status: 404 }));
+    expect(await deleteEpisode('ep_gone')).toBe(false);
   });
 });
