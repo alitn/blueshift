@@ -151,6 +151,46 @@ func TestSetSegmentSpeakersOrgScoped(t *testing.T) {
 	}
 }
 
+// TestSpeakersAssigned proves the diarize stage's cost-safety idempotency probe:
+// false with no segments, false while segments exist but are not ALL diarized (a
+// partial/interrupted prior run), and true only when every segment carries a
+// speaker_key — the precise "already done" condition that skips the billable LLM.
+func TestSpeakersAssigned(t *testing.T) {
+	f := newSegFixture(t)
+	st, ctx := f.st, f.ctx
+
+	// No segments yet -> not diarized (never "already done").
+	if done, err := st.SpeakersAssigned(ctx, f.orgEncoded, f.epEncoded); err != nil || done {
+		t.Fatalf("SpeakersAssigned (no segments) = (%v, %v), want (false, nil)", done, err)
+	}
+	if err := st.ReplaceSegments(ctx, f.orgEncoded, f.epEncoded, sampleSegments()); err != nil {
+		t.Fatalf("ReplaceSegments: %v", err)
+	}
+	// Segments exist but none carry a speaker_key -> not done.
+	if done, err := st.SpeakersAssigned(ctx, f.orgEncoded, f.epEncoded); err != nil || done {
+		t.Fatalf("SpeakersAssigned (undiarized) = (%v, %v), want (false, nil)", done, err)
+	}
+	// Diarize only ONE of the two segments -> partial, still not done (so the stage
+	// re-diarizes rather than leaving a segment unattributed).
+	if err := st.SetSegmentSpeakers(ctx, f.orgEncoded, f.epEncoded, map[int]string{0: "S1"}); err != nil {
+		t.Fatalf("SetSegmentSpeakers (partial): %v", err)
+	}
+	if done, err := st.SpeakersAssigned(ctx, f.orgEncoded, f.epEncoded); err != nil || done {
+		t.Fatalf("SpeakersAssigned (partial) = (%v, %v), want (false, nil)", done, err)
+	}
+	// Diarize every segment -> fully diarized.
+	if err := st.SetSegmentSpeakers(ctx, f.orgEncoded, f.epEncoded, map[int]string{0: "S1", 1: "S2"}); err != nil {
+		t.Fatalf("SetSegmentSpeakers (full): %v", err)
+	}
+	if done, err := st.SpeakersAssigned(ctx, f.orgEncoded, f.epEncoded); err != nil || !done {
+		t.Fatalf("SpeakersAssigned (full) = (%v, %v), want (true, nil)", done, err)
+	}
+	// Org-scoped: a foreign org never sees another tenant's diarization as done.
+	if done, err := st.SpeakersAssigned(ctx, foreignOrg(), f.epEncoded); err != nil || done {
+		t.Errorf("cross-org SpeakersAssigned = (%v, %v), want (false, nil)", done, err)
+	}
+}
+
 // speakerKeys is a diagnostic helper.
 func speakerKeys(segs []SegmentWithSpeaker) []string {
 	out := make([]string, len(segs))

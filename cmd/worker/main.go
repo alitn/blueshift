@@ -91,6 +91,12 @@ func run(args []string) error {
 			Retries:         pipeline.DefaultRetries,
 			MaxRemuxBitrate: cfg.ProxyMaxRemuxBitrate,
 			AutoAdvance:     cfg.PipelineAutoAdvance,
+			// Cost-safety: the per-episode billable-attempt ceiling and the deliberate
+			// reprocess override (CLAUDE.md "Billable-service cost safety"). Dormant
+			// under the default ingest-only chain (ingest is not billable); they bound
+			// the metered ASR / LLM cost once PIPELINE_STAGES activates a billable stage.
+			MaxProcessAttempts: cfg.MaxProcessAttempts,
+			Reprocess:          cfg.Reprocess,
 		},
 		// The worker launches the next stage on auto-advance through the same
 		// neutral trigger the API server uses (its SA already holds the runner

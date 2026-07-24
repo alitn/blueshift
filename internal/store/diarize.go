@@ -96,6 +96,31 @@ func (s *Store) SegmentsForDiarize(ctx context.Context, orgID, episodePublicID s
 	return pipeline.SegmentSet{OrgID: orgInternal, EpisodeID: ep.ID, Segments: segs}, true, nil
 }
 
+// SpeakersAssigned reports whether the episode is already fully diarized — it has
+// segments AND every one carries a speaker_key — org-scoped. It is the diarize
+// stage's cost-safety idempotency probe (CLAUDE.md "Billable-service cost safety"):
+// a true result means the speaker grouping already exists, so the stage SKIPS the
+// billable LLM call entirely and never re-bills on a retry/re-drive. "Fully" (all
+// segments, not just some) is deliberate: SetSegmentSpeakers writes every segment in
+// one transaction, so a completed diarize leaves none NULL; a partial set (an
+// interrupted prior run) is NOT treated as done, so the stage re-diarizes rather
+// than leaving segments unattributed. An unknown/foreign org or missing episode
+// yields false (no error), matching the other segment methods.
+func (s *Store) SpeakersAssigned(ctx context.Context, orgID, episodePublicID string) (bool, error) {
+	_, ep, ok, err := s.resolveEpisodeForSegments(ctx, orgID, episodePublicID)
+	if err != nil {
+		return false, err
+	}
+	if !ok {
+		return false, nil
+	}
+	c, err := s.CountEpisodeSegmentsAndSpeakers(ctx, ep.ID)
+	if err != nil {
+		return false, fmt.Errorf("store: count diarized segments: %w", err)
+	}
+	return c.Total > 0 && c.Diarized == c.Total, nil
+}
+
 // EpisodeSegmentsWithSpeakers returns an episode's transcript in idx order with
 // each segment's diarization speaker_key ("" when not yet diarized), org-scoped.
 // An unknown/foreign org or missing episode yields nil (no error). It is the

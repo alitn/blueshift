@@ -81,6 +81,17 @@ type stageOutput struct {
 // the active chain. M1 registers ingest and transcribe; diarize/moments/render
 // append as they land. Which of these actually run, and in what order, is the
 // config-driven active chain (see defaultActiveStages / (*Runner).SetActiveStages).
+//
+// COST-SAFETY KILL SWITCH (CLAUDE.md "Billable-service cost safety", item 4):
+// transcribe and diarize are the only BILLABLE stages here (the metered ASR / LLM
+// engines); both are registered but PARKED — out of the default active chain.
+// PIPELINE_STAGES is
+// the operator escape hatch: setting it to `ingest` (or unsetting it — the default)
+// removes every billable stage from the active chain, so a worker makes ZERO paid
+// engine calls, effective on the next execution with no code change and no deploy
+// (the gate landed in m1-stages-config-gate; SetActiveStages / resolveActiveStages
+// enforce it). The other guards below the seam (idempotency skip + process_attempts
+// cap) bound cost while a billable stage IS active; this bounds it to nothing.
 var stageRegistry = []stageDef{
 	{name: StageIngest, run: (*Runner).runIngest},
 	{name: StageTranscribe, run: (*Runner).runTranscribe},
@@ -192,6 +203,16 @@ type Repo interface {
 	AdvanceStage(ctx context.Context, orgID, episodePublicID, completedStage, proxyObjectKey string, durationMs int64) error
 	MarkReady(ctx context.Context, orgID, episodePublicID, proxyObjectKey string, durationMs int64) error
 	MarkFailed(ctx context.Context, orgID, episodePublicID, errorID string) error
+	// BeginBillableAttempt is the per-episode cost-safety gate a billable stage
+	// (transcribe, diarize) calls immediately before it would start a paid engine
+	// call. It atomically increments the episode's process_attempts and returns the
+	// new count with allowed=true ONLY while the pre-increment count was below
+	// maxAttempts; at/above the cap it changes nothing and returns allowed=false, so
+	// the stage refuses to bill and hard-fails. Org-scoped like the other finalizers;
+	// an unknown/foreign org also yields allowed=false (the fail-safe direction). It
+	// is the absolute ceiling on how many paid calls an episode can ever trigger — the
+	// idempotency guards stop re-billing on SUCCESS, this stops it on repeated FAILURE.
+	BeginBillableAttempt(ctx context.Context, orgID, episodePublicID string, maxAttempts int) (attempt int, allowed bool, err error)
 	// EpisodeStatus reports an episode's current status, used only to annotate the
 	// WARN logged when a claim is refused (the blocking status). "" means the id
 	// names no episode. It never scopes by org (the worker has no org pre-claim).
@@ -256,6 +277,20 @@ type Config struct {
 	// ~20-min word-timestamp batch limit). Exists so a test can force multi-chunk
 	// splitting on a short fixture; production leaves it at the default.
 	TranscribeChunkMs int
+	// MaxProcessAttempts is the per-episode ceiling on how many times a BILLABLE
+	// stage (transcribe/diarize) may start a paid engine call before it hard-fails
+	// without calling the engine (CLAUDE.md "Billable-service cost safety", item 3).
+	// It maps to MAX_PROCESS_ATTEMPTS; <=0 uses DefaultMaxProcessAttempts. It bounds
+	// runaway cost from an unforeseen re-drive/retry loop even if every other guard is
+	// bypassed. cmd/worker sets it from config.
+	MaxProcessAttempts int
+	// Reprocess forces the billable stages to IGNORE their idempotency skip and
+	// re-run the paid engine even when the output already exists (segments /
+	// speaker_keys) — a deliberate operator re-process, mapped to PIPELINE_REPROCESS
+	// (default false). A plain retry/re-drive leaves it false, so it never re-bills an
+	// already-completed stage; only an explicit reprocess execution sets it. It does
+	// NOT bypass the attempt cap (MaxProcessAttempts still applies).
+	Reprocess bool
 }
 
 const (
@@ -268,6 +303,14 @@ const (
 	// DefaultRetries is the number of *additional* attempts after the first, per
 	// the ruling (total attempts = 1 + retries = 3). cmd/worker applies it.
 	DefaultRetries = 2
+	// DefaultMaxProcessAttempts is the per-episode billable-attempt ceiling when
+	// Config.MaxProcessAttempts is unset (CLAUDE.md "Billable-service cost safety").
+	// Every paid engine call a billable stage starts increments the counter; at this
+	// many it refuses to call the engine. It is the absolute per-episode cost bound,
+	// independent of the per-run retry budget (DefaultRetries). Mirrors
+	// config.defaultMaxProcessAttempts; production flows the value from
+	// MAX_PROCESS_ATTEMPTS via cmd/worker.
+	DefaultMaxProcessAttempts = 5
 	// defaultTranscribeChunkMs is the transcribe stage's per-chunk audio cap when
 	// Config.TranscribeChunkMs is unset: 15 minutes, a deliberate margin under the
 	// ~20-min limit the batch API imposes when word-level timestamps are enabled
@@ -308,10 +351,26 @@ func (c Config) transcribeChunkMs() int {
 	return c.TranscribeChunkMs
 }
 
+func (c Config) maxProcessAttempts() int {
+	if c.MaxProcessAttempts <= 0 {
+		return DefaultMaxProcessAttempts
+	}
+	return c.MaxProcessAttempts
+}
+
 // ErrStageFailed reports that a stage exhausted its attempts. The episode is
 // already recorded 'failed' with a neutral error_id by the time it surfaces;
 // cmd/worker maps it to exit code 1 for Cloud Run Jobs semantics.
 var ErrStageFailed = errors.New("pipeline: stage failed after retries")
+
+// ErrBillableCapReached reports that a billable stage refused to call its paid
+// engine because the episode hit the per-episode attempt ceiling
+// (Config.MaxProcessAttempts / MAX_PROCESS_ATTEMPTS — CLAUDE.md "Billable-service
+// cost safety"). The stage returns it INSTEAD of ever touching the engine; the Run
+// loop treats it as a terminal, non-retryable failure (retrying cannot help and
+// must not bill), marks the episode 'failed' with a neutral error_id, and the
+// message names no provider. It never reaches a client surface.
+var ErrBillableCapReached = errors.New("pipeline: per-episode billable attempt cap reached")
 
 // Runner executes stages against the injected seams. It holds no per-run state,
 // so a single Runner is safe for concurrent Run calls.
@@ -467,6 +526,13 @@ func (r *Runner) Run(ctx context.Context, episodePublicID, stage string) error {
 			slog.String("episode", ep.PublicID), slog.String("stage", stage),
 			slog.Int("attempt", attempt), slog.Int("attempts", attempts),
 			slog.String("error", aerr.Error()))
+		// A billable-attempt-cap refusal is terminal: no billable call was made and
+		// retrying can only re-hit the cap (still no call). Stop immediately rather
+		// than burning the remaining attempts on a decision that cannot change — the
+		// episode is then marked 'failed' below with a neutral error_id.
+		if errors.Is(aerr, ErrBillableCapReached) {
+			break
+		}
 		// Abort the retry loop if the parent context is done (timeout/shutdown of
 		// the whole run, not just one attempt).
 		if ctx.Err() != nil {

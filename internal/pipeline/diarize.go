@@ -56,7 +56,7 @@ type SegmentSet struct {
 	Segments []asr.Segment
 }
 
-// SpeakerStore is the diarize stage's view of segment persistence. Both methods
+// SpeakerStore is the diarize stage's view of segment persistence. All methods
 // are org-scoped, so a re-driven stage can never read or write across tenants.
 type SpeakerStore interface {
 	// SegmentsForDiarize returns the episode's idx-ordered transcript together with
@@ -67,6 +67,11 @@ type SpeakerStore interface {
 	// one transaction, idempotently: a re-run overwrites the prior grouping rather
 	// than duplicating it. It writes ONLY speaker_key (verbatim invariant).
 	SetSegmentSpeakers(ctx context.Context, orgID, episodePublicID string, byIdx map[int]string) error
+	// SpeakersAssigned reports whether the episode is already fully diarized (it has
+	// segments and every one carries a speaker_key), org-scoped. A true result means
+	// the diarize stage must SKIP the billable LLM call — never re-billing on a
+	// retry/re-drive (CLAUDE.md "Billable-service cost safety").
+	SpeakersAssigned(ctx context.Context, orgID, episodePublicID string) (bool, error)
 }
 
 // runDiarize adapts the diarize stage to the registry's run signature. It reads
@@ -76,6 +81,21 @@ type SpeakerStore interface {
 // is retried. It produces no proxy/duration outputs of its own: the terminal
 // finalize preserves the ones ingest recorded (MarkEpisodeReady COALESCEs a NULL
 // arg, exactly as transcribe relies on).
+//
+// COST SAFETY (CLAUDE.md "Billable-service cost safety"). The LLM is the billable
+// engine, so two guards bound its cost, mirroring transcribe:
+//   - Idempotency: if the episode is already fully diarized (every segment carries a
+//     speaker_key), the paid call was already made — SKIP it. A plain retry/re-drive
+//     never re-bills; only Config.Reprocess forces a fresh grouping.
+//   - Attempt cap: BeginBillableAttempt increments process_attempts and refuses the
+//     call once the per-episode ceiling is reached.
+//
+// Max billable calls per episode: one attempt makes exactly ONE Diarizer call,
+// which internal/llm bounds to at most maxAttempts=2 provider calls (one initial +
+// one retry on invalid output — see internal/llm). The per-run retry loop and every
+// re-drive each increment process_attempts and are refused at the cap, so diarize
+// can ever trigger at most Config.maxProcessAttempts billable *attempts* (≤ 2× that
+// many provider calls), sharing the counter with transcribe.
 func (r *Runner) runDiarize(parent context.Context, ep Episode, _ int) (stageOutput, error) {
 	ctx, cancel := context.WithTimeout(parent, r.Config.stageTimeout())
 	defer cancel()
@@ -85,6 +105,20 @@ func (r *Runner) runDiarize(parent context.Context, ep Episode, _ int) (stageOut
 	}
 	if r.Speakers == nil {
 		return stageOutput{}, errors.New("diarize: no speaker store configured")
+	}
+
+	// Idempotency guard: skip the billable LLM call when the episode is already
+	// diarized. First, so a re-drive of an already-diarized episode is a free no-op.
+	if !r.Config.Reprocess {
+		done, err := r.Speakers.SpeakersAssigned(ctx, ep.OrgID, ep.PublicID)
+		if err != nil {
+			return stageOutput{}, fmt.Errorf("diarize: check existing speakers: %w", err)
+		}
+		if done {
+			r.logger().InfoContext(ctx, "already diarized; skipping",
+				slog.String("episode", ep.PublicID), slog.String("stage", string(StageDiarize)))
+			return stageOutput{}, nil
+		}
 	}
 
 	set, ok, err := r.Speakers.SegmentsForDiarize(ctx, ep.OrgID, ep.PublicID)
@@ -99,6 +133,23 @@ func (r *Runner) runDiarize(parent context.Context, ep Episode, _ int) (stageOut
 	if len(set.Segments) == 0 {
 		return stageOutput{}, errors.New("diarize: episode has no segments to diarize")
 	}
+
+	// Attempt cap: the segment read above is non-billable prep (an out-of-order run
+	// fails without consuming budget). Here — immediately before the paid Diarizer
+	// call — record the billable attempt and refuse it at the per-episode ceiling, so
+	// a capped episode bills NOTHING.
+	billAttempt, allowed, err := r.Repo.BeginBillableAttempt(ctx, ep.OrgID, ep.PublicID, r.Config.maxProcessAttempts())
+	if err != nil {
+		return stageOutput{}, fmt.Errorf("diarize: begin billable attempt: %w", err)
+	}
+	if !allowed {
+		r.logger().ErrorContext(ctx, "diarize blocked: per-episode billable attempt cap reached",
+			slog.String("episode", ep.PublicID), slog.Int("max_process_attempts", r.Config.maxProcessAttempts()))
+		return stageOutput{}, fmt.Errorf("%w (stage=diarize max=%d)", ErrBillableCapReached, r.Config.maxProcessAttempts())
+	}
+	r.logger().InfoContext(ctx, "billable diarize attempt",
+		slog.String("episode", ep.PublicID), slog.Int("process_attempts", billAttempt),
+		slog.Int("max_process_attempts", r.Config.maxProcessAttempts()))
 
 	// The Diarizer sends the LLM only {idx, text} per segment — no timestamps — and
 	// returns an idx -> speaker_key map validated to cover every segment exactly

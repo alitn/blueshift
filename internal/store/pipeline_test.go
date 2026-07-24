@@ -195,6 +195,54 @@ func TestClaimStampsClaimedAt(t *testing.T) {
 	}
 }
 
+// TestBeginBillableAttempt proves the per-episode cost-safety cap gate against a
+// real Postgres: each call below the cap atomically increments process_attempts and
+// returns allowed; at the cap it changes NOTHING and returns not-allowed (so the
+// stage never bills); and it is org-scoped (a foreign org is refused and never bumps
+// the counter). This is the runaway backstop bounding total billable engine calls.
+func TestBeginBillableAttempt(t *testing.T) {
+	f := newSegFixture(t) // reused only to provision an org + episode
+	st, ctx := f.st, f.ctx
+
+	readAttempts := func() int32 {
+		var n int32
+		if err := st.Pool().QueryRow(ctx, `SELECT process_attempts FROM episodes WHERE id = $1`, f.epID).Scan(&n); err != nil {
+			t.Fatalf("read process_attempts: %v", err)
+		}
+		return n
+	}
+	if got := readAttempts(); got != 0 {
+		t.Fatalf("fresh episode process_attempts = %d, want 0 (migration default)", got)
+	}
+
+	// Below the cap (max=3): three attempts increment 1,2,3 and are all allowed.
+	for want := 1; want <= 3; want++ {
+		n, allowed, err := st.BeginBillableAttempt(ctx, f.orgEncoded, f.epEncoded, 3)
+		if err != nil {
+			t.Fatalf("BeginBillableAttempt %d: %v", want, err)
+		}
+		if !allowed || n != want {
+			t.Fatalf("attempt %d = (n=%d, allowed=%v), want (%d, true)", want, n, allowed, want)
+		}
+	}
+	// At the cap (3 of 3): refused, and process_attempts is NOT incremented.
+	if n, allowed, err := st.BeginBillableAttempt(ctx, f.orgEncoded, f.epEncoded, 3); err != nil || allowed {
+		t.Fatalf("at cap = (n=%d, allowed=%v, err=%v), want (_, false, nil)", n, allowed, err)
+	}
+	if got := readAttempts(); got != 3 {
+		t.Errorf("process_attempts after a refused call = %d, want 3 (the cap does not increment)", got)
+	}
+
+	// Org-scoped: a foreign org is refused (fail-safe) and never bumps the counter.
+	otherOrg := ids.Encode(ids.Org, [16]byte{1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16})
+	if _, allowed, err := st.BeginBillableAttempt(ctx, otherOrg, f.epEncoded, 99); err != nil || allowed {
+		t.Errorf("cross-org BeginBillableAttempt = (allowed=%v, err=%v), want (false, nil)", allowed, err)
+	}
+	if got := readAttempts(); got != 3 {
+		t.Errorf("process_attempts after a cross-org call = %d, want 3 (untouched)", got)
+	}
+}
+
 func claimedAtNull(t *testing.T, st *Store, ctx context.Context, pub pgtype.UUID) bool {
 	t.Helper()
 	var isNull bool

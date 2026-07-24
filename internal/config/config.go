@@ -166,6 +166,22 @@ type Config struct {
 	// registered (M1) it has no observable effect: ingest is terminal.
 	PipelineAutoAdvance bool
 
+	// MaxProcessAttempts is the per-episode ceiling on how many times a BILLABLE
+	// stage (transcribe -> the ASR engine, diarize -> the LLM) may start a paid
+	// engine call before it hard-fails without calling the engine (CLAUDE.md
+	// "Billable-service cost safety"). Maps to MAX_PROCESS_ATTEMPTS and defaults to
+	// 5. It bounds
+	// runaway metered cost from an unforeseen re-drive/retry loop even if every code
+	// guard above it is bypassed; only the worker's billable stages consult it.
+	MaxProcessAttempts int
+	// Reprocess forces the billable stages to re-run their paid engine even when the
+	// output already exists (segments / speaker_keys), bypassing the cost-safety
+	// idempotency SKIP — a deliberate operator re-process. Maps to PIPELINE_REPROCESS
+	// and defaults to false, so a plain retry/re-drive never re-bills a completed
+	// stage. It does NOT bypass MaxProcessAttempts. Set it on a single, targeted
+	// worker execution (per docs/RUNBOOK.md), never as a standing worker default.
+	Reprocess bool
+
 	// ProxyMaxRemuxBitrate is the overall-bitrate ceiling (bits/sec) under which an
 	// already-browser-compatible master is remuxed (stream copy) into its proxy
 	// rather than transcoded. Above it, the master is transcoded so a proxy always
@@ -218,6 +234,11 @@ const (
 	// bits/sec) when PROXY_MAX_REMUX_BITRATE is unset. Mirrors
 	// pipeline.defaultMaxRemuxBitrate.
 	defaultProxyMaxRemuxBitrate = 6_000_000
+
+	// defaultMaxProcessAttempts is the per-episode billable-attempt ceiling when
+	// MAX_PROCESS_ATTEMPTS is unset (CLAUDE.md "Billable-service cost safety").
+	// Mirrors pipeline.DefaultMaxProcessAttempts.
+	defaultMaxProcessAttempts = 5
 
 	// defaultSweepInterval is the cadence of the abandoned-upload sweep when
 	// SWEEP_INTERVAL is unset.
@@ -491,6 +512,32 @@ func loadWorker(cfg *Config, getenv func(string) string) error {
 			return fmt.Errorf("config: PROXY_MAX_REMUX_BITRATE must be positive, got %q", v)
 		}
 		cfg.ProxyMaxRemuxBitrate = n
+	}
+
+	// MAX_PROCESS_ATTEMPTS is the per-episode billable-attempt ceiling (cost safety).
+	// Default 5; an explicit value must be a positive integer.
+	cfg.MaxProcessAttempts = defaultMaxProcessAttempts
+	if v := strings.TrimSpace(getenv("MAX_PROCESS_ATTEMPTS")); v != "" {
+		n, err := strconv.Atoi(v)
+		if err != nil {
+			return fmt.Errorf("config: invalid MAX_PROCESS_ATTEMPTS %q (want a positive integer): %w", v, err)
+		}
+		if n <= 0 {
+			return fmt.Errorf("config: MAX_PROCESS_ATTEMPTS must be positive, got %q", v)
+		}
+		cfg.MaxProcessAttempts = n
+	}
+
+	// PIPELINE_REPROCESS forces the billable stages to re-run their paid engine even
+	// when the output already exists (deliberate operator re-process). Defaults to
+	// false; an explicit value must be a boolean.
+	cfg.Reprocess = false
+	if v := strings.TrimSpace(getenv("PIPELINE_REPROCESS")); v != "" {
+		b, err := strconv.ParseBool(v)
+		if err != nil {
+			return fmt.Errorf("config: invalid PIPELINE_REPROCESS %q (want a boolean): %w", v, err)
+		}
+		cfg.Reprocess = b
 	}
 
 	return nil

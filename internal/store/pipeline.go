@@ -93,6 +93,43 @@ func (s *Store) AdvanceStage(ctx context.Context, orgID, episodePublicID, comple
 	return nil
 }
 
+// BeginBillableAttempt is the per-episode cost-safety gate (CLAUDE.md
+// "Billable-service cost safety"): a billable stage calls it immediately before it
+// would start a paid engine call. It atomically increments episodes.process_attempts
+// and returns the new count with allowed=true ONLY while the pre-increment count was
+// below maxAttempts; at or above the cap it makes NO change and returns
+// allowed=false, so the stage refuses to call the engine and hard-fails. The
+// increment-and-compare is one statement (IncrementEpisodeProcessAttemptsBelowCap),
+// so it is race-free even though the claim already serialises a single worker per
+// episode. Org-scoped exactly like the other finalizers — an unknown/foreign org,
+// or an episode already at the cap, both yield allowed=false (never a billable
+// call), which is the fail-safe direction. A real DB fault is returned as an error.
+func (s *Store) BeginBillableAttempt(ctx context.Context, orgID, episodePublicID string, maxAttempts int) (attempt int, allowed bool, err error) {
+	orgInternal, epUUID, ok, err := s.resolveOrgAndEpisode(ctx, orgID, episodePublicID)
+	if err != nil {
+		return 0, false, err
+	}
+	if !ok {
+		// Unknown/foreign org: it names no tenant we can bill. Refuse the call.
+		return 0, false, nil
+	}
+	n, err := s.IncrementEpisodeProcessAttemptsBelowCap(ctx, db.IncrementEpisodeProcessAttemptsBelowCapParams{
+		PublicID:    pgUUID(epUUID),
+		OrgID:       orgInternal,
+		MaxAttempts: int32(maxAttempts),
+	})
+	if errors.Is(err, pgx.ErrNoRows) {
+		// No row matched the `process_attempts < max_attempts` predicate: the episode
+		// is at/above the cap (or was removed). Either way, refuse the billable call —
+		// the safe direction — without surfacing pgx.ErrNoRows as an error.
+		return 0, false, nil
+	}
+	if err != nil {
+		return 0, false, fmt.Errorf("store: begin billable attempt: %w", err)
+	}
+	return int(n), true, nil
+}
+
 // MarkReady finalizes a successful run: proxy key + measured duration, status
 // 'ready'. Org-scoped and gated on 'processing'; a mismatch (wrong org, already
 // finalized) is a no-op, so a lost race never corrupts another run or tenant.

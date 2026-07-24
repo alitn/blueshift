@@ -196,6 +196,25 @@ WHERE public_id = $1
   AND deleted_at IS NULL
 RETURNING *;
 
+-- name: IncrementEpisodeProcessAttemptsBelowCap :one
+-- Cost-safety gate (CLAUDE.md "Billable-service cost safety"): atomically record
+-- that a billable stage is about to start a paid engine call, but ONLY while the
+-- per-episode attempt count is still below the cap. It increments process_attempts
+-- and returns the new value; the CHECK `process_attempts < max_attempts` in the
+-- WHERE clause makes it a compare-and-set — at or above the cap NO row matches, so
+-- nothing is incremented and the caller gets pgx.ErrNoRows, which the store maps to
+-- "not allowed" so the stage refuses to call the engine. Org-scoped like the other
+-- finalizers (the stage supplies the org it claimed), so it can never bump another
+-- tenant's counter. This is the ONLY writer of process_attempts.
+UPDATE episodes
+SET process_attempts = process_attempts + 1,
+    updated_at = now()
+WHERE public_id = sqlc.arg(public_id)
+  AND org_id = sqlc.arg(org_id)
+  AND deleted_at IS NULL
+  AND process_attempts < sqlc.arg(max_attempts)
+RETURNING process_attempts;
+
 -- name: SweepStuckProcessingEpisodes :execrows
 -- System-level stale-claim sweep: the backstop for a worker that entered
 -- 'processing' (Claim) but was SIGKILLed / OOM-killed / crashed before it could

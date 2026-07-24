@@ -111,6 +111,32 @@ func TestGenerateInvalidTwice(t *testing.T) {
 	}
 }
 
+// TestGenerateNeverExceedsMaxAttempts is the LLM half of the cost-safety
+// bounded-retries audit (CLAUDE.md "Billable-service cost safety", item 3): even
+// when every attempt fails and the engine could keep answering, the Client makes at
+// MOST maxAttempts billable provider calls (one initial + one retry) and then
+// hard-fails. Scripting MORE failing steps than that proves the ceiling is enforced
+// by the Client, not an artefact of running out of scripted steps — there is no
+// unbounded billable loop.
+func TestGenerateNeverExceedsMaxAttempts(t *testing.T) {
+	if maxAttempts != 2 {
+		t.Fatalf("maxAttempts = %d, want 2 (CLAUDE.md: invalid -> one retry -> hard fail)", maxAttempts)
+	}
+	fe := newFake()
+	// Five identical invalid outputs are available; the Client must consume only two.
+	bad := okStep(`{"answer":"x","count":1,"surprise":true}`, 10, 5)
+	fe.steps = []fakeStep{bad, bad, bad, bad, bad}
+	c := newTestClient(fe, nil, &memAuditor{})
+
+	var out sampleOut
+	if _, err := c.Generate(context.Background(), baseRequest(&out)); !errors.Is(err, ErrInvalidOutput) {
+		t.Fatalf("err = %v, want ErrInvalidOutput", err)
+	}
+	if fe.calls != maxAttempts {
+		t.Errorf("engine calls = %d, want exactly maxAttempts=%d (bounded retries; no unbounded billable loop)", fe.calls, maxAttempts)
+	}
+}
+
 // TestGenerateTransportErrorTwice: two upstream failures -> ErrUnavailable, two
 // 'error' rows (cost NULL), neutral error.
 func TestGenerateTransportErrorTwice(t *testing.T) {

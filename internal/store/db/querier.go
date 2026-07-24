@@ -46,6 +46,19 @@ type Querier interface {
 	// signal the stale-claim sweeper reads to force-fail a 'processing' row whose
 	// worker died without finalizing it.
 	ClaimEpisodeForStage(ctx context.Context, arg ClaimEpisodeForStageParams) (Episode, error)
+	// Cost-safety idempotency probe for the transcribe stage: how many transcript
+	// segments the episode already has. A non-zero count means the episode is already
+	// transcribed, so the stage SKIPS the billable ASR call entirely (never re-bills on
+	// a retry/re-drive). episode_id is the internal id, resolved org-scoped by the
+	// caller.
+	CountEpisodeSegments(ctx context.Context, episodeID int64) (int64, error)
+	// Cost-safety idempotency probe for the diarize stage: the episode's total segment
+	// count and how many already carry a speaker_key (count() ignores NULLs, so
+	// `diarized` counts only assigned rows). The stage treats "already diarized" as
+	// total > 0 AND diarized = total, and then SKIPS the billable LLM call (never
+	// re-bills on a retry/re-drive). episode_id is the internal id, resolved org-scoped
+	// by the caller.
+	CountEpisodeSegmentsAndSpeakers(ctx context.Context, episodeID int64) (CountEpisodeSegmentsAndSpeakersRow, error)
 	// Remove all of an episode's segments. Paired with InsertSegment inside one
 	// transaction, this makes a re-run of the transcribe stage idempotent: the prior
 	// transcript is replaced wholesale rather than duplicated. episode_id is the
@@ -83,6 +96,16 @@ type Querier interface {
 	// principal. This is how every org-scoped write turns the caller's org identity
 	// (never client input) into the internal org_id used by the queries below.
 	GetOrgByPublicID(ctx context.Context, publicID pgtype.UUID) (Org, error)
+	// Cost-safety gate (CLAUDE.md "Billable-service cost safety"): atomically record
+	// that a billable stage is about to start a paid engine call, but ONLY while the
+	// per-episode attempt count is still below the cap. It increments process_attempts
+	// and returns the new value; the CHECK `process_attempts < max_attempts` in the
+	// WHERE clause makes it a compare-and-set — at or above the cap NO row matches, so
+	// nothing is incremented and the caller gets pgx.ErrNoRows, which the store maps to
+	// "not allowed" so the stage refuses to call the engine. Org-scoped like the other
+	// finalizers (the stage supplies the org it claimed), so it can never bump another
+	// tenant's counter. This is the ONLY writer of process_attempts.
+	IncrementEpisodeProcessAttemptsBelowCap(ctx context.Context, arg IncrementEpisodeProcessAttemptsBelowCapParams) (int32, error)
 	InsertEpisode(ctx context.Context, arg InsertEpisodeParams) (Episode, error)
 	// Append-only audit of a single model call made through /internal/llm. There is
 	// one row per provider call: successes, schema-invalid outputs, and failed or

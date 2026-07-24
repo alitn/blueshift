@@ -37,8 +37,15 @@ type ASR interface {
 // SegmentStore persists an episode's transcript. ReplaceSegments is idempotent
 // per episode (a re-run replaces rather than duplicates) and org-scoped, so a
 // re-driven transcribe stage is safe and can never write across tenants.
+// HasSegments is the cost-safety idempotency probe: the stage checks it BEFORE the
+// billable ASR engine and skips the paid call when the transcript already exists.
 type SegmentStore interface {
 	ReplaceSegments(ctx context.Context, orgID, episodePublicID string, segments []asr.Segment) error
+	// HasSegments reports whether the episode already has persisted transcript
+	// segments (org-scoped). A true result means the transcribe stage must SKIP the
+	// billable ASR call — never re-billing on a retry/re-drive (CLAUDE.md
+	// "Billable-service cost safety").
+	HasSegments(ctx context.Context, orgID, episodePublicID string) (bool, error)
 }
 
 // LangEngineResolver resolves the ASR engine for a content language from data,
@@ -96,6 +103,23 @@ func declaresEngine(l lang.Language, key lang.EngineKey) bool {
 // wedged engine or ffmpeg is retried. It produces no proxy/duration outputs of
 // its own: the terminal MarkReady preserves the ones ingest recorded (the
 // stageOutput it returns forwards nothing, and MarkEpisodeReady COALESCEs).
+//
+// COST SAFETY (CLAUDE.md "Billable-service cost safety"). ASR is the billable
+// engine, so two guards bound its cost before any paid call:
+//   - Idempotency: if the episode already has segments, the paid call was already
+//     made — SKIP it (no engine call, no attempt consumed). A plain retry/re-drive
+//     never re-bills; only Config.Reprocess forces a fresh transcription.
+//   - Attempt cap: BeginBillableAttempt increments process_attempts and refuses the
+//     call once the per-episode ceiling (Config.maxProcessAttempts) is reached.
+//
+// Max billable calls per episode: internal/asr issues exactly ONE provider
+// operation per engine.Transcribe (submit once, then poll a bounded loop — no retry
+// re-submits, so no retry re-bills). One attempt calls Transcribe once per audio
+// chunk (⌈duration / TranscribeChunkMs⌉). The per-run retry loop (1 + Config.Retries
+// attempts) and every re-drive each increment process_attempts, and the stage
+// refuses to call the engine once it reaches the cap — so an episode can ever
+// trigger at most Config.maxProcessAttempts billable *attempts*
+// (≤ maxProcessAttempts × chunks provider operations), shared with the diarize stage.
 func (r *Runner) runTranscribe(parent context.Context, ep Episode, attempt int) (stageOutput, error) {
 	ctx, cancel := context.WithTimeout(parent, r.Config.stageTimeout())
 	defer cancel()
@@ -105,6 +129,21 @@ func (r *Runner) runTranscribe(parent context.Context, ep Episode, attempt int) 
 	}
 	if r.Segments == nil {
 		return stageOutput{}, errors.New("transcribe: no segment store configured")
+	}
+
+	// Idempotency guard: skip the billable ASR call when the transcript already
+	// exists. This runs first (before engine resolution) so a re-drive of an
+	// already-transcribed episode is a cheap, free no-op that just advances it.
+	if !r.Config.Reprocess {
+		has, err := r.Segments.HasSegments(ctx, ep.OrgID, ep.PublicID)
+		if err != nil {
+			return stageOutput{}, fmt.Errorf("transcribe: check existing segments: %w", err)
+		}
+		if has {
+			r.logger().InfoContext(ctx, "already transcribed; skipping",
+				slog.String("episode", ep.PublicID), slog.String("stage", string(StageTranscribe)))
+			return stageOutput{}, nil
+		}
 	}
 
 	engine, err := r.ASR.EngineFor(ctx, ep.Language)
@@ -133,6 +172,23 @@ func (r *Runner) runTranscribe(parent context.Context, ep Episode, attempt int) 
 	// (see asr.TranscribeRequest.BiasTerms). No glossary_terms table exists yet, so
 	// no terms are passed today; the bias source is wired when that table lands.
 	var bias []string
+
+	// Attempt cap: everything above is non-billable prep (engine resolve, chunk
+	// planning) that can fail without consuming budget. Here — immediately before the
+	// first paid engine.Transcribe — record the billable attempt and refuse it when
+	// the per-episode ceiling is reached, so a capped episode bills NOTHING.
+	billAttempt, allowed, err := r.Repo.BeginBillableAttempt(ctx, ep.OrgID, ep.PublicID, r.Config.maxProcessAttempts())
+	if err != nil {
+		return stageOutput{}, fmt.Errorf("transcribe: begin billable attempt: %w", err)
+	}
+	if !allowed {
+		r.logger().ErrorContext(ctx, "transcribe blocked: per-episode billable attempt cap reached",
+			slog.String("episode", ep.PublicID), slog.Int("max_process_attempts", r.Config.maxProcessAttempts()))
+		return stageOutput{}, fmt.Errorf("%w (stage=transcribe max=%d)", ErrBillableCapReached, r.Config.maxProcessAttempts())
+	}
+	r.logger().InfoContext(ctx, "billable transcribe attempt",
+		slog.String("episode", ep.PublicID), slog.Int("process_attempts", billAttempt),
+		slog.Int("max_process_attempts", r.Config.maxProcessAttempts()))
 
 	chunks, err := r.transcribeChunks(ctx, engine, ep, audioKey, windows, bias, attempt)
 	if err != nil {

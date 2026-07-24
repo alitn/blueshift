@@ -228,6 +228,30 @@ func TestReplaceSegmentsOrgScoped(t *testing.T) {
 	}
 }
 
+// TestHasSegments proves the transcribe stage's cost-safety idempotency probe:
+// false before any transcript exists, true once segments are persisted, and
+// org-scoped so a foreign org never sees another tenant's transcript as "already
+// transcribed" (which would wrongly skip that tenant's billable ASR call).
+func TestHasSegments(t *testing.T) {
+	f := newSegFixture(t)
+	st, ctx := f.st, f.ctx
+
+	if has, err := st.HasSegments(ctx, f.orgEncoded, f.epEncoded); err != nil || has {
+		t.Fatalf("HasSegments before transcript = (%v, %v), want (false, nil)", has, err)
+	}
+	if err := st.ReplaceSegments(ctx, f.orgEncoded, f.epEncoded, sampleSegments()); err != nil {
+		t.Fatalf("ReplaceSegments: %v", err)
+	}
+	if has, err := st.HasSegments(ctx, f.orgEncoded, f.epEncoded); err != nil || !has {
+		t.Fatalf("HasSegments after transcript = (%v, %v), want (true, nil)", has, err)
+	}
+	// Org-scoped: a foreign org must not see the segments.
+	otherOrg := ids.Encode(ids.Org, [16]byte{1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16})
+	if has, err := st.HasSegments(ctx, otherOrg, f.epEncoded); err != nil || has {
+		t.Errorf("cross-org HasSegments = (%v, %v), want (false, nil)", has, err)
+	}
+}
+
 func (f segFixture) count(t *testing.T) int64 {
 	t.Helper()
 	var n int64

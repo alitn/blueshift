@@ -57,6 +57,7 @@ func testLogger() *slog.Logger { return slog.New(slog.NewTextHandler(io.Discard,
 type speechSrv struct {
 	*httptest.Server
 	postBody atomic.Value // []byte
+	posts    atomic.Int32 // count of batchRecognize submissions (the billable op)
 	gets     atomic.Int32
 }
 
@@ -66,6 +67,7 @@ func newSpeechSrv(t *testing.T, submit, running, terminal []byte, runningPolls i
 	s.Server = httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Content-Type", "application/json")
 		if r.Method == http.MethodPost && strings.HasSuffix(r.URL.Path, ":batchRecognize") {
+			s.posts.Add(1)
 			b, _ := io.ReadAll(r.Body)
 			s.postBody.Store(b)
 			_, _ = w.Write(submit)
@@ -196,6 +198,34 @@ func TestSpeechTranscribeSuccess(t *testing.T) {
 		t.Error("recognitionOutputConfig missing")
 	} else if _, ok := oc["inlineResponseConfig"]; !ok {
 		t.Error("recognitionOutputConfig.inlineResponseConfig missing (avoids the GCS-write grant)")
+	}
+}
+
+// TestSpeechTranscribeSubmitsExactlyOnce is the ASR half of the cost-safety
+// bounded-retries audit (CLAUDE.md "Billable-service cost safety", item 3): one
+// Transcribe issues EXACTLY ONE batchRecognize submission — the billable operation —
+// no matter how many times the engine has to poll the long-running operation for it
+// to finish. The engine never re-submits (no internal retry loop around the paid
+// call), so a single Transcribe can bill at most once; the poll loop that follows is
+// bounded by PollTimeout and only reads an already-created operation (not billable).
+// The pipeline stage above it bounds how many Transcribe calls happen per episode
+// (idempotency skip + process_attempts cap).
+func TestSpeechTranscribeSubmitsExactlyOnce(t *testing.T) {
+	srv := newSpeechSrv(t,
+		loadSpeechFixture(t, "batch_submit.json"),
+		loadSpeechFixture(t, "batch_op_running.json"),
+		loadSpeechFixture(t, "batch_op_done_success.json"),
+		3) // several in-progress polls before done, to prove polling never re-submits
+	e := testEngine(t, srv, nil)
+
+	if _, err := e.Transcribe(context.Background(), TranscribeRequest{AudioKey: testKey, Language: "fa"}); err != nil {
+		t.Fatalf("Transcribe: %v", err)
+	}
+	if got := srv.posts.Load(); got != 1 {
+		t.Errorf("batchRecognize submissions = %d, want exactly 1 (the billable op must never be retried/re-submitted)", got)
+	}
+	if got := srv.gets.Load(); got < 2 {
+		t.Errorf("operation polls = %d, want several (the test must actually exercise the poll loop)", got)
 	}
 }
 

@@ -33,6 +33,9 @@ type fakeEp struct {
 	durationMs int64
 	errorID    string
 	claims     int
+	// processAttempts mirrors episodes.process_attempts: the per-episode count of
+	// billable stage-starts, bumped by BeginBillableAttempt (the cost-safety gate).
+	processAttempts int
 }
 
 type fakeRepo struct {
@@ -68,6 +71,14 @@ func (f *fakeRepo) get(epID string) fakeEp {
 	f.mu.Lock()
 	defer f.mu.Unlock()
 	return *f.eps[epID]
+}
+
+// setProcessAttempts seeds episodes.process_attempts, so a cost-safety test can
+// place an episode exactly at (or below) the billable-attempt cap.
+func (f *fakeRepo) setProcessAttempts(epID string, n int) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	f.eps[epID].processAttempts = n
 }
 
 // Claim mirrors ClaimEpisodeForStage: an entry stage (prevStage == "") is a CAS
@@ -162,6 +173,25 @@ func (f *fakeRepo) MarkFailed(ctx context.Context, org, epID, errorID string) er
 	e.status = "failed"
 	e.errorID = errorID
 	return nil
+}
+
+// BeginBillableAttempt mirrors the store's cost-safety gate: increment-if-below-cap
+// on process_attempts, org-scoped. It returns the new count with allowed=true only
+// while the pre-increment count was below maxAttempts; at/above the cap (or an
+// unknown/foreign org) it changes nothing and returns allowed=false, so the stage
+// refuses to bill. This is the ONLY place processAttempts is bumped.
+func (f *fakeRepo) BeginBillableAttempt(_ context.Context, org, epID string, maxAttempts int) (int, bool, error) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	e, ok := f.eps[epID]
+	if !ok || e.org != org {
+		return 0, false, nil // unknown/foreign: refuse the billable call (fail-safe)
+	}
+	if e.processAttempts >= maxAttempts {
+		return e.processAttempts, false, nil // at cap: no increment, no call
+	}
+	e.processAttempts++
+	return e.processAttempts, true, nil
 }
 
 // EpisodeStatus reports the current status by id (or "" when unknown), matching

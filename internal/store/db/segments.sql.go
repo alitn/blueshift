@@ -11,6 +11,45 @@ import (
 	"github.com/jackc/pgx/v5/pgtype"
 )
 
+const countEpisodeSegments = `-- name: CountEpisodeSegments :one
+SELECT count(*) FROM segments WHERE episode_id = $1
+`
+
+// Cost-safety idempotency probe for the transcribe stage: how many transcript
+// segments the episode already has. A non-zero count means the episode is already
+// transcribed, so the stage SKIPS the billable ASR call entirely (never re-bills on
+// a retry/re-drive). episode_id is the internal id, resolved org-scoped by the
+// caller.
+func (q *Queries) CountEpisodeSegments(ctx context.Context, episodeID int64) (int64, error) {
+	row := q.db.QueryRow(ctx, countEpisodeSegments, episodeID)
+	var count int64
+	err := row.Scan(&count)
+	return count, err
+}
+
+const countEpisodeSegmentsAndSpeakers = `-- name: CountEpisodeSegmentsAndSpeakers :one
+SELECT count(*) AS total, count(speaker_key) AS diarized
+FROM segments WHERE episode_id = $1
+`
+
+type CountEpisodeSegmentsAndSpeakersRow struct {
+	Total    int64
+	Diarized int64
+}
+
+// Cost-safety idempotency probe for the diarize stage: the episode's total segment
+// count and how many already carry a speaker_key (count() ignores NULLs, so
+// `diarized` counts only assigned rows). The stage treats "already diarized" as
+// total > 0 AND diarized = total, and then SKIPS the billable LLM call (never
+// re-bills on a retry/re-drive). episode_id is the internal id, resolved org-scoped
+// by the caller.
+func (q *Queries) CountEpisodeSegmentsAndSpeakers(ctx context.Context, episodeID int64) (CountEpisodeSegmentsAndSpeakersRow, error) {
+	row := q.db.QueryRow(ctx, countEpisodeSegmentsAndSpeakers, episodeID)
+	var i CountEpisodeSegmentsAndSpeakersRow
+	err := row.Scan(&i.Total, &i.Diarized)
+	return i, err
+}
+
 const deleteEpisodeSegments = `-- name: DeleteEpisodeSegments :exec
 DELETE FROM segments WHERE episode_id = $1
 `

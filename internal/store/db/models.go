@@ -48,6 +48,7 @@ type Episode struct {
 	MasterSizeBytes pgtype.Int8
 	ClaimedAt       pgtype.Timestamptz
 	CurrentStage    pgtype.Text
+	ProcessAttempts int32
 }
 
 type LlmCall struct {

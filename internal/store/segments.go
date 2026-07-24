@@ -80,6 +80,38 @@ func (s *Store) ReplaceSegments(ctx context.Context, orgID, episodePublicID stri
 	return nil
 }
 
+// HasSegments reports whether the episode already has persisted transcript
+// segments, org-scoped. It is the transcribe stage's cost-safety idempotency probe
+// (CLAUDE.md "Billable-service cost safety"): a true result means the transcript
+// already exists, so the stage SKIPS the billable ASR call entirely and never
+// re-bills on a retry/re-drive. An unknown/foreign org or missing episode yields
+// false (no error), matching ReplaceSegments' lost-race/cross-tenant contract — a
+// re-drive that cannot resolve the episode simply is not "already transcribed".
+func (s *Store) HasSegments(ctx context.Context, orgID, episodePublicID string) (bool, error) {
+	orgInternal, epUUID, ok, err := s.resolveOrgAndEpisode(ctx, orgID, episodePublicID)
+	if err != nil {
+		return false, err
+	}
+	if !ok {
+		return false, nil
+	}
+	ep, err := s.GetEpisodeByPublicID(ctx, db.GetEpisodeByPublicIDParams{
+		PublicID: pgUUID(epUUID),
+		OrgID:    orgInternal,
+	})
+	if errors.Is(err, pgx.ErrNoRows) {
+		return false, nil
+	}
+	if err != nil {
+		return false, fmt.Errorf("store: resolve episode for segment count: %w", err)
+	}
+	n, err := s.CountEpisodeSegments(ctx, ep.ID)
+	if err != nil {
+		return false, fmt.Errorf("store: count segments: %w", err)
+	}
+	return n > 0, nil
+}
+
 // EpisodeSegments returns an episode's transcript in idx order, org-scoped. It
 // decodes the positional words jsonb back into asr.Word. An unknown/foreign org
 // or missing episode yields nil (no error), matching ReplaceSegments.

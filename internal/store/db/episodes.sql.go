@@ -23,7 +23,7 @@ WHERE public_id = $3
   AND status = 'processing'
   AND current_stage = $5
   AND deleted_at IS NULL
-RETURNING id, public_id, org_id, show_id, title, source_filename, language, status, duration_ms, master_object_key, proxy_object_key, error_id, created_at, updated_at, deleted_at, master_size_bytes, claimed_at, current_stage
+RETURNING id, public_id, org_id, show_id, title, source_filename, language, status, duration_ms, master_object_key, proxy_object_key, error_id, created_at, updated_at, deleted_at, master_size_bytes, claimed_at, current_stage, process_attempts
 `
 
 type AdvanceEpisodeStageParams struct {
@@ -74,6 +74,7 @@ func (q *Queries) AdvanceEpisodeStage(ctx context.Context, arg AdvanceEpisodeSta
 		&i.MasterSizeBytes,
 		&i.ClaimedAt,
 		&i.CurrentStage,
+		&i.ProcessAttempts,
 	)
 	return i, err
 }
@@ -93,7 +94,7 @@ WHERE public_id = $2
          AND status = 'processing'
          AND current_stage = $3)
       )
-RETURNING id, public_id, org_id, show_id, title, source_filename, language, status, duration_ms, master_object_key, proxy_object_key, error_id, created_at, updated_at, deleted_at, master_size_bytes, claimed_at, current_stage
+RETURNING id, public_id, org_id, show_id, title, source_filename, language, status, duration_ms, master_object_key, proxy_object_key, error_id, created_at, updated_at, deleted_at, master_size_bytes, claimed_at, current_stage, process_attempts
 `
 
 type ClaimEpisodeForStageParams struct {
@@ -145,6 +146,7 @@ func (q *Queries) ClaimEpisodeForStage(ctx context.Context, arg ClaimEpisodeForS
 		&i.MasterSizeBytes,
 		&i.ClaimedAt,
 		&i.CurrentStage,
+		&i.ProcessAttempts,
 	)
 	return i, err
 }
@@ -177,7 +179,7 @@ func (q *Queries) DeleteOrphanEpisode(ctx context.Context, arg DeleteOrphanEpiso
 }
 
 const getEpisodeByPublicID = `-- name: GetEpisodeByPublicID :one
-SELECT id, public_id, org_id, show_id, title, source_filename, language, status, duration_ms, master_object_key, proxy_object_key, error_id, created_at, updated_at, deleted_at, master_size_bytes, claimed_at, current_stage FROM episodes
+SELECT id, public_id, org_id, show_id, title, source_filename, language, status, duration_ms, master_object_key, proxy_object_key, error_id, created_at, updated_at, deleted_at, master_size_bytes, claimed_at, current_stage, process_attempts FROM episodes
 WHERE public_id = $1
   AND org_id = $2
   AND deleted_at IS NULL
@@ -210,6 +212,7 @@ func (q *Queries) GetEpisodeByPublicID(ctx context.Context, arg GetEpisodeByPubl
 		&i.MasterSizeBytes,
 		&i.ClaimedAt,
 		&i.CurrentStage,
+		&i.ProcessAttempts,
 	)
 	return i, err
 }
@@ -232,13 +235,46 @@ func (q *Queries) GetEpisodeStatusByPublicID(ctx context.Context, publicID pgtyp
 	return status, err
 }
 
+const incrementEpisodeProcessAttemptsBelowCap = `-- name: IncrementEpisodeProcessAttemptsBelowCap :one
+UPDATE episodes
+SET process_attempts = process_attempts + 1,
+    updated_at = now()
+WHERE public_id = $1
+  AND org_id = $2
+  AND deleted_at IS NULL
+  AND process_attempts < $3
+RETURNING process_attempts
+`
+
+type IncrementEpisodeProcessAttemptsBelowCapParams struct {
+	PublicID    pgtype.UUID
+	OrgID       int64
+	MaxAttempts int32
+}
+
+// Cost-safety gate (CLAUDE.md "Billable-service cost safety"): atomically record
+// that a billable stage is about to start a paid engine call, but ONLY while the
+// per-episode attempt count is still below the cap. It increments process_attempts
+// and returns the new value; the CHECK `process_attempts < max_attempts` in the
+// WHERE clause makes it a compare-and-set — at or above the cap NO row matches, so
+// nothing is incremented and the caller gets pgx.ErrNoRows, which the store maps to
+// "not allowed" so the stage refuses to call the engine. Org-scoped like the other
+// finalizers (the stage supplies the org it claimed), so it can never bump another
+// tenant's counter. This is the ONLY writer of process_attempts.
+func (q *Queries) IncrementEpisodeProcessAttemptsBelowCap(ctx context.Context, arg IncrementEpisodeProcessAttemptsBelowCapParams) (int32, error) {
+	row := q.db.QueryRow(ctx, incrementEpisodeProcessAttemptsBelowCap, arg.PublicID, arg.OrgID, arg.MaxAttempts)
+	var process_attempts int32
+	err := row.Scan(&process_attempts)
+	return process_attempts, err
+}
+
 const insertEpisode = `-- name: InsertEpisode :one
 INSERT INTO episodes (
     org_id, show_id, title, source_filename, language, master_object_key, master_size_bytes
 ) VALUES (
     $1, $2, $3, $4, $5, $6, $7
 )
-RETURNING id, public_id, org_id, show_id, title, source_filename, language, status, duration_ms, master_object_key, proxy_object_key, error_id, created_at, updated_at, deleted_at, master_size_bytes, claimed_at, current_stage
+RETURNING id, public_id, org_id, show_id, title, source_filename, language, status, duration_ms, master_object_key, proxy_object_key, error_id, created_at, updated_at, deleted_at, master_size_bytes, claimed_at, current_stage, process_attempts
 `
 
 type InsertEpisodeParams struct {
@@ -281,12 +317,13 @@ func (q *Queries) InsertEpisode(ctx context.Context, arg InsertEpisodeParams) (E
 		&i.MasterSizeBytes,
 		&i.ClaimedAt,
 		&i.CurrentStage,
+		&i.ProcessAttempts,
 	)
 	return i, err
 }
 
 const listEpisodesByOrg = `-- name: ListEpisodesByOrg :many
-SELECT id, public_id, org_id, show_id, title, source_filename, language, status, duration_ms, master_object_key, proxy_object_key, error_id, created_at, updated_at, deleted_at, master_size_bytes, claimed_at, current_stage FROM episodes
+SELECT id, public_id, org_id, show_id, title, source_filename, language, status, duration_ms, master_object_key, proxy_object_key, error_id, created_at, updated_at, deleted_at, master_size_bytes, claimed_at, current_stage, process_attempts FROM episodes
 WHERE org_id = $1
   AND deleted_at IS NULL
 ORDER BY created_at DESC, id DESC
@@ -320,6 +357,7 @@ func (q *Queries) ListEpisodesByOrg(ctx context.Context, orgID int64) ([]Episode
 			&i.MasterSizeBytes,
 			&i.ClaimedAt,
 			&i.CurrentStage,
+			&i.ProcessAttempts,
 		); err != nil {
 			return nil, err
 		}
@@ -341,7 +379,7 @@ WHERE public_id = $1
   AND org_id = $2
   AND status = 'processing'
   AND deleted_at IS NULL
-RETURNING id, public_id, org_id, show_id, title, source_filename, language, status, duration_ms, master_object_key, proxy_object_key, error_id, created_at, updated_at, deleted_at, master_size_bytes, claimed_at, current_stage
+RETURNING id, public_id, org_id, show_id, title, source_filename, language, status, duration_ms, master_object_key, proxy_object_key, error_id, created_at, updated_at, deleted_at, master_size_bytes, claimed_at, current_stage, process_attempts
 `
 
 type MarkEpisodeFailedParams struct {
@@ -375,6 +413,7 @@ func (q *Queries) MarkEpisodeFailed(ctx context.Context, arg MarkEpisodeFailedPa
 		&i.MasterSizeBytes,
 		&i.ClaimedAt,
 		&i.CurrentStage,
+		&i.ProcessAttempts,
 	)
 	return i, err
 }
@@ -391,7 +430,7 @@ WHERE public_id = $3
   AND org_id = $4
   AND status = 'processing'
   AND deleted_at IS NULL
-RETURNING id, public_id, org_id, show_id, title, source_filename, language, status, duration_ms, master_object_key, proxy_object_key, error_id, created_at, updated_at, deleted_at, master_size_bytes, claimed_at, current_stage
+RETURNING id, public_id, org_id, show_id, title, source_filename, language, status, duration_ms, master_object_key, proxy_object_key, error_id, created_at, updated_at, deleted_at, master_size_bytes, claimed_at, current_stage, process_attempts
 `
 
 type MarkEpisodeReadyParams struct {
@@ -437,6 +476,7 @@ func (q *Queries) MarkEpisodeReady(ctx context.Context, arg MarkEpisodeReadyPara
 		&i.MasterSizeBytes,
 		&i.ClaimedAt,
 		&i.CurrentStage,
+		&i.ProcessAttempts,
 	)
 	return i, err
 }
@@ -451,7 +491,7 @@ WHERE public_id = $1
   AND org_id = $2
   AND status = 'failed'
   AND deleted_at IS NULL
-RETURNING id, public_id, org_id, show_id, title, source_filename, language, status, duration_ms, master_object_key, proxy_object_key, error_id, created_at, updated_at, deleted_at, master_size_bytes, claimed_at, current_stage
+RETURNING id, public_id, org_id, show_id, title, source_filename, language, status, duration_ms, master_object_key, proxy_object_key, error_id, created_at, updated_at, deleted_at, master_size_bytes, claimed_at, current_stage, process_attempts
 `
 
 type RetryFailedEpisodeParams struct {
@@ -487,6 +527,7 @@ func (q *Queries) RetryFailedEpisode(ctx context.Context, arg RetryFailedEpisode
 		&i.MasterSizeBytes,
 		&i.ClaimedAt,
 		&i.CurrentStage,
+		&i.ProcessAttempts,
 	)
 	return i, err
 }
@@ -498,7 +539,7 @@ SET master_object_key = $3,
 WHERE public_id = $1
   AND org_id = $2
   AND deleted_at IS NULL
-RETURNING id, public_id, org_id, show_id, title, source_filename, language, status, duration_ms, master_object_key, proxy_object_key, error_id, created_at, updated_at, deleted_at, master_size_bytes, claimed_at, current_stage
+RETURNING id, public_id, org_id, show_id, title, source_filename, language, status, duration_ms, master_object_key, proxy_object_key, error_id, created_at, updated_at, deleted_at, master_size_bytes, claimed_at, current_stage, process_attempts
 `
 
 type SetEpisodeMasterKeyParams struct {
@@ -532,6 +573,7 @@ func (q *Queries) SetEpisodeMasterKey(ctx context.Context, arg SetEpisodeMasterK
 		&i.MasterSizeBytes,
 		&i.ClaimedAt,
 		&i.CurrentStage,
+		&i.ProcessAttempts,
 	)
 	return i, err
 }
@@ -602,7 +644,7 @@ SET status = $3,
     updated_at = now()
 WHERE public_id = $1
   AND org_id = $2
-RETURNING id, public_id, org_id, show_id, title, source_filename, language, status, duration_ms, master_object_key, proxy_object_key, error_id, created_at, updated_at, deleted_at, master_size_bytes, claimed_at, current_stage
+RETURNING id, public_id, org_id, show_id, title, source_filename, language, status, duration_ms, master_object_key, proxy_object_key, error_id, created_at, updated_at, deleted_at, master_size_bytes, claimed_at, current_stage, process_attempts
 `
 
 type UpdateEpisodeStatusParams struct {
@@ -633,6 +675,7 @@ func (q *Queries) UpdateEpisodeStatus(ctx context.Context, arg UpdateEpisodeStat
 		&i.MasterSizeBytes,
 		&i.ClaimedAt,
 		&i.CurrentStage,
+		&i.ProcessAttempts,
 	)
 	return i, err
 }

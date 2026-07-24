@@ -43,14 +43,19 @@ func (f *fakeDiarizer) Diarize(_ context.Context, language string, orgID, episod
 }
 
 // fakeSpeakerStore is a scriptable pipeline.SpeakerStore: it serves a preset
-// SegmentSet and captures the speaker map handed to SetSegmentSpeakers.
+// SegmentSet and captures the speaker map handed to SetSegmentSpeakers. `assigned`
+// tracks the cost-safety idempotency state — SpeakersAssigned reports it, and a
+// successful SetSegmentSpeakers flips it true (mirroring the store, where a
+// completed diarize leaves every segment with a speaker_key).
 type fakeSpeakerStore struct {
-	set      SegmentSet
-	found    bool
-	readErr  error
-	setErr   error
-	setCalls int
-	saved    map[int]string
+	set         SegmentSet
+	found       bool
+	readErr     error
+	setErr      error
+	setCalls    int
+	saved       map[int]string
+	assigned    bool
+	assignedErr error // scripted error for SpeakersAssigned
 }
 
 func (f *fakeSpeakerStore) SegmentsForDiarize(_ context.Context, _, _ string) (SegmentSet, bool, error) {
@@ -66,7 +71,17 @@ func (f *fakeSpeakerStore) SetSegmentSpeakers(_ context.Context, _, _ string, by
 		return f.setErr
 	}
 	f.saved = byIdx
+	f.assigned = true // a completed diarize leaves the episode fully diarized
 	return nil
+}
+
+// SpeakersAssigned is the cost-safety idempotency probe: true once the episode is
+// fully diarized (a prior SetSegmentSpeakers succeeded, or a test seeded it).
+func (f *fakeSpeakerStore) SpeakersAssigned(_ context.Context, _, _ string) (bool, error) {
+	if f.assignedErr != nil {
+		return false, f.assignedErr
+	}
+	return f.assigned, nil
 }
 
 // diarizeStore builds a SpeakerStore serving two fa segments with the internal
@@ -208,10 +223,14 @@ func TestDiarizeStageFailsNeutralOnDiarizerError(t *testing.T) {
 	}
 }
 
-// TestDiarizeStageIdempotentRedrive proves a re-driven diarize stage persists the
-// SAME grouping (idempotent): after the first ready, re-seeding at transcribe and
-// re-running writes the identical map again with no error.
-func TestDiarizeStageIdempotentRedrive(t *testing.T) {
+// TestDiarizeStageReDriveBillsZero is the diarize cost-safety idempotency proof: a
+// plain re-drive of an already-diarized episode makes ZERO billable LLM calls. After
+// the first run diarizes, re-seeding at transcribe and re-running SKIPS the paid call
+// entirely (the diarizer call counter and the persist counter both stay put, and
+// process_attempts does NOT advance) while the episode still finalizes ready. This is
+// the guarantee that a retry/re-drive can never re-bill a completed stage (CLAUDE.md
+// "Billable-service cost safety").
+func TestDiarizeStageReDriveBillsZero(t *testing.T) {
 	repo := newFakeRepo()
 	repo.addAtStage(epA, orgA, "transcribe", "fa", 90_000)
 	diar := &fakeDiarizer{byIdx: map[int]string{0: "S1", 1: "S1"}}
@@ -224,20 +243,108 @@ func TestDiarizeStageIdempotentRedrive(t *testing.T) {
 		stages:   threeStageActive(),
 	}
 
+	// First drive: the billable LLM call runs once and the grouping is persisted.
 	if err := r.Run(context.Background(), epA, "diarize"); err != nil {
 		t.Fatalf("Run(diarize) #1: %v", err)
 	}
+	if diar.calls != 1 || speakers.setCalls != 1 {
+		t.Fatalf("after drive #1: diarizer calls=%d, persist calls=%d, want 1 and 1", diar.calls, speakers.setCalls)
+	}
 	first := speakers.saved
-	// Re-seed the episode at transcribe and re-run the stage (a re-drive).
+	billedAfterFirst := repo.get(epA).processAttempts
+	if billedAfterFirst != 1 {
+		t.Fatalf("process_attempts after drive #1 = %d, want 1 (one billable attempt)", billedAfterFirst)
+	}
+
+	// Second drive (a plain re-drive): re-seed at transcribe and re-run. The stage
+	// must SKIP the billable call — no diarizer call, no persist, no attempt consumed.
 	repo.addAtStage(epA, orgA, "transcribe", "fa", 90_000)
+	repo.setProcessAttempts(epA, billedAfterFirst) // addAtStage reset the fresh fakeEp
 	if err := r.Run(context.Background(), epA, "diarize"); err != nil {
 		t.Fatalf("Run(diarize) #2: %v", err)
 	}
-	if speakers.setCalls != 2 {
-		t.Errorf("SetSegmentSpeakers calls = %d, want 2 (one per drive)", speakers.setCalls)
+	if diar.calls != 1 {
+		t.Errorf("diarizer calls after re-drive = %d, want 1 (ZERO billable calls on the second run)", diar.calls)
 	}
-	if first[0] != "S1" || first[1] != "S1" || speakers.saved[0] != "S1" || speakers.saved[1] != "S1" {
-		t.Errorf("re-drive produced a different grouping: first=%v second=%v", first, speakers.saved)
+	if speakers.setCalls != 1 {
+		t.Errorf("SetSegmentSpeakers calls after re-drive = %d, want 1 (the re-drive persisted nothing)", speakers.setCalls)
+	}
+	if got := repo.get(epA).processAttempts; got != billedAfterFirst {
+		t.Errorf("process_attempts after re-drive = %d, want %d (a skipped run consumes no billable budget)", got, billedAfterFirst)
+	}
+	if e := repo.get(epA); e.status != "ready" || e.stage != "diarize" {
+		t.Errorf("state after re-drive = (%q,%q), want (ready,diarize) — a skip still finalizes", e.status, e.stage)
+	}
+	if first[0] != "S1" || first[1] != "S1" {
+		t.Errorf("first grouping = %v, want {0:S1,1:S1}", first)
+	}
+}
+
+// TestDiarizeStageReprocessReDiarizes proves the explicit reprocess override: with
+// Config.Reprocess set, the stage IGNORES the idempotency skip and re-runs the paid
+// LLM even though the episode is already diarized — the deliberate operator
+// re-process a plain retry/re-drive must never trigger.
+func TestDiarizeStageReprocessReDiarizes(t *testing.T) {
+	repo := newFakeRepo()
+	repo.addAtStage(epA, orgA, "transcribe", "fa", 90_000)
+	diar := &fakeDiarizer{byIdx: map[int]string{0: "S1", 1: "S2"}}
+	speakers := diarizeStore()
+	speakers.assigned = true // already fully diarized
+	r := &Runner{
+		Repo: repo, Blob: newRemoteBlob(t), Media: &fakeMedia{}, Log: discard(),
+		Config:   Config{Retries: 2, Reprocess: true},
+		Diarizer: diar,
+		Speakers: speakers,
+		stages:   threeStageActive(),
+	}
+	if err := r.Run(context.Background(), epA, "diarize"); err != nil {
+		t.Fatalf("Run(diarize) reprocess: %v", err)
+	}
+	if diar.calls != 1 {
+		t.Errorf("diarizer calls = %d, want 1 (reprocess forces the billable call despite existing speakers)", diar.calls)
+	}
+	if got := repo.get(epA).processAttempts; got != 1 {
+		t.Errorf("process_attempts = %d, want 1 (reprocess still consumes and respects the attempt budget)", got)
+	}
+}
+
+// TestDiarizeStageAttemptCapBlocksBeforeBillableCall proves the per-episode cap: an
+// episode already at MAX_PROCESS_ATTEMPTS hard-fails WITHOUT ever calling the LLM,
+// with a neutral error_id and no increment past the cap — the runaway backstop for
+// the diarize stage.
+func TestDiarizeStageAttemptCapBlocksBeforeBillableCall(t *testing.T) {
+	repo := newFakeRepo()
+	repo.addAtStage(epA, orgA, "transcribe", "fa", 5000)
+	repo.setProcessAttempts(epA, DefaultMaxProcessAttempts) // already at the cap
+	diar := &fakeDiarizer{byIdx: map[int]string{0: "S1", 1: "S2"}}
+	speakers := diarizeStore()
+	r := &Runner{
+		Repo: repo, Blob: newRemoteBlob(t), Media: &fakeMedia{}, Log: discard(),
+		Config:   Config{Retries: 2}, // MaxProcessAttempts unset -> DefaultMaxProcessAttempts
+		Diarizer: diar,
+		Speakers: speakers,
+		stages:   threeStageActive(),
+	}
+
+	err := r.Run(context.Background(), epA, "diarize")
+	if !errors.Is(err, ErrStageFailed) {
+		t.Fatalf("Run err = %v, want ErrStageFailed (attempt cap)", err)
+	}
+	e := repo.get(epA)
+	if e.status != "failed" || e.stage != "diarize" {
+		t.Errorf("state = (%q,%q), want (failed,diarize)", e.status, e.stage)
+	}
+	if diar.calls != 0 {
+		t.Errorf("diarizer calls = %d, want 0 (the cap blocks BEFORE any billable call)", diar.calls)
+	}
+	if speakers.setCalls != 0 {
+		t.Errorf("SetSegmentSpeakers calls = %d, want 0 on a capped run", speakers.setCalls)
+	}
+	if e.processAttempts != DefaultMaxProcessAttempts {
+		t.Errorf("process_attempts = %d, want %d (unchanged — the cap does not increment)", e.processAttempts, DefaultMaxProcessAttempts)
+	}
+	if !regexp.MustCompile(`error_id=[0-9a-f]{16}`).MatchString(err.Error()) {
+		t.Errorf("returned error = %q, want a neutral error_id", err.Error())
 	}
 }
 

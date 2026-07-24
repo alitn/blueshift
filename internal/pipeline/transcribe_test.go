@@ -65,13 +65,49 @@ func (e scriptedEngine) Transcribe(_ context.Context, req asr.TranscribeRequest)
 	return tr, nil
 }
 
+// countingEngine is an asr.Engine that returns one fixed, valid transcript and
+// counts how many times Transcribe was called — the "billable call counter" the
+// cost-safety idempotency tests assert stays put (delta 0) on a second, skipped run.
+type countingEngine struct {
+	label string
+	tr    asr.Transcript
+	mu    sync.Mutex
+	calls int
+}
+
+func (e *countingEngine) Label() string { return e.label }
+
+func (e *countingEngine) Transcribe(ctx context.Context, _ asr.TranscribeRequest) (asr.Transcript, error) {
+	if err := ctx.Err(); err != nil {
+		return asr.Transcript{}, err
+	}
+	e.mu.Lock()
+	e.calls++
+	e.mu.Unlock()
+	return asr.Transcript{Engine: e.label, Language: e.tr.Language, Segments: cloneSegments(e.tr.Segments)}, nil
+}
+
+func (e *countingEngine) callCount() int {
+	e.mu.Lock()
+	defer e.mu.Unlock()
+	return e.calls
+}
+
+// oneSegmentTranscript is a minimal valid fa transcript the countingEngine replays.
+func oneSegmentTranscript() asr.Transcript {
+	return asr.Transcript{Language: "fa", Segments: []asr.Segment{
+		{Idx: 0, StartMs: 0, EndMs: 500, Text: "سلام", Words: []asr.Word{{Text: "سلام", StartMs: 0, EndMs: 500, Conf: 0.9}}},
+	}}
+}
+
 // fakeSegments captures the segments handed to ReplaceSegments so a test can
 // assert the exact persisted rows. It can be scripted to fail.
 type fakeSegments struct {
-	mu    sync.Mutex
-	byEp  map[string][]asr.Segment
-	calls int
-	err   error
+	mu     sync.Mutex
+	byEp   map[string][]asr.Segment
+	calls  int
+	err    error
+	hasErr error // scripted error for HasSegments (cost-safety idempotency probe)
 }
 
 func newFakeSegments() *fakeSegments { return &fakeSegments{byEp: map[string][]asr.Segment{}} }
@@ -91,6 +127,26 @@ func (f *fakeSegments) get(epID string) []asr.Segment {
 	f.mu.Lock()
 	defer f.mu.Unlock()
 	return f.byEp[epID]
+}
+
+// HasSegments is the cost-safety idempotency probe: an episode "already has
+// segments" once ReplaceSegments has persisted a non-empty set (or a test seeded
+// one). A hasErr can be scripted to exercise the stage's error path.
+func (f *fakeSegments) HasSegments(_ context.Context, _, episodePublicID string) (bool, error) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	if f.hasErr != nil {
+		return false, f.hasErr
+	}
+	return len(f.byEp[episodePublicID]) > 0, nil
+}
+
+// seed pre-populates an episode's transcript without going through the billable
+// stage, so a test can start from an "already transcribed" state.
+func (f *fakeSegments) seed(epID string, segs []asr.Segment) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	f.byEp[epID] = cloneSegments(segs)
 }
 
 func cloneSegments(segs []asr.Segment) []asr.Segment {
@@ -336,6 +392,130 @@ func TestTranscribeNoDurationFails(t *testing.T) {
 	}
 	if segs.calls != 0 {
 		t.Errorf("ReplaceSegments called %d times, want 0", segs.calls)
+	}
+}
+
+// TestTranscribeStageReDriveBillsZero is the transcribe cost-safety idempotency
+// proof: a plain re-drive of an already-transcribed episode makes ZERO billable ASR
+// calls. The first drive transcribes once and persists; re-seeding at ingest and
+// re-running SKIPS the paid engine entirely (the engine call counter and the persist
+// counter both stay put, and process_attempts does NOT advance) while the episode
+// still finalizes ready (CLAUDE.md "Billable-service cost safety").
+func TestTranscribeStageReDriveBillsZero(t *testing.T) {
+	engine := &countingEngine{label: "bs-asr-1", tr: oneSegmentTranscript()}
+	repo := newFakeRepo()
+	repo.addAtStage(epA, orgA, "ingest", "fa", 90_000)
+	segs := newFakeSegments()
+	r := &Runner{
+		Repo: repo, Blob: newRemoteBlob(t), Media: &fakeMedia{}, Log: discard(),
+		Config:   Config{Retries: 2},
+		ASR:      fakeASR{engine: engine},
+		Segments: segs,
+		stages:   twoStageActive(),
+	}
+
+	// Drive #1: the paid ASR call runs exactly once and the transcript is persisted.
+	if err := r.Run(context.Background(), epA, "transcribe"); err != nil {
+		t.Fatalf("Run(transcribe) #1: %v", err)
+	}
+	if engine.callCount() != 1 || segs.calls != 1 {
+		t.Fatalf("after drive #1: engine calls=%d, persist calls=%d, want 1 and 1", engine.callCount(), segs.calls)
+	}
+	billedAfterFirst := repo.get(epA).processAttempts
+	if billedAfterFirst != 1 {
+		t.Fatalf("process_attempts after drive #1 = %d, want 1 (one billable attempt)", billedAfterFirst)
+	}
+
+	// Drive #2 (a plain re-drive): re-seed at ingest and re-run. The stage must SKIP
+	// the billable ASR call — no engine call, no persist, no attempt consumed.
+	repo.addAtStage(epA, orgA, "ingest", "fa", 90_000)
+	repo.setProcessAttempts(epA, billedAfterFirst) // addAtStage reset the fresh fakeEp
+	if err := r.Run(context.Background(), epA, "transcribe"); err != nil {
+		t.Fatalf("Run(transcribe) #2: %v", err)
+	}
+	if engine.callCount() != 1 {
+		t.Errorf("engine calls after re-drive = %d, want 1 (ZERO billable calls on the second run)", engine.callCount())
+	}
+	if segs.calls != 1 {
+		t.Errorf("ReplaceSegments calls after re-drive = %d, want 1 (the re-drive persisted nothing)", segs.calls)
+	}
+	if got := repo.get(epA).processAttempts; got != billedAfterFirst {
+		t.Errorf("process_attempts after re-drive = %d, want %d (a skipped run consumes no billable budget)", got, billedAfterFirst)
+	}
+	if e := repo.get(epA); e.status != "ready" || e.stage != "transcribe" {
+		t.Errorf("state after re-drive = (%q,%q), want (ready,transcribe) — a skip still finalizes", e.status, e.stage)
+	}
+}
+
+// TestTranscribeStageReprocessReTranscribes proves the explicit reprocess override:
+// with Config.Reprocess set, the stage IGNORES the idempotency skip and re-runs the
+// paid ASR engine even though the episode already has segments — the deliberate
+// operator re-process that a plain retry/re-drive must never trigger.
+func TestTranscribeStageReprocessReTranscribes(t *testing.T) {
+	engine := &countingEngine{label: "bs-asr-1", tr: oneSegmentTranscript()}
+	repo := newFakeRepo()
+	repo.addAtStage(epA, orgA, "ingest", "fa", 90_000)
+	segs := newFakeSegments()
+	segs.seed(epA, oneSegmentTranscript().Segments) // already transcribed
+	r := &Runner{
+		Repo: repo, Blob: newRemoteBlob(t), Media: &fakeMedia{}, Log: discard(),
+		Config:   Config{Retries: 2, Reprocess: true},
+		ASR:      fakeASR{engine: engine},
+		Segments: segs,
+		stages:   twoStageActive(),
+	}
+	if err := r.Run(context.Background(), epA, "transcribe"); err != nil {
+		t.Fatalf("Run(transcribe) reprocess: %v", err)
+	}
+	if engine.callCount() != 1 {
+		t.Errorf("engine calls = %d, want 1 (reprocess re-transcribes despite existing segments)", engine.callCount())
+	}
+	if got := repo.get(epA).processAttempts; got != 1 {
+		t.Errorf("process_attempts = %d, want 1 (reprocess still consumes and respects the attempt budget)", got)
+	}
+}
+
+// TestTranscribeStageAttemptCapBlocksBeforeBillableCall proves the per-episode cap:
+// an episode already at MAX_PROCESS_ATTEMPTS hard-fails WITHOUT ever calling the ASR
+// engine, with a neutral error_id and no increment past the cap. This is the runaway
+// backstop — even a re-drive loop can never bill beyond the ceiling.
+func TestTranscribeStageAttemptCapBlocksBeforeBillableCall(t *testing.T) {
+	engine := &countingEngine{label: "bs-asr-1", tr: oneSegmentTranscript()}
+	repo := newFakeRepo()
+	repo.addAtStage(epA, orgA, "ingest", "fa", 90_000)
+	repo.setProcessAttempts(epA, DefaultMaxProcessAttempts) // already at the cap
+	segs := newFakeSegments()
+	r := &Runner{
+		Repo: repo, Blob: newRemoteBlob(t), Media: &fakeMedia{}, Log: discard(),
+		Config:   Config{Retries: 2}, // MaxProcessAttempts unset -> DefaultMaxProcessAttempts
+		ASR:      fakeASR{engine: engine},
+		Segments: segs,
+		stages:   twoStageActive(),
+	}
+
+	err := r.Run(context.Background(), epA, "transcribe")
+	if !errors.Is(err, ErrStageFailed) {
+		t.Fatalf("Run err = %v, want ErrStageFailed (attempt cap)", err)
+	}
+	e := repo.get(epA)
+	if e.status != "failed" || e.stage != "transcribe" {
+		t.Errorf("state = (%q,%q), want (failed,transcribe)", e.status, e.stage)
+	}
+	if engine.callCount() != 0 {
+		t.Errorf("engine calls = %d, want 0 (the cap blocks BEFORE any billable call)", engine.callCount())
+	}
+	if segs.calls != 0 {
+		t.Errorf("ReplaceSegments calls = %d, want 0 on a capped run", segs.calls)
+	}
+	if e.processAttempts != DefaultMaxProcessAttempts {
+		t.Errorf("process_attempts = %d, want %d (unchanged — the cap does not increment)", e.processAttempts, DefaultMaxProcessAttempts)
+	}
+	// The client-visible error is neutral: an error_id only, never the cap detail.
+	if !regexp.MustCompile(`error_id=[0-9a-f]{16}`).MatchString(err.Error()) {
+		t.Errorf("returned error = %q, want a neutral error_id", err.Error())
+	}
+	if strings.Contains(err.Error(), "cap") || strings.Contains(err.Error(), "attempt") {
+		t.Errorf("returned error %q leaked the cap detail; it must carry only a neutral id", err.Error())
 	}
 }
 

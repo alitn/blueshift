@@ -218,6 +218,27 @@ func TestLoadWorkerDefaults(t *testing.T) {
 	if cfg.ProxyMaxRemuxBitrate != defaultProxyMaxRemuxBitrate {
 		t.Errorf("ProxyMaxRemuxBitrate = %d, want %d", cfg.ProxyMaxRemuxBitrate, defaultProxyMaxRemuxBitrate)
 	}
+	if cfg.MaxProcessAttempts != defaultMaxProcessAttempts {
+		t.Errorf("MaxProcessAttempts = %d, want %d", cfg.MaxProcessAttempts, defaultMaxProcessAttempts)
+	}
+	if cfg.Reprocess {
+		t.Error("Reprocess default = true, want false (a plain run must never re-bill)")
+	}
+}
+
+// TestLoadCostSafety covers the cost-safety worker knobs: the per-episode
+// billable-attempt cap and the deliberate reprocess override.
+func TestLoadCostSafety(t *testing.T) {
+	cfg, err := load(env(map[string]string{"MAX_PROCESS_ATTEMPTS": "12", "PIPELINE_REPROCESS": "true"}))
+	if err != nil {
+		t.Fatalf("load: %v", err)
+	}
+	if cfg.MaxProcessAttempts != 12 {
+		t.Errorf("MaxProcessAttempts = %d, want 12", cfg.MaxProcessAttempts)
+	}
+	if !cfg.Reprocess {
+		t.Error("PIPELINE_REPROCESS=true did not set Reprocess")
+	}
 }
 
 func TestLoadProxyMaxRemuxBitrate(t *testing.T) {
@@ -321,6 +342,10 @@ func TestLoadWorkerInvalid(t *testing.T) {
 		"bad remux bitrate":         {"PROXY_MAX_REMUX_BITRATE": "lots"},
 		"nonpositive remux bitrate": {"PROXY_MAX_REMUX_BITRATE": "0"},
 		"negative remux bitrate":    {"PROXY_MAX_REMUX_BITRATE": "-1"},
+		"bad max attempts":          {"MAX_PROCESS_ATTEMPTS": "many"},
+		"nonpositive max attempts":  {"MAX_PROCESS_ATTEMPTS": "0"},
+		"negative max attempts":     {"MAX_PROCESS_ATTEMPTS": "-1"},
+		"bad reprocess":             {"PIPELINE_REPROCESS": "maybe"},
 	}
 	for name, m := range cases {
 		t.Run(name, func(t *testing.T) {
