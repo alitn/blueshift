@@ -45,16 +45,22 @@ test('login → seeded sample READY → upload → READY → play proxy', async 
   await expect(uploaded).toBeVisible();
   await expect(uploaded.getByText('READY')).toBeVisible({ timeout: 60_000 });
 
-  // Open the seeded sample's proxy via keyboard (focus the Ready row + Enter)
-  // and assert a real proxy source is playing.
+  // Open the seeded sample's Episode view via keyboard (focus the Ready row +
+  // Enter) — the episode-open interaction now routes to /episode/{id}.
   await isolate(page, SAMPLE.search);
   await sample.focus();
   await page.keyboard.press('Enter');
+  await page.waitForURL('**/episode/**');
+
+  // The proxy plays a real signed source beside the transcript pane. The demo
+  // seed is ingest-only, so the transcript is in its neutral awaiting state.
   const video = page.getByTestId('proxy-video');
   await expect(video).toBeVisible();
   await expect(video).toHaveAttribute('src', /.+/);
+  await expect(page.getByTestId('transcript-empty')).toBeVisible();
 
-  // Escape closes the player.
-  await page.keyboard.press('Escape');
-  await expect(video).toBeHidden();
+  // The top-bar breadcrumb routes back to the Library by keyboard (a real link).
+  await page.getByRole('link', { name: 'LIBRARY' }).click();
+  await page.waitForURL(/\/$/);
+  await expect(page.getByRole('button', { name: 'UPLOAD MASTER' })).toBeVisible();
 });

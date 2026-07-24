@@ -4,6 +4,7 @@
   // search filtering, an upload dialog, and proxy playback for Ready rows. All
   // color/type/spacing come from tokens.
   import { onDestroy, onMount } from 'svelte';
+  import { goto } from '$app/navigation';
   import { createEpisodesStore } from '$lib/pollStore';
   import { retryEpisode, type Episode } from '$lib/episodes';
   import { applyFilter, counts, type EpisodeFilter } from '$lib/components/studio/filter';
@@ -11,15 +12,12 @@
   import FilterChips from '$lib/components/studio/FilterChips.svelte';
   import EmptyState from '$lib/components/studio/EmptyState.svelte';
   import UploadDialog from '$lib/components/studio/UploadDialog.svelte';
-  import PlayerDialog from '$lib/components/studio/PlayerDialog.svelte';
 
   const episodes = createEpisodesStore();
 
   let filter = $state<EpisodeFilter>('all');
   let query = $state('');
   let uploadOpen = $state(false);
-  let playerOpen = $state(false);
-  let playerEpisode = $state<Episode | null>(null);
 
   const chipCounts = $derived(counts($episodes.episodes));
   const visible = $derived(applyFilter($episodes.episodes, filter, query));
@@ -29,8 +27,8 @@
   onDestroy(() => episodes.stop());
 
   function openEpisode(ep: Episode) {
-    playerEpisode = ep;
-    playerOpen = true;
+    // Open the Episode view. The public id is URL/API material (never shown).
+    void goto(`/episode/${encodeURIComponent(ep.id)}`);
   }
 
   async function onRetry(ep: Episode) {
@@ -51,7 +49,7 @@
   // `U` opens the upload dialog, unless the user is typing or a dialog is open.
   function onWindowKey(event: KeyboardEvent) {
     if (event.defaultPrevented || event.metaKey || event.ctrlKey || event.altKey) return;
-    if (uploadOpen || playerOpen) return;
+    if (uploadOpen) return;
     const el = event.target as HTMLElement | null;
     const tag = el?.tagName;
     if (tag === 'INPUT' || tag === 'TEXTAREA' || el?.isContentEditable) return;
@@ -121,4 +119,3 @@
 </div>
 
 <UploadDialog bind:open={uploadOpen} onUploaded={onUploaded} />
-<PlayerDialog bind:open={playerOpen} episode={playerEpisode} />

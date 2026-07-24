@@ -19,6 +19,7 @@
   // is gated: the shell calls /api/auth/me on mount and redirects to /login on
   // 401 before revealing any content.
   const isLogin = $derived($page.url.pathname.startsWith('/login'));
+  const isEpisode = $derived($page.url.pathname.startsWith('/episode/'));
   let ready = $state(false);
 
   onMount(async () => {
@@ -35,10 +36,20 @@
   }
 </script>
 
+{#snippet episodeBreadcrumb()}
+  <a
+    href="/"
+    class="tracking-[0.06em] text-text-muted outline-none transition-colors duration-hover ease-out hover:text-text-primary focus-visible:text-text-primary"
+    >LIBRARY</a
+  >
+  <span class="text-[10.5px] text-text-faintest" aria-hidden="true">▸</span>
+  <span class="font-semibold tracking-[0.06em] text-text-primary">EPISODE</span>
+{/snippet}
+
 {#if isLogin}
   {@render children?.()}
 {:else if ready}
-  <AppShell onSignOut={signOut}>
+  <AppShell onSignOut={signOut} breadcrumb={isEpisode ? episodeBreadcrumb : undefined}>
     {@render children?.()}
   </AppShell>
 {/if}
