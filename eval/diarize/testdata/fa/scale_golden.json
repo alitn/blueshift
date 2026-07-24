@@ -1,0 +1,998 @@
+[
+  {
+    "idx": 0,
+    "speaker_key": "S1"
+  },
+  {
+    "idx": 1,
+    "speaker_key": "S1"
+  },
+  {
+    "idx": 2,
+    "speaker_key": "S2"
+  },
+  {
+    "idx": 3,
+    "speaker_key": "S2"
+  },
+  {
+    "idx": 4,
+    "speaker_key": "S2"
+  },
+  {
+    "idx": 5,
+    "speaker_key": "S1"
+  },
+  {
+    "idx": 6,
+    "speaker_key": "S1"
+  },
+  {
+    "idx": 7,
+    "speaker_key": "S1"
+  },
+  {
+    "idx": 8,
+    "speaker_key": "S1"
+  },
+  {
+    "idx": 9,
+    "speaker_key": "S2"
+  },
+  {
+    "idx": 10,
+    "speaker_key": "S2"
+  },
+  {
+    "idx": 11,
+    "speaker_key": "S2"
+  },
+  {
+    "idx": 12,
+    "speaker_key": "S2"
+  },
+  {
+    "idx": 13,
+    "speaker_key": "S1"
+  },
+  {
+    "idx": 14,
+    "speaker_key": "S1"
+  },
+  {
+    "idx": 15,
+    "speaker_key": "S1"
+  },
+  {
+    "idx": 16,
+    "speaker_key": "S1"
+  },
+  {
+    "idx": 17,
+    "speaker_key": "S1"
+  },
+  {
+    "idx": 18,
+    "speaker_key": "S2"
+  },
+  {
+    "idx": 19,
+    "speaker_key": "S2"
+  },
+  {
+    "idx": 20,
+    "speaker_key": "S1"
+  },
+  {
+    "idx": 21,
+    "speaker_key": "S1"
+  },
+  {
+    "idx": 22,
+    "speaker_key": "S1"
+  },
+  {
+    "idx": 23,
+    "speaker_key": "S1"
+  },
+  {
+    "idx": 24,
+    "speaker_key": "S2"
+  },
+  {
+    "idx": 25,
+    "speaker_key": "S2"
+  },
+  {
+    "idx": 26,
+    "speaker_key": "S2"
+  },
+  {
+    "idx": 27,
+    "speaker_key": "S1"
+  },
+  {
+    "idx": 28,
+    "speaker_key": "S1"
+  },
+  {
+    "idx": 29,
+    "speaker_key": "S1"
+  },
+  {
+    "idx": 30,
+    "speaker_key": "S2"
+  },
+  {
+    "idx": 31,
+    "speaker_key": "S2"
+  },
+  {
+    "idx": 32,
+    "speaker_key": "S2"
+  },
+  {
+    "idx": 33,
+    "speaker_key": "S2"
+  },
+  {
+    "idx": 34,
+    "speaker_key": "S2"
+  },
+  {
+    "idx": 35,
+    "speaker_key": "S2"
+  },
+  {
+    "idx": 36,
+    "speaker_key": "S2"
+  },
+  {
+    "idx": 37,
+    "speaker_key": "S1"
+  },
+  {
+    "idx": 38,
+    "speaker_key": "S1"
+  },
+  {
+    "idx": 39,
+    "speaker_key": "S1"
+  },
+  {
+    "idx": 40,
+    "speaker_key": "S1"
+  },
+  {
+    "idx": 41,
+    "speaker_key": "S1"
+  },
+  {
+    "idx": 42,
+    "speaker_key": "S1"
+  },
+  {
+    "idx": 43,
+    "speaker_key": "S1"
+  },
+  {
+    "idx": 44,
+    "speaker_key": "S2"
+  },
+  {
+    "idx": 45,
+    "speaker_key": "S2"
+  },
+  {
+    "idx": 46,
+    "speaker_key": "S2"
+  },
+  {
+    "idx": 47,
+    "speaker_key": "S2"
+  },
+  {
+    "idx": 48,
+    "speaker_key": "S2"
+  },
+  {
+    "idx": 49,
+    "speaker_key": "S2"
+  },
+  {
+    "idx": 50,
+    "speaker_key": "S2"
+  },
+  {
+    "idx": 51,
+    "speaker_key": "S1"
+  },
+  {
+    "idx": 52,
+    "speaker_key": "S1"
+  },
+  {
+    "idx": 53,
+    "speaker_key": "S1"
+  },
+  {
+    "idx": 54,
+    "speaker_key": "S1"
+  },
+  {
+    "idx": 55,
+    "speaker_key": "S1"
+  },
+  {
+    "idx": 56,
+    "speaker_key": "S1"
+  },
+  {
+    "idx": 57,
+    "speaker_key": "S1"
+  },
+  {
+    "idx": 58,
+    "speaker_key": "S2"
+  },
+  {
+    "idx": 59,
+    "speaker_key": "S2"
+  },
+  {
+    "idx": 60,
+    "speaker_key": "S2"
+  },
+  {
+    "idx": 61,
+    "speaker_key": "S2"
+  },
+  {
+    "idx": 62,
+    "speaker_key": "S1"
+  },
+  {
+    "idx": 63,
+    "speaker_key": "S1"
+  },
+  {
+    "idx": 64,
+    "speaker_key": "S1"
+  },
+  {
+    "idx": 65,
+    "speaker_key": "S1"
+  },
+  {
+    "idx": 66,
+    "speaker_key": "S1"
+  },
+  {
+    "idx": 67,
+    "speaker_key": "S1"
+  },
+  {
+    "idx": 68,
+    "speaker_key": "S2"
+  },
+  {
+    "idx": 69,
+    "speaker_key": "S2"
+  },
+  {
+    "idx": 70,
+    "speaker_key": "S2"
+  },
+  {
+    "idx": 71,
+    "speaker_key": "S2"
+  },
+  {
+    "idx": 72,
+    "speaker_key": "S2"
+  },
+  {
+    "idx": 73,
+    "speaker_key": "S2"
+  },
+  {
+    "idx": 74,
+    "speaker_key": "S2"
+  },
+  {
+    "idx": 75,
+    "speaker_key": "S2"
+  },
+  {
+    "idx": 76,
+    "speaker_key": "S1"
+  },
+  {
+    "idx": 77,
+    "speaker_key": "S2"
+  },
+  {
+    "idx": 78,
+    "speaker_key": "S2"
+  },
+  {
+    "idx": 79,
+    "speaker_key": "S2"
+  },
+  {
+    "idx": 80,
+    "speaker_key": "S1"
+  },
+  {
+    "idx": 81,
+    "speaker_key": "S2"
+  },
+  {
+    "idx": 82,
+    "speaker_key": "S2"
+  },
+  {
+    "idx": 83,
+    "speaker_key": "S2"
+  },
+  {
+    "idx": 84,
+    "speaker_key": "S2"
+  },
+  {
+    "idx": 85,
+    "speaker_key": "S2"
+  },
+  {
+    "idx": 86,
+    "speaker_key": "S1"
+  },
+  {
+    "idx": 87,
+    "speaker_key": "S1"
+  },
+  {
+    "idx": 88,
+    "speaker_key": "S1"
+  },
+  {
+    "idx": 89,
+    "speaker_key": "S2"
+  },
+  {
+    "idx": 90,
+    "speaker_key": "S2"
+  },
+  {
+    "idx": 91,
+    "speaker_key": "S2"
+  },
+  {
+    "idx": 92,
+    "speaker_key": "S2"
+  },
+  {
+    "idx": 93,
+    "speaker_key": "S2"
+  },
+  {
+    "idx": 94,
+    "speaker_key": "S2"
+  },
+  {
+    "idx": 95,
+    "speaker_key": "S2"
+  },
+  {
+    "idx": 96,
+    "speaker_key": "S1"
+  },
+  {
+    "idx": 97,
+    "speaker_key": "S2"
+  },
+  {
+    "idx": 98,
+    "speaker_key": "S1"
+  },
+  {
+    "idx": 99,
+    "speaker_key": "S1"
+  },
+  {
+    "idx": 100,
+    "speaker_key": "S1"
+  },
+  {
+    "idx": 101,
+    "speaker_key": "S1"
+  },
+  {
+    "idx": 102,
+    "speaker_key": "S1"
+  },
+  {
+    "idx": 103,
+    "speaker_key": "S1"
+  },
+  {
+    "idx": 104,
+    "speaker_key": "S1"
+  },
+  {
+    "idx": 105,
+    "speaker_key": "S1"
+  },
+  {
+    "idx": 106,
+    "speaker_key": "S2"
+  },
+  {
+    "idx": 107,
+    "speaker_key": "S2"
+  },
+  {
+    "idx": 108,
+    "speaker_key": "S1"
+  },
+  {
+    "idx": 109,
+    "speaker_key": "S1"
+  },
+  {
+    "idx": 110,
+    "speaker_key": "S2"
+  },
+  {
+    "idx": 111,
+    "speaker_key": "S2"
+  },
+  {
+    "idx": 112,
+    "speaker_key": "S2"
+  },
+  {
+    "idx": 113,
+    "speaker_key": "S2"
+  },
+  {
+    "idx": 114,
+    "speaker_key": "S2"
+  },
+  {
+    "idx": 115,
+    "speaker_key": "S2"
+  },
+  {
+    "idx": 116,
+    "speaker_key": "S1"
+  },
+  {
+    "idx": 117,
+    "speaker_key": "S1"
+  },
+  {
+    "idx": 118,
+    "speaker_key": "S1"
+  },
+  {
+    "idx": 119,
+    "speaker_key": "S1"
+  },
+  {
+    "idx": 120,
+    "speaker_key": "S2"
+  },
+  {
+    "idx": 121,
+    "speaker_key": "S2"
+  },
+  {
+    "idx": 122,
+    "speaker_key": "S2"
+  },
+  {
+    "idx": 123,
+    "speaker_key": "S2"
+  },
+  {
+    "idx": 124,
+    "speaker_key": "S1"
+  },
+  {
+    "idx": 125,
+    "speaker_key": "S1"
+  },
+  {
+    "idx": 126,
+    "speaker_key": "S1"
+  },
+  {
+    "idx": 127,
+    "speaker_key": "S1"
+  },
+  {
+    "idx": 128,
+    "speaker_key": "S1"
+  },
+  {
+    "idx": 129,
+    "speaker_key": "S1"
+  },
+  {
+    "idx": 130,
+    "speaker_key": "S1"
+  },
+  {
+    "idx": 131,
+    "speaker_key": "S2"
+  },
+  {
+    "idx": 132,
+    "speaker_key": "S2"
+  },
+  {
+    "idx": 133,
+    "speaker_key": "S2"
+  },
+  {
+    "idx": 134,
+    "speaker_key": "S2"
+  },
+  {
+    "idx": 135,
+    "speaker_key": "S2"
+  },
+  {
+    "idx": 136,
+    "speaker_key": "S2"
+  },
+  {
+    "idx": 137,
+    "speaker_key": "S2"
+  },
+  {
+    "idx": 138,
+    "speaker_key": "S1"
+  },
+  {
+    "idx": 139,
+    "speaker_key": "S1"
+  },
+  {
+    "idx": 140,
+    "speaker_key": "S1"
+  },
+  {
+    "idx": 141,
+    "speaker_key": "S1"
+  },
+  {
+    "idx": 142,
+    "speaker_key": "S1"
+  },
+  {
+    "idx": 143,
+    "speaker_key": "S1"
+  },
+  {
+    "idx": 144,
+    "speaker_key": "S1"
+  },
+  {
+    "idx": 145,
+    "speaker_key": "S1"
+  },
+  {
+    "idx": 146,
+    "speaker_key": "S2"
+  },
+  {
+    "idx": 147,
+    "speaker_key": "S2"
+  },
+  {
+    "idx": 148,
+    "speaker_key": "S2"
+  },
+  {
+    "idx": 149,
+    "speaker_key": "S2"
+  },
+  {
+    "idx": 150,
+    "speaker_key": "S2"
+  },
+  {
+    "idx": 151,
+    "speaker_key": "S2"
+  },
+  {
+    "idx": 152,
+    "speaker_key": "S2"
+  },
+  {
+    "idx": 153,
+    "speaker_key": "S1"
+  },
+  {
+    "idx": 154,
+    "speaker_key": "S1"
+  },
+  {
+    "idx": 155,
+    "speaker_key": "S1"
+  },
+  {
+    "idx": 156,
+    "speaker_key": "S1"
+  },
+  {
+    "idx": 157,
+    "speaker_key": "S1"
+  },
+  {
+    "idx": 158,
+    "speaker_key": "S1"
+  },
+  {
+    "idx": 159,
+    "speaker_key": "S2"
+  },
+  {
+    "idx": 160,
+    "speaker_key": "S2"
+  },
+  {
+    "idx": 161,
+    "speaker_key": "S2"
+  },
+  {
+    "idx": 162,
+    "speaker_key": "S2"
+  },
+  {
+    "idx": 163,
+    "speaker_key": "S1"
+  },
+  {
+    "idx": 164,
+    "speaker_key": "S1"
+  },
+  {
+    "idx": 165,
+    "speaker_key": "S1"
+  },
+  {
+    "idx": 166,
+    "speaker_key": "S1"
+  },
+  {
+    "idx": 167,
+    "speaker_key": "S1"
+  },
+  {
+    "idx": 168,
+    "speaker_key": "S1"
+  },
+  {
+    "idx": 169,
+    "speaker_key": "S1"
+  },
+  {
+    "idx": 170,
+    "speaker_key": "S2"
+  },
+  {
+    "idx": 171,
+    "speaker_key": "S2"
+  },
+  {
+    "idx": 172,
+    "speaker_key": "S2"
+  },
+  {
+    "idx": 173,
+    "speaker_key": "S2"
+  },
+  {
+    "idx": 174,
+    "speaker_key": "S2"
+  },
+  {
+    "idx": 175,
+    "speaker_key": "S2"
+  },
+  {
+    "idx": 176,
+    "speaker_key": "S1"
+  },
+  {
+    "idx": 177,
+    "speaker_key": "S1"
+  },
+  {
+    "idx": 178,
+    "speaker_key": "S1"
+  },
+  {
+    "idx": 179,
+    "speaker_key": "S1"
+  },
+  {
+    "idx": 180,
+    "speaker_key": "S1"
+  },
+  {
+    "idx": 181,
+    "speaker_key": "S1"
+  },
+  {
+    "idx": 182,
+    "speaker_key": "S2"
+  },
+  {
+    "idx": 183,
+    "speaker_key": "S2"
+  },
+  {
+    "idx": 184,
+    "speaker_key": "S2"
+  },
+  {
+    "idx": 185,
+    "speaker_key": "S2"
+  },
+  {
+    "idx": 186,
+    "speaker_key": "S2"
+  },
+  {
+    "idx": 187,
+    "speaker_key": "S2"
+  },
+  {
+    "idx": 188,
+    "speaker_key": "S2"
+  },
+  {
+    "idx": 189,
+    "speaker_key": "S1"
+  },
+  {
+    "idx": 190,
+    "speaker_key": "S1"
+  },
+  {
+    "idx": 191,
+    "speaker_key": "S1"
+  },
+  {
+    "idx": 192,
+    "speaker_key": "S1"
+  },
+  {
+    "idx": 193,
+    "speaker_key": "S1"
+  },
+  {
+    "idx": 194,
+    "speaker_key": "S1"
+  },
+  {
+    "idx": 195,
+    "speaker_key": "S1"
+  },
+  {
+    "idx": 196,
+    "speaker_key": "S1"
+  },
+  {
+    "idx": 197,
+    "speaker_key": "S2"
+  },
+  {
+    "idx": 198,
+    "speaker_key": "S2"
+  },
+  {
+    "idx": 199,
+    "speaker_key": "S2"
+  },
+  {
+    "idx": 200,
+    "speaker_key": "S2"
+  },
+  {
+    "idx": 201,
+    "speaker_key": "S2"
+  },
+  {
+    "idx": 202,
+    "speaker_key": "S1"
+  },
+  {
+    "idx": 203,
+    "speaker_key": "S1"
+  },
+  {
+    "idx": 204,
+    "speaker_key": "S1"
+  },
+  {
+    "idx": 205,
+    "speaker_key": "S1"
+  },
+  {
+    "idx": 206,
+    "speaker_key": "S1"
+  },
+  {
+    "idx": 207,
+    "speaker_key": "S1"
+  },
+  {
+    "idx": 208,
+    "speaker_key": "S2"
+  },
+  {
+    "idx": 209,
+    "speaker_key": "S1"
+  },
+  {
+    "idx": 210,
+    "speaker_key": "S1"
+  },
+  {
+    "idx": 211,
+    "speaker_key": "S1"
+  },
+  {
+    "idx": 212,
+    "speaker_key": "S1"
+  },
+  {
+    "idx": 213,
+    "speaker_key": "S1"
+  },
+  {
+    "idx": 214,
+    "speaker_key": "S1"
+  },
+  {
+    "idx": 215,
+    "speaker_key": "S1"
+  },
+  {
+    "idx": 216,
+    "speaker_key": "S1"
+  },
+  {
+    "idx": 217,
+    "speaker_key": "S2"
+  },
+  {
+    "idx": 218,
+    "speaker_key": "S2"
+  },
+  {
+    "idx": 219,
+    "speaker_key": "S2"
+  },
+  {
+    "idx": 220,
+    "speaker_key": "S2"
+  },
+  {
+    "idx": 221,
+    "speaker_key": "S2"
+  },
+  {
+    "idx": 222,
+    "speaker_key": "S2"
+  },
+  {
+    "idx": 223,
+    "speaker_key": "S1"
+  },
+  {
+    "idx": 224,
+    "speaker_key": "S1"
+  },
+  {
+    "idx": 225,
+    "speaker_key": "S1"
+  },
+  {
+    "idx": 226,
+    "speaker_key": "S1"
+  },
+  {
+    "idx": 227,
+    "speaker_key": "S1"
+  },
+  {
+    "idx": 228,
+    "speaker_key": "S1"
+  },
+  {
+    "idx": 229,
+    "speaker_key": "S1"
+  },
+  {
+    "idx": 230,
+    "speaker_key": "S1"
+  },
+  {
+    "idx": 231,
+    "speaker_key": "S2"
+  },
+  {
+    "idx": 232,
+    "speaker_key": "S2"
+  },
+  {
+    "idx": 233,
+    "speaker_key": "S2"
+  },
+  {
+    "idx": 234,
+    "speaker_key": "S2"
+  },
+  {
+    "idx": 235,
+    "speaker_key": "S2"
+  },
+  {
+    "idx": 236,
+    "speaker_key": "S2"
+  },
+  {
+    "idx": 237,
+    "speaker_key": "S2"
+  },
+  {
+    "idx": 238,
+    "speaker_key": "S1"
+  },
+  {
+    "idx": 239,
+    "speaker_key": "S1"
+  },
+  {
+    "idx": 240,
+    "speaker_key": "S1"
+  },
+  {
+    "idx": 241,
+    "speaker_key": "S1"
+  },
+  {
+    "idx": 242,
+    "speaker_key": "S1"
+  },
+  {
+    "idx": 243,
+    "speaker_key": "S1"
+  },
+  {
+    "idx": 244,
+    "speaker_key": "S1"
+  },
+  {
+    "idx": 245,
+    "speaker_key": "S1"
+  },
+  {
+    "idx": 246,
+    "speaker_key": "S2"
+  },
+  {
+    "idx": 247,
+    "speaker_key": "S2"
+  },
+  {
+    "idx": 248,
+    "speaker_key": "S2"
+  }
+]

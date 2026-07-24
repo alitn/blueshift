@@ -26,7 +26,11 @@ languages must bring eval fixtures.
 
 `eval/diarize`, `eval/segment`, and `eval/moments` follow the same discipline
 over their own fixtures: `eval/diarize` replays a committed model response
-through the real diarizer and byte-compares the produced speaker grouping;
+(speaker turns as contiguous idx ranges) through the real diarizer — including
+its exact-tiling validation and range → per-segment expansion — and
+byte-compares the produced speaker grouping; it also carries a full-episode
+scale golden (`testdata/fa/scale_*.json`, a synthetic 249-segment transcript
+mirroring the prod episode that broke the flat per-segment contract);
 `eval/segment` runs a committed mega-segment transcript (the prod "whole take
 as ONE segment" shape) through `asr.Resegment` at the default thresholds and
 byte-compares the produced turns, hard-asserting verbatim word preservation
@@ -52,6 +56,7 @@ Architect-authorized change, never a quiet fix:
 ```
 go test ./eval/lang -run TestNormalizationGolden -update
 go test ./eval/diarize -run TestDiarizeAnchorMergeGolden -update
+go test ./eval/diarize -run TestDiarizeScaleGolden -update
 go test ./eval/segment -run TestResegmentGolden -update
 go test ./eval/moments -run TestMomentSelectionGolden -update
 ```

@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"reflect"
 	"strings"
 	"testing"
@@ -86,11 +87,12 @@ func newEngine(t *testing.T, output string) (Engine, *llm.FakeEngine, *captureAu
 	return Engine{Gen: client, Labels: LangLabelResolver{Label: "bs-lm-1"}}, fe, aud
 }
 
-// TestDiarizeGroupsSpeakers: a valid recorded grouping decodes to the exact idx ->
-// speaker_key map, and the single call is audited 'ok' with the right scope.
+// TestDiarizeGroupsSpeakers: a valid recorded turn-range grouping decodes and
+// expands to the exact idx -> speaker_key map, and the single call is audited
+// 'ok' with the right scope.
 func TestDiarizeGroupsSpeakers(t *testing.T) {
 	// Two-speaker interview: host (S1) opens, guest (S2) replies, host (S1) closes.
-	out := `{"assignments":[{"segment_idx":0,"speaker_key":"S1"},{"segment_idx":1,"speaker_key":"S2"},{"segment_idx":2,"speaker_key":"S1"}]}`
+	out := `{"turns":[{"start_idx":0,"end_idx":0,"speaker_key":"S1"},{"start_idx":1,"end_idx":1,"speaker_key":"S2"},{"start_idx":2,"end_idx":2,"speaker_key":"S1"}]}`
 	eng, fe, aud := newEngine(t, out)
 
 	got, err := eng.Diarize(context.Background(), "fa", 7, 42, fixtureSegments())
@@ -107,11 +109,28 @@ func TestDiarizeGroupsSpeakers(t *testing.T) {
 	if len(aud.rows) != 1 || aud.rows[0].Status != "ok" {
 		t.Fatalf("audit rows = %+v, want one ok row", aud.rows)
 	}
-	if aud.rows[0].Model != "bs-lm-test" || aud.rows[0].PromptVersion != "v1" {
+	if aud.rows[0].Model != "bs-lm-test" || aud.rows[0].PromptVersion != "v2" {
 		t.Errorf("audit model/version = %q/%q", aud.rows[0].Model, aud.rows[0].PromptVersion)
 	}
 	if aud.rows[0].OrgID != 7 || aud.rows[0].EpisodeID != 42 {
 		t.Errorf("audit scope = org %d ep %d, want org 7 ep 42", aud.rows[0].OrgID, aud.rows[0].EpisodeID)
+	}
+}
+
+// TestDiarizeExpandsMultiSegmentTurns: a turn range spanning several segments
+// expands to one identical speaker_key per covered segment — the conversion the
+// pipeline persists from (storage/DTO shape unchanged by the range contract).
+func TestDiarizeExpandsMultiSegmentTurns(t *testing.T) {
+	out := `{"turns":[{"start_idx":0,"end_idx":1,"speaker_key":"S1"},{"start_idx":2,"end_idx":2,"speaker_key":"S2"}]}`
+	eng, _, _ := newEngine(t, out)
+
+	got, err := eng.Diarize(context.Background(), "fa", 1, 1, fixtureSegments())
+	if err != nil {
+		t.Fatalf("Diarize: %v", err)
+	}
+	want := map[int]string{0: "S1", 1: "S1", 2: "S2"}
+	if !reflect.DeepEqual(got, want) {
+		t.Errorf("grouping = %v, want %v", got, want)
 	}
 }
 
@@ -120,7 +139,7 @@ func TestDiarizeGroupsSpeakers(t *testing.T) {
 // VALUES — while preserving the exact text (including the U+200C ZWNJ). This is
 // the text-anchoring invariant asserted on what actually crossed the seam.
 func TestDiarizeRequestIsTextAnchored(t *testing.T) {
-	out := `{"assignments":[{"segment_idx":0,"speaker_key":"S1"},{"segment_idx":1,"speaker_key":"S1"},{"segment_idx":2,"speaker_key":"S1"}]}`
+	out := `{"turns":[{"start_idx":0,"end_idx":2,"speaker_key":"S1"}]}`
 	eng, fe, _ := newEngine(t, out)
 
 	if _, err := eng.Diarize(context.Background(), "fa", 1, 1, fixtureSegments()); err != nil {
@@ -173,7 +192,7 @@ func TestDiarizeRequestIsTextAnchored(t *testing.T) {
 // transcript (verbatim invariant at the boundary): text, words, and timings of
 // the segments passed in are identical afterwards, and the result is only labels.
 func TestDiarizeLeavesSegmentsUntouched(t *testing.T) {
-	out := `{"assignments":[{"segment_idx":0,"speaker_key":"S1"},{"segment_idx":1,"speaker_key":"S2"},{"segment_idx":2,"speaker_key":"S2"}]}`
+	out := `{"turns":[{"start_idx":0,"end_idx":0,"speaker_key":"S1"},{"start_idx":1,"end_idx":2,"speaker_key":"S2"}]}`
 	eng, _, _ := newEngine(t, out)
 
 	segs := fixtureSegments()
@@ -187,19 +206,26 @@ func TestDiarizeLeavesSegmentsUntouched(t *testing.T) {
 }
 
 // TestDiarizeInvalidOutputRetriesThenFails: an output that decodes but fails the
-// grouping validation (unknown idx / gap / overlap / malformed label) drives the
-// /internal/llm one-retry-then-hard-fail path. Two 'invalid' audit rows are
-// written and the returned error is the neutral ErrInvalidOutput.
+// turn-range validation (gap / overlap / unsorted / reversed / out-of-range /
+// malformed label) drives the /internal/llm one-retry-then-hard-fail path. Two
+// 'invalid' audit rows are written and the returned error is the neutral
+// ErrInvalidOutput.
 func TestDiarizeInvalidOutputRetriesThenFails(t *testing.T) {
 	cases := map[string]string{
-		// idx 2 unknown-free but idx 5 does not exist (fixture is 0,1,2).
-		"unknown idx": `{"assignments":[{"segment_idx":0,"speaker_key":"S1"},{"segment_idx":1,"speaker_key":"S1"},{"segment_idx":5,"speaker_key":"S2"}]}`,
-		// idx 2 omitted -> a gap.
-		"gap": `{"assignments":[{"segment_idx":0,"speaker_key":"S1"},{"segment_idx":1,"speaker_key":"S1"}]}`,
-		// idx 0 assigned twice -> an overlap.
-		"overlap": `{"assignments":[{"segment_idx":0,"speaker_key":"S1"},{"segment_idx":0,"speaker_key":"S2"},{"segment_idx":1,"speaker_key":"S1"},{"segment_idx":2,"speaker_key":"S1"}]}`,
+		// end_idx 5 does not exist (fixture is 0..2).
+		"out of range": `{"turns":[{"start_idx":0,"end_idx":1,"speaker_key":"S1"},{"start_idx":2,"end_idx":5,"speaker_key":"S2"}]}`,
+		// idx 2 never covered -> a gap at the end.
+		"gap at end": `{"turns":[{"start_idx":0,"end_idx":1,"speaker_key":"S1"}]}`,
+		// idx 1 never covered -> a gap in the middle.
+		"gap in middle": `{"turns":[{"start_idx":0,"end_idx":0,"speaker_key":"S1"},{"start_idx":2,"end_idx":2,"speaker_key":"S2"}]}`,
+		// idx 1 covered twice -> an overlap.
+		"overlap": `{"turns":[{"start_idx":0,"end_idx":1,"speaker_key":"S1"},{"start_idx":1,"end_idx":2,"speaker_key":"S2"}]}`,
+		// ranges out of transcript order.
+		"unsorted": `{"turns":[{"start_idx":1,"end_idx":2,"speaker_key":"S1"},{"start_idx":0,"end_idx":0,"speaker_key":"S2"}]}`,
+		// start after end.
+		"reversed range": `{"turns":[{"start_idx":2,"end_idx":0,"speaker_key":"S1"}]}`,
 		// a label that is not S<n>.
-		"malformed label": `{"assignments":[{"segment_idx":0,"speaker_key":"HOST"},{"segment_idx":1,"speaker_key":"S1"},{"segment_idx":2,"speaker_key":"S1"}]}`,
+		"malformed label": `{"turns":[{"start_idx":0,"end_idx":2,"speaker_key":"HOST"}]}`,
 	}
 	for name, out := range cases {
 		t.Run(name, func(t *testing.T) {
@@ -231,7 +257,7 @@ func TestDiarizeInvalidOutputRetriesThenFails(t *testing.T) {
 // TestDiarizeUnknownLanguageErrors: an unregistered language is an explicit error
 // (never a silent default), and no LLM call is made.
 func TestDiarizeUnknownLanguageErrors(t *testing.T) {
-	eng, fe, aud := newEngine(t, `{"assignments":[]}`)
+	eng, fe, aud := newEngine(t, `{"turns":[]}`)
 	if _, err := eng.Diarize(context.Background(), "zz", 1, 1, fixtureSegments()); err == nil {
 		t.Fatal("Diarize(zz) = nil error, want unknown-language error")
 	}
@@ -243,15 +269,76 @@ func TestDiarizeUnknownLanguageErrors(t *testing.T) {
 	}
 }
 
+// TestDiarizeAtScale proves the range contract at the size that broke the flat
+// contract in production: a 249-segment transcript (the real full-episode count)
+// grouped by realistic alternating multi-segment turns expands to exactly one
+// speaker_key per segment, in one call, through the real validate path.
+func TestDiarizeAtScale(t *testing.T) {
+	const n = 249
+	segs := make([]asr.Segment, n)
+	for i := range segs {
+		// ZWNJ-bearing text and real timings; only idx+text may cross the seam.
+		segs[i] = asr.Segment{
+			Idx:     i,
+			StartMs: i * 5000,
+			EndMs:   i*5000 + 4200,
+			Text:    fmt.Sprintf("بخش %d از گفت%sوگو درباره%s برنامه", i, zwnj, zwnj),
+		}
+	}
+	// Alternating host/guest turns of varying widths tiling 0..248 exactly.
+	type r struct{ start, end int }
+	var turns []r
+	for start, w := 0, 1; start < n; w = w%7 + 1 {
+		end := start + w
+		if end > n-1 {
+			end = n - 1
+		}
+		turns = append(turns, r{start, end})
+		start = end + 1
+	}
+	items := make([]string, len(turns))
+	want := make(map[int]string, n)
+	for i, tr := range turns {
+		key := "S1"
+		if i%2 == 1 {
+			key = "S2"
+		}
+		items[i] = fmt.Sprintf(`{"start_idx":%d,"end_idx":%d,"speaker_key":%q}`, tr.start, tr.end, key)
+		for idx := tr.start; idx <= tr.end; idx++ {
+			want[idx] = key
+		}
+	}
+	out := `{"turns":[` + strings.Join(items, ",") + `]}`
+
+	eng, fe, aud := newEngine(t, out)
+	got, err := eng.Diarize(context.Background(), "fa", 1, 1, segs)
+	if err != nil {
+		t.Fatalf("Diarize(%d segments): %v", n, err)
+	}
+	if len(got) != n {
+		t.Fatalf("grouping covers %d segments, want %d", len(got), n)
+	}
+	if !reflect.DeepEqual(got, want) {
+		t.Error("expanded grouping does not match the turn ranges")
+	}
+	if len(fe.Calls()) != 1 {
+		t.Errorf("engine calls = %d, want 1 (no retry at scale)", len(fe.Calls()))
+	}
+	if len(aud.rows) != 1 || aud.rows[0].Status != "ok" {
+		t.Fatalf("audit rows = %+v, want one ok row", aud.rows)
+	}
+}
+
 // TestBuildRequestOnlyIdxAndText is a direct unit check that the request builder
-// serializes only idx+text, in idx order, regardless of input order.
+// serializes only idx+text, in idx order, regardless of input order, and returns
+// the segment count the tiling is validated against.
 func TestBuildRequestOnlyIdxAndText(t *testing.T) {
 	segs := []asr.Segment{
 		{Idx: 2, StartMs: 100, EndMs: 200, Text: "c", Words: []asr.Word{{Text: "c", StartMs: 100, EndMs: 200, Conf: 1}}},
 		{Idx: 0, StartMs: 0, EndMs: 50, Text: "a", Words: []asr.Word{{Text: "a"}}},
 		{Idx: 1, StartMs: 60, EndMs: 90, Text: "b"},
 	}
-	parts, idxSet, err := buildRequest(segs)
+	parts, n, err := buildRequest(segs)
 	if err != nil {
 		t.Fatalf("buildRequest: %v", err)
 	}
@@ -259,31 +346,72 @@ func TestBuildRequestOnlyIdxAndText(t *testing.T) {
 	if parts != want {
 		t.Errorf("request = %s, want %s", parts, want)
 	}
-	if len(idxSet) != 3 || !idxSet[0] || !idxSet[1] || !idxSet[2] {
-		t.Errorf("idxSet = %v, want {0,1,2}", idxSet)
+	if n != 3 {
+		t.Errorf("n = %d, want 3", n)
 	}
 }
 
-// TestValidateAssignments exercises the grouping validator directly across the
-// accept + reject shapes.
-func TestValidateAssignments(t *testing.T) {
-	idxSet := map[int]bool{0: true, 1: true, 2: true}
-	ok := []assignment{{0, "S1"}, {1, "S2"}, {2, "S1"}}
-	if err := validateAssignments(idxSet, ok); err != nil {
-		t.Errorf("valid grouping rejected: %v", err)
+// TestBuildRequestRejectsBadIdxSpace: a duplicate or non-contiguous idx space is
+// an internal error caught before any billable call — the tiling contract is
+// only meaningful against exactly 0..n-1.
+func TestBuildRequestRejectsBadIdxSpace(t *testing.T) {
+	cases := map[string][]asr.Segment{
+		"duplicate idx":  {{Idx: 0, Text: "a"}, {Idx: 1, Text: "b"}, {Idx: 1, Text: "b2"}},
+		"gap in idxs":    {{Idx: 0, Text: "a"}, {Idx: 2, Text: "c"}},
+		"not zero-based": {{Idx: 1, Text: "b"}, {Idx: 2, Text: "c"}},
 	}
-	bad := map[string][]assignment{
-		"empty":     {},
-		"unknown":   {{0, "S1"}, {1, "S1"}, {9, "S2"}},
-		"gap":       {{0, "S1"}, {1, "S1"}},
-		"overlap":   {{0, "S1"}, {0, "S2"}, {1, "S1"}, {2, "S1"}},
-		"bad label": {{0, "s1"}, {1, "S1"}, {2, "S1"}},
-		"S0 label":  {{0, "S0"}, {1, "S1"}, {2, "S1"}},
-	}
-	for name, assigns := range bad {
-		if err := validateAssignments(idxSet, assigns); err == nil {
-			t.Errorf("%s: validateAssignments = nil, want error", name)
+	for name, segs := range cases {
+		if _, _, err := buildRequest(segs); err == nil {
+			t.Errorf("%s: buildRequest = nil error, want idx-space error", name)
 		}
+	}
+}
+
+// TestValidateTurns exercises the tiling validator directly across the accept +
+// reject shapes.
+func TestValidateTurns(t *testing.T) {
+	const n = 5
+	ok := map[string][]turn{
+		"alternating":            {{0, 1, "S1"}, {2, 2, "S2"}, {3, 4, "S1"}},
+		"single turn covers all": {{0, 4, "S1"}},
+		"single-segment turns":   {{0, 0, "S1"}, {1, 1, "S2"}, {2, 2, "S1"}, {3, 3, "S2"}, {4, 4, "S3"}},
+		// Adjacent same-speaker turns are redundant but not wrong: the expansion is
+		// identical, so the validator does not reject them.
+		"adjacent same speaker": {{0, 2, "S1"}, {3, 4, "S1"}},
+	}
+	for name, turns := range ok {
+		if err := validateTurns(n, turns); err != nil {
+			t.Errorf("%s: valid turns rejected: %v", name, err)
+		}
+	}
+	bad := map[string][]turn{
+		"empty":          {},
+		"gap at start":   {{1, 4, "S1"}},
+		"gap in middle":  {{0, 1, "S1"}, {3, 4, "S2"}},
+		"gap at end":     {{0, 3, "S1"}},
+		"overlap":        {{0, 2, "S1"}, {2, 4, "S2"}},
+		"unsorted":       {{2, 4, "S1"}, {0, 1, "S2"}},
+		"reversed range": {{0, 0, "S1"}, {4, 1, "S2"}},
+		"negative start": {{-1, 4, "S1"}},
+		"past the end":   {{0, 5, "S1"}},
+		"bad label":      {{0, 4, "s1"}},
+		"S0 label":       {{0, 4, "S0"}},
+		"spaced label":   {{0, 4, "S 1"}},
+	}
+	for name, turns := range bad {
+		if err := validateTurns(n, turns); err == nil {
+			t.Errorf("%s: validateTurns = nil, want error", name)
+		}
+	}
+}
+
+// TestSpeakersFromTurns is a direct unit check of the range -> per-segment
+// expansion the pipeline persists from.
+func TestSpeakersFromTurns(t *testing.T) {
+	got := speakersFromTurns([]turn{{0, 2, "S1"}, {3, 3, "S2"}, {4, 5, "S1"}})
+	want := map[int]string{0: "S1", 1: "S1", 2: "S1", 3: "S2", 4: "S1", 5: "S1"}
+	if !reflect.DeepEqual(got, want) {
+		t.Errorf("speakersFromTurns = %v, want %v", got, want)
 	}
 }
 

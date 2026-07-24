@@ -1,0 +1,254 @@
+{
+  "turns": [
+    {
+      "start_idx": 0,
+      "end_idx": 1,
+      "speaker_key": "S1"
+    },
+    {
+      "start_idx": 2,
+      "end_idx": 4,
+      "speaker_key": "S2"
+    },
+    {
+      "start_idx": 5,
+      "end_idx": 8,
+      "speaker_key": "S1"
+    },
+    {
+      "start_idx": 9,
+      "end_idx": 12,
+      "speaker_key": "S2"
+    },
+    {
+      "start_idx": 13,
+      "end_idx": 17,
+      "speaker_key": "S1"
+    },
+    {
+      "start_idx": 18,
+      "end_idx": 19,
+      "speaker_key": "S2"
+    },
+    {
+      "start_idx": 20,
+      "end_idx": 23,
+      "speaker_key": "S1"
+    },
+    {
+      "start_idx": 24,
+      "end_idx": 26,
+      "speaker_key": "S2"
+    },
+    {
+      "start_idx": 27,
+      "end_idx": 29,
+      "speaker_key": "S1"
+    },
+    {
+      "start_idx": 30,
+      "end_idx": 36,
+      "speaker_key": "S2"
+    },
+    {
+      "start_idx": 37,
+      "end_idx": 43,
+      "speaker_key": "S1"
+    },
+    {
+      "start_idx": 44,
+      "end_idx": 50,
+      "speaker_key": "S2"
+    },
+    {
+      "start_idx": 51,
+      "end_idx": 57,
+      "speaker_key": "S1"
+    },
+    {
+      "start_idx": 58,
+      "end_idx": 61,
+      "speaker_key": "S2"
+    },
+    {
+      "start_idx": 62,
+      "end_idx": 67,
+      "speaker_key": "S1"
+    },
+    {
+      "start_idx": 68,
+      "end_idx": 75,
+      "speaker_key": "S2"
+    },
+    {
+      "start_idx": 76,
+      "end_idx": 76,
+      "speaker_key": "S1"
+    },
+    {
+      "start_idx": 77,
+      "end_idx": 79,
+      "speaker_key": "S2"
+    },
+    {
+      "start_idx": 80,
+      "end_idx": 80,
+      "speaker_key": "S1"
+    },
+    {
+      "start_idx": 81,
+      "end_idx": 85,
+      "speaker_key": "S2"
+    },
+    {
+      "start_idx": 86,
+      "end_idx": 88,
+      "speaker_key": "S1"
+    },
+    {
+      "start_idx": 89,
+      "end_idx": 95,
+      "speaker_key": "S2"
+    },
+    {
+      "start_idx": 96,
+      "end_idx": 96,
+      "speaker_key": "S1"
+    },
+    {
+      "start_idx": 97,
+      "end_idx": 97,
+      "speaker_key": "S2"
+    },
+    {
+      "start_idx": 98,
+      "end_idx": 105,
+      "speaker_key": "S1"
+    },
+    {
+      "start_idx": 106,
+      "end_idx": 107,
+      "speaker_key": "S2"
+    },
+    {
+      "start_idx": 108,
+      "end_idx": 109,
+      "speaker_key": "S1"
+    },
+    {
+      "start_idx": 110,
+      "end_idx": 115,
+      "speaker_key": "S2"
+    },
+    {
+      "start_idx": 116,
+      "end_idx": 119,
+      "speaker_key": "S1"
+    },
+    {
+      "start_idx": 120,
+      "end_idx": 123,
+      "speaker_key": "S2"
+    },
+    {
+      "start_idx": 124,
+      "end_idx": 130,
+      "speaker_key": "S1"
+    },
+    {
+      "start_idx": 131,
+      "end_idx": 137,
+      "speaker_key": "S2"
+    },
+    {
+      "start_idx": 138,
+      "end_idx": 145,
+      "speaker_key": "S1"
+    },
+    {
+      "start_idx": 146,
+      "end_idx": 152,
+      "speaker_key": "S2"
+    },
+    {
+      "start_idx": 153,
+      "end_idx": 158,
+      "speaker_key": "S1"
+    },
+    {
+      "start_idx": 159,
+      "end_idx": 162,
+      "speaker_key": "S2"
+    },
+    {
+      "start_idx": 163,
+      "end_idx": 169,
+      "speaker_key": "S1"
+    },
+    {
+      "start_idx": 170,
+      "end_idx": 175,
+      "speaker_key": "S2"
+    },
+    {
+      "start_idx": 176,
+      "end_idx": 181,
+      "speaker_key": "S1"
+    },
+    {
+      "start_idx": 182,
+      "end_idx": 188,
+      "speaker_key": "S2"
+    },
+    {
+      "start_idx": 189,
+      "end_idx": 196,
+      "speaker_key": "S1"
+    },
+    {
+      "start_idx": 197,
+      "end_idx": 201,
+      "speaker_key": "S2"
+    },
+    {
+      "start_idx": 202,
+      "end_idx": 207,
+      "speaker_key": "S1"
+    },
+    {
+      "start_idx": 208,
+      "end_idx": 208,
+      "speaker_key": "S2"
+    },
+    {
+      "start_idx": 209,
+      "end_idx": 216,
+      "speaker_key": "S1"
+    },
+    {
+      "start_idx": 217,
+      "end_idx": 222,
+      "speaker_key": "S2"
+    },
+    {
+      "start_idx": 223,
+      "end_idx": 230,
+      "speaker_key": "S1"
+    },
+    {
+      "start_idx": 231,
+      "end_idx": 237,
+      "speaker_key": "S2"
+    },
+    {
+      "start_idx": 238,
+      "end_idx": 245,
+      "speaker_key": "S1"
+    },
+    {
+      "start_idx": 246,
+      "end_idx": 248,
+      "speaker_key": "S2"
+    }
+  ]
+}

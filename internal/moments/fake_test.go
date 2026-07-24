@@ -118,17 +118,20 @@ func demoMomentSegments(t *testing.T) []pipeline.MomentSegment {
 	}
 
 	var grouping struct {
-		Assignments []struct {
-			SegmentIdx int    `json:"segment_idx"`
+		Turns []struct {
+			StartIdx   int    `json:"start_idx"`
+			EndIdx     int    `json:"end_idx"`
 			SpeakerKey string `json:"speaker_key"`
-		} `json:"assignments"`
+		} `json:"turns"`
 	}
 	if err := json.Unmarshal(diarize.DefaultFakeGroupingResponse(), &grouping); err != nil {
 		t.Fatalf("committed grouping recording is not valid JSON: %v", err)
 	}
-	keyByIdx := make(map[int]string, len(grouping.Assignments))
-	for _, a := range grouping.Assignments {
-		keyByIdx[a.SegmentIdx] = a.SpeakerKey
+	keyByIdx := make(map[int]string)
+	for _, tn := range grouping.Turns {
+		for idx := tn.StartIdx; idx <= tn.EndIdx; idx++ {
+			keyByIdx[idx] = tn.SpeakerKey
+		}
 	}
 
 	out := make([]pipeline.MomentSegment, 0, len(segmented.Segments))

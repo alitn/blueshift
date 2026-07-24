@@ -17,14 +17,25 @@
 //   - Text-anchored (CLAUDE.md, "LLMs decide, they never measure"). The request
 //     sends the model ONLY {idx, text} per segment — never a timestamp and never
 //     the words array. The model anchors its grouping to the text; timings stay
-//     the province of ASR/ffmpeg. The output is validated to assign every existing
-//     segment idx exactly once (no unknown idx, no gap, no overlap); an invalid
-//     output takes the /internal/llm one-retry-then-hard-fail path.
+//     the province of ASR/ffmpeg. The output — speaker turns as contiguous idx
+//     RANGES — is validated to tile the segment idx space exactly 0..n-1 (sorted,
+//     no gap, no overlap, no out-of-range idx); an invalid output takes the
+//     /internal/llm one-retry-then-hard-fail path.
 //
 //   - Vendor-neutral. The engine is selected by a neutral label the lang registry
 //     declares for the content language; no provider name appears in the prompt,
 //     the schema, the returned map, or any error. Every call is audited in
 //     llm_calls behind the llm seam.
+//
+// Why ranges, not a flat per-segment list: the first contract (one
+// {segment_idx, speaker_key} pair per segment) asked the model to reproduce
+// every idx exactly once. At full-episode scale (a real 44-min episode: 249
+// segments) flash-class models reliably drop or duplicate a few idxs in that
+// long mechanical list, so the strict validator correctly rejected the output
+// twice and the stage hard-failed. Turn ranges are ~10x fewer output tokens at
+// that scale and make total coverage structurally natural — a turn is where one
+// speaker starts and stops, which is how diarization is actually expressed —
+// so the same strict validation (exact tiling) holds at scale.
 package diarize
 
 import (
@@ -42,43 +53,48 @@ import (
 
 // promptID and promptVersion identify the diarization prompt template for the
 // llm_calls audit. Bump the version on any change to the prompt or schema (a new
-// version is a new audited contract).
+// version is a new audited contract). v2 = the turn-range output contract
+// (v1 was the flat per-segment assignment list, retired for failing at
+// full-episode scale).
 const (
 	promptID      = "diarize.turns"
-	promptVersion = "v1"
-	// maxOutputTokens caps the diarization output. One assignment per segment is
-	// tiny; this is a generous ceiling that never truncates a real transcript.
+	promptVersion = "v2"
+	// maxOutputTokens caps the diarization output. A turn range per speaker
+	// change is tiny even for a feature-length transcript; this is a generous
+	// ceiling that never truncates a real episode.
 	maxOutputTokens = 8192
 )
 
 // systemPrompt instructs the model to group segments into speaker turns anchored
-// to the text. It names no provider and asks for grouping ONLY — the model must
-// never alter, translate, or re-time the text (the verbatim invariant is enforced
-// downstream regardless: this stage only ever writes speaker_key).
+// to the text, and to return the turns as contiguous idx ranges. It names no
+// provider and asks for grouping ONLY — the model must never alter, translate,
+// or re-time the text (the verbatim invariant is enforced downstream regardless:
+// this stage only ever writes speaker_key).
 const systemPrompt = `You are a speaker diarizer for an interview transcript.
 
-You are given the transcript as an ordered list of segments, each with an integer "idx" and its verbatim "text". Decide which segments are spoken by the same person and group consecutive segments into speaker turns.
+You are given the transcript as an ordered list of segments, each with an integer "idx" and its verbatim "text". Decide who is speaking and divide the transcript into speaker turns: a turn is a run of consecutive segments spoken by the same person.
 
-Assign every segment an episode-local speaker label of the form "S1", "S2", "S3", ... . Use "S1" for the first speaker that appears, "S2" for the next distinct speaker, and so on. Base your decision ONLY on the text and its turn-taking cues (questions vs. answers, self-reference, address). Do not use, infer, or emit any timing information.
+Return the turns as contiguous idx ranges: each turn is {"start_idx", "end_idx", "speaker_key"} and covers segments start_idx through end_idx inclusive. A turn may cover a single segment (start_idx equal to end_idx). The turns must be in transcript order, must not overlap, and together must cover every segment idx from the first to the last — no segment left out, none covered twice.
 
-Return an assignment for EVERY segment idx exactly once — no idx omitted, none repeated, and no idx that was not given. Do not change, translate, summarize, or re-order the text; you are labelling speakers, nothing else.`
+Assign each turn an episode-local speaker label of the form "S1", "S2", "S3", ... . Use "S1" for the first speaker that appears, "S2" for the next distinct speaker, and so on; reuse the same label whenever the same person speaks again. Base your decision ONLY on the text and its turn-taking cues (questions vs. answers, self-reference, address). Do not use, infer, or emit any timing information. Do not change, translate, summarize, or re-order the text; you are labelling speakers, nothing else.`
 
 // outputSchema is the provider-agnostic JSON schema the output is constrained by
-// (server-side) and strict-decoded against (locally). An assignment per segment,
-// with an integer idx and a string label; no extra keys.
+// (server-side) and strict-decoded against (locally). One turn per speaker run:
+// an inclusive integer idx range and a string label; no extra keys.
 var outputSchema = json.RawMessage(`{
   "type": "object",
   "additionalProperties": false,
-  "required": ["assignments"],
+  "required": ["turns"],
   "properties": {
-    "assignments": {
+    "turns": {
       "type": "array",
       "items": {
         "type": "object",
         "additionalProperties": false,
-        "required": ["segment_idx", "speaker_key"],
+        "required": ["start_idx", "end_idx", "speaker_key"],
         "properties": {
-          "segment_idx": { "type": "integer" },
+          "start_idx": { "type": "integer" },
+          "end_idx": { "type": "integer" },
           "speaker_key": { "type": "string" }
         }
       }
@@ -104,15 +120,17 @@ type requestPayload struct {
 	Segments []requestSegment `json:"segments"`
 }
 
-// assignment is one decoded {segment_idx, speaker_key} pair from the model.
-type assignment struct {
-	SegmentIdx int    `json:"segment_idx"`
+// turn is one decoded speaker turn from the model: a contiguous, inclusive
+// segment idx range and its episode-local speaker label.
+type turn struct {
+	StartIdx   int    `json:"start_idx"`
+	EndIdx     int    `json:"end_idx"`
 	SpeakerKey string `json:"speaker_key"`
 }
 
 // output is the model's decoded response.
 type output struct {
-	Assignments []assignment `json:"assignments"`
+	Turns []turn `json:"turns"`
 }
 
 // Generator is the /internal/llm seam: one schema-constrained, audited generation
@@ -129,10 +147,21 @@ type LabelResolver interface {
 }
 
 // Engine is the text-anchored diarizer. It resolves the neutral engine label for
-// the episode's language, sends the model the segments' idx+text, validates the
-// grouping covers every segment exactly once, and returns idx -> speaker_key. It
-// satisfies pipeline.Diarizer by duck typing (no pipeline import), so the diarize
-// stage drives it through that neutral seam.
+// the episode's language, sends the model the segments' idx+text, validates that
+// the returned turn ranges tile the segment idx space exactly, and returns
+// idx -> speaker_key covering every segment. It satisfies pipeline.Diarizer by
+// duck typing (no pipeline import), so the diarize stage drives it through that
+// neutral seam.
+//
+// SCALE FALLBACK (documented deliberately, NOT built — MVP bias): the range
+// contract is proven at full-episode scale (~250 segments; see the eval scale
+// golden). If it ever proves brittle at ~2h scale (~600+ segments), the next
+// step is WINDOWED diarization with overlap continuity: diarize fixed-size idx
+// windows (e.g. 200 segments) that overlap by a margin (e.g. 20 segments),
+// validate each window with the same exact-tiling rule, then stitch windows by
+// matching the speaker labels the overlapping segments received in both windows
+// and relabelling globally. Do not build it until a real episode fails at range
+// scale.
 type Engine struct {
 	// Gen is the audited, schema-constrained LLM seam (a *llm.Client in production,
 	// a fake-backed Client in tests and the golden eval).
@@ -163,7 +192,7 @@ func (e Engine) Diarize(ctx context.Context, language string, orgID, episodeID i
 		return nil, err
 	}
 
-	parts, idxSet, err := buildRequest(segs)
+	parts, n, err := buildRequest(segs)
 	if err != nil {
 		return nil, err
 	}
@@ -183,73 +212,92 @@ func (e Engine) Diarize(ctx context.Context, language string, orgID, episodeID i
 		Out:           &out,
 		// Validate runs after a successful strict decode; a non-nil error is treated
 		// exactly like a decode failure by the Client (retry once, then hard fail).
-		// This is where "assign every idx exactly once" is enforced against the real
-		// segment set — an unknown idx, a gap, or an overlap all fail here.
-		Validate: func() error { return validateAssignments(idxSet, out.Assignments) },
+		// This is where the exact-tiling contract is enforced against the real
+		// segment count — an unsorted, overlapping, gapped, reversed, or
+		// out-of-range turn all fail here.
+		Validate: func() error { return validateTurns(n, out.Turns) },
 	})
 	if err != nil {
 		return nil, err
 	}
 
-	byIdx := make(map[int]string, len(out.Assignments))
-	for _, a := range out.Assignments {
-		byIdx[a.SegmentIdx] = a.SpeakerKey
-	}
-	return byIdx, nil
+	return speakersFromTurns(out.Turns), nil
 }
 
 // buildRequest serializes the segments to the user-turn payload (idx + text ONLY)
-// and returns the JSON string plus the set of idxs the output is validated
-// against. Segments are emitted in idx order so the request is deterministic
-// regardless of the caller's slice order.
-func buildRequest(segs []asr.Segment) (string, map[int]bool, error) {
+// and returns the JSON string plus the segment count n the output tiling is
+// validated against. Segments are emitted in idx order so the request is
+// deterministic regardless of the caller's slice order. The transcript's idxs
+// must be exactly 0..n-1 (the shape transcribe persists); a duplicate or
+// non-contiguous idx is an internal error caught here, BEFORE any billable call.
+func buildRequest(segs []asr.Segment) (string, int, error) {
 	ordered := make([]asr.Segment, len(segs))
 	copy(ordered, segs)
 	sort.Slice(ordered, func(i, j int) bool { return ordered[i].Idx < ordered[j].Idx })
 
 	payload := requestPayload{Segments: make([]requestSegment, 0, len(ordered))}
-	idxSet := make(map[int]bool, len(ordered))
-	for _, s := range ordered {
-		if idxSet[s.Idx] {
-			return "", nil, fmt.Errorf("diarize: duplicate segment idx %d in transcript", s.Idx)
+	for i, s := range ordered {
+		if s.Idx != i {
+			return "", 0, fmt.Errorf("diarize: transcript segment idxs are not contiguous 0..n-1 (found idx %d at position %d)", s.Idx, i)
 		}
-		idxSet[s.Idx] = true
 		// Only idx and text — never a timestamp or the words array.
 		payload.Segments = append(payload.Segments, requestSegment{Idx: s.Idx, Text: s.Text})
 	}
 	b, err := json.Marshal(payload)
 	if err != nil {
-		return "", nil, fmt.Errorf("diarize: marshal request: %w", err)
+		return "", 0, fmt.Errorf("diarize: marshal request: %w", err)
 	}
-	return string(b), idxSet, nil
+	return string(b), len(ordered), nil
 }
 
-// validateAssignments checks the model's grouping against the real segment set:
-// every existing idx assigned exactly once (no gap, no overlap), no unknown idx,
-// and a well-formed episode-local label. It is the semantic gate that turns a
+// validateTurns checks the model's turn ranges against the real segment count:
+// the ranges must be sorted, non-overlapping, and tile EXACTLY 0..n-1 — no gap,
+// no reversed range, no idx outside the transcript — with a well-formed
+// episode-local label on every turn. It is the semantic gate that turns a
 // plausible-but-wrong grouping into the one-retry-then-fail path. Its error text
 // is neutral (no provider names) — it is surfaced only in server logs.
-func validateAssignments(idxSet map[int]bool, assigns []assignment) error {
-	if len(assigns) == 0 {
-		return errors.New("diarize: empty assignment")
+func validateTurns(n int, turns []turn) error {
+	if len(turns) == 0 {
+		return errors.New("diarize: empty turn list")
 	}
-	seen := make(map[int]bool, len(assigns))
-	for _, a := range assigns {
-		if !idxSet[a.SegmentIdx] {
-			return fmt.Errorf("diarize: assignment for unknown segment idx %d", a.SegmentIdx)
+	next := 0 // the idx the next turn must start at for an exact tiling
+	for i, t := range turns {
+		if !speakerKeyRE.MatchString(t.SpeakerKey) {
+			return fmt.Errorf("diarize: turn %d has malformed speaker label", i)
 		}
-		if seen[a.SegmentIdx] {
-			return fmt.Errorf("diarize: segment idx %d assigned more than once", a.SegmentIdx)
+		if t.StartIdx > t.EndIdx {
+			return fmt.Errorf("diarize: turn %d range %d..%d is reversed", i, t.StartIdx, t.EndIdx)
 		}
-		if !speakerKeyRE.MatchString(a.SpeakerKey) {
-			return fmt.Errorf("diarize: segment idx %d has malformed speaker label", a.SegmentIdx)
+		if t.StartIdx < 0 || t.EndIdx > n-1 {
+			return fmt.Errorf("diarize: turn %d range %d..%d is outside segments 0..%d", i, t.StartIdx, t.EndIdx, n-1)
 		}
-		seen[a.SegmentIdx] = true
+		switch {
+		case t.StartIdx < next:
+			return fmt.Errorf("diarize: turn %d range %d..%d overlaps or is out of order (next uncovered idx is %d)", i, t.StartIdx, t.EndIdx, next)
+		case t.StartIdx > next:
+			return fmt.Errorf("diarize: gap before turn %d — segments %d..%d have no speaker", i, next, t.StartIdx-1)
+		}
+		next = t.EndIdx + 1
 	}
-	if len(seen) != len(idxSet) {
-		return fmt.Errorf("diarize: grouping covers %d of %d segments (gap)", len(seen), len(idxSet))
+	if next != n {
+		return fmt.Errorf("diarize: turns cover segments 0..%d of 0..%d (gap at the end)", next-1, n-1)
 	}
 	return nil
+}
+
+// speakersFromTurns expands validated turn ranges to the per-segment
+// idx -> speaker_key map the pipeline persists. Storage, DTOs, and the API are
+// untouched by the range contract: downstream only ever sees a speaker_key per
+// segment. Called only after validateTurns accepted the exact tiling, so the
+// expansion covers every idx 0..n-1 exactly once.
+func speakersFromTurns(turns []turn) map[int]string {
+	byIdx := make(map[int]string)
+	for _, t := range turns {
+		for idx := t.StartIdx; idx <= t.EndIdx; idx++ {
+			byIdx[idx] = t.SpeakerKey
+		}
+	}
+	return byIdx
 }
 
 // LangLabelResolver resolves the neutral LLM engine label for a content language

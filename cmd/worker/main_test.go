@@ -67,19 +67,20 @@ func TestBuildLLMClientFakeModeNeedsNoConfig(t *testing.T) {
 		t.Fatal("buildLLMClient(fake) returned a nil client")
 	}
 	// The committed recording is the fixture the diarize fake replays; it must
-	// be the well-formed grouping shape (assignments array), or the demo diarize
+	// be the well-formed grouping shape (turn-range array), or the demo diarize
 	// stage could never validate it.
 	var out struct {
-		Assignments []struct {
-			SegmentIdx int    `json:"segment_idx"`
+		Turns []struct {
+			StartIdx   int    `json:"start_idx"`
+			EndIdx     int    `json:"end_idx"`
 			SpeakerKey string `json:"speaker_key"`
-		} `json:"assignments"`
+		} `json:"turns"`
 	}
 	if err := json.Unmarshal(diarize.DefaultFakeGroupingResponse(), &out); err != nil {
 		t.Fatalf("committed grouping recording is not valid JSON: %v", err)
 	}
-	if len(out.Assignments) == 0 {
-		t.Fatal("committed grouping recording has no assignments")
+	if len(out.Turns) == 0 {
+		t.Fatal("committed grouping recording has no turns")
 	}
 }
 

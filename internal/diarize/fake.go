@@ -3,7 +3,8 @@ package diarize
 // fake.go bundles the deterministic grouping recording the offline/demo LLM
 // wiring replays — the diarize counterpart of internal/asr's embed.go. The
 // fixture is the model OUTPUT for the seeded demo sample's transcript (the
-// embedded ASR fa recording: two turns, host then guest), hand-checked and
+// embedded ASR fa recording: two turns, host then guest) in the turn-range
+// shape ({turns:[{start_idx, end_idx, speaker_key}]}), hand-checked and
 // committed, so `make demo`/`make dev`/CI drive the diarize stage through the
 // REAL llm.Client validate/retry/audit loop with zero cost, no credential, and
 // byte-stable results. cmd/worker feeds it to an llm.FakeEngine when
@@ -13,9 +14,10 @@ import (
 	_ "embed"
 )
 
-// defaultFakeGrouping is the committed grouping recording. It assigns the demo
-// sample's two segments to two distinct speakers (S1 the host, S2 the guest),
-// matching the embedded ASR fixture fa_interview_open — the pairing is proven by
+// defaultFakeGrouping is the committed grouping recording: two single-segment
+// turn ranges assigning the demo sample's two segments to two distinct speakers
+// (S1 the host, S2 the guest), matching the embedded ASR fixture
+// fa_interview_open — the pairing is proven by
 // TestDefaultFakeGroupingMatchesDemoTranscript, so the two fixtures cannot drift
 // apart silently.
 //

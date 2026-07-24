@@ -114,6 +114,70 @@ func TestDiarizeAnchorMergeGolden(t *testing.T) {
 	}
 }
 
+// TestDiarizeScaleGolden is the full-episode-scale golden: a synthetic
+// 249-segment fa transcript mirroring the real production episode that broke
+// the flat per-segment contract (same segment count, ZWNJ-bearing Persian text,
+// realistic inter-segment gaps; 2026-07-24 receipt). The committed turn-range
+// response (50 alternating host/guest turns tiling 0..248 exactly) is replayed
+// through the real validate/retry loop and the produced per-segment grouping is
+// byte-compared to the committed golden — proving the range validator and the
+// range -> per-segment conversion at the scale that previously hard-failed.
+// The fixture omits words arrays deliberately: diarize never reads them (the
+// request is idx+text only, proven by the internal/diarize unit tests), and the
+// dimensions that broke the old contract are segment count and text volume.
+func TestDiarizeScaleGolden(t *testing.T) {
+	dir := filepath.Join("testdata", "fa")
+	segs := loadSegments(t, filepath.Join(dir, "scale_segments.json"))
+	if len(segs) == 0 {
+		t.Fatalf("scale fixture missing at %s", dir)
+	}
+	if len(segs) != 249 {
+		t.Fatalf("scale fixture has %d segments, want 249 (the prod episode shape)", len(segs))
+	}
+	response := loadFile(t, filepath.Join(dir, "scale_response.json"))
+	goldenPath := filepath.Join(dir, "scale_golden.json")
+
+	fe := llm.NewFakeEngine(evalEngineLabel, "bs-lm-eval", response)
+	client, err := llm.NewFakeClient(nil, fe)
+	if err != nil {
+		t.Fatalf("NewFakeClient: %v", err)
+	}
+	eng := diarize.Engine{Gen: client, Labels: diarize.LangLabelResolver{Label: evalEngineLabel}}
+
+	byIdx, err := eng.Diarize(context.Background(), "fa", 1, 1, segs)
+	if err != nil {
+		t.Fatalf("Diarize(fa, 249 segments): %v", err)
+	}
+	if len(byIdx) != len(segs) {
+		t.Fatalf("grouping covers %d of %d segments", len(byIdx), len(segs))
+	}
+	if len(fe.Calls()) != 1 {
+		t.Fatalf("engine calls = %d, want 1 (no retry at scale)", len(fe.Calls()))
+	}
+	want := marshalGolden(t, byIdx)
+
+	if *update {
+		if err := os.WriteFile(goldenPath, want, 0o644); err != nil {
+			t.Fatalf("write golden %s: %v", goldenPath, err)
+		}
+		t.Logf("updated golden %s (%d segments)", goldenPath, len(byIdx))
+		return
+	}
+
+	got, err := os.ReadFile(goldenPath)
+	if errors.Is(err, fs.ErrNotExist) {
+		t.Fatalf("golden %s missing; regenerate with: go test ./eval/diarize -run TestDiarizeScaleGolden -update", goldenPath)
+	}
+	if err != nil {
+		t.Fatalf("read golden %s: %v", goldenPath, err)
+	}
+	if !bytes.Equal(got, want) {
+		t.Errorf("golden drift at scale. Produced grouping no longer matches %s.\n"+
+			"If this change is intended, regenerate deliberately:\n"+
+			"  go test ./eval/diarize -run TestDiarizeScaleGolden -update", goldenPath)
+	}
+}
+
 // declaresLLM reports whether the language declares an llm engine slot (only such
 // languages are diarizable).
 func declaresLLM(l lang.Language) bool {
