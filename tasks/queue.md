@@ -101,13 +101,18 @@ cited patterns in its spec. "Staging" in SPEC-M1's gate = the PoC prod service
 | 5d | m1-e2e-gates-trunk | Playwright e2e gates push-to-main rollout, fail-closed (process fix) | committed |
 | 5e | m1-transcribe-reenable | transcribe ON: SIGPIPE trigger fix, fake demo, real prod engine | committed |
 | 5f | m1-chirp3-switch | chirp_2 fa-IR closed by provider → chirp_3/us; drop word-confidence flag | committed |
-| 6 | m1-diarize-stage | text-anchored LLM diarization, anchor-merge + golden stability tests in make eval | queued |
-| 7 | m1-speaker-naming | naming evidence (intro quote + lower-third crop), speaker_directory merge (migration: speakers) | queued |
-| 8 | m1-shots-stage | scdet shot boundaries + per-shot 9:16 bbox proposals stored (migration: shots) | queued |
-| 9 | m1-moments-stage | LLM moment candidates (span+word offsets), ranking, rationale + verbatim quote (migration: moments) | queued |
-| 10 | m1-segments-api | transcript/moments/speakers endpoints, org-scoped, neutral DTOs | queued |
-| 11 | m1-transcript-ui | transcript pane: RTL, ZWNJ-preserving DOM, tokens, axe | queued |
-| 12 | m1-moment-rail | ranked cards; Approve-as-is/Adjust/Dismiss; single-key approve; audit events | queued |
+| 6 | m1-diarize-stage | text-anchored LLM diarization, anchor-merge eval golden (parked build) | committed |
+| 6b | m1-cost-safety | idempotent billable calls, per-episode attempt cap, kill switch, GCP backstops | committed |
+| 6c | m1-segmentation | deterministic pause-based resegmentation (700ms gaps; 30s/60w caps) | committed |
+| 6d | m1-diarize-activation | live LLM client (gemini-3.5-flash/global), 3-stage chain; S1/S2/S3 verified in prod | committed |
+| 10 | m1-segments-api | GET /episodes/{id}/transcript, org-scoped neutral DTO | committed |
+| 11 | m1-transcript-ui | /episode/[id] view: RTL transcript pane + proxy player | committed |
+| 11b | m1-episode-delete | org-scoped soft delete + Library remove action; prod library cleaned | committed |
+| 11c | m1-transcript-sync | two-way player↔transcript sync, play-state preserved (human-specified) | committed |
+| 9 | m1-moments-stage | FAST-TRACKED: LLM ranked moments, quote-anchored word-accurate bounds (migration: moments) | in-progress |
+| 12 | m1-moments-rail | FAST-TRACKED: moments API + rail; Approve/Dismiss + single-key (Adjust deferred to editor) | spec-ready (next) |
+| 7 | m1-speaker-naming | DEFERRED behind moments (not a moments prereq): evidence-gated naming, lower-third frames | queued |
+| 8 | m1-shots-stage | DEFERRED behind moments (render-time concern): scdet shots + 9:16 bboxes | queued |
 | 13 | m1-editor-trim | sentence-selection trim on segment/word data; J/K/L transport | queued |
 | 14 | m1-editor-filmstrip | ±3s filmstrip at cut points; flash-frame warning from shots | queued |
 | 15 | m1-caption-preview | live Persian caption preview (RTL, ZWNJ, token-styled) | queued |
