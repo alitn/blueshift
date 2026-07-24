@@ -39,9 +39,9 @@ describe('PipelineCard', () => {
     expect(rows[3].getAttribute('data-status')).toBe('unreached');
     // Durations, right-column mono values.
     expect(screen.getByText('1M 42S')).toBeInTheDocument();
-    // Engine labels render in the faint card form.
-    expect(screen.getByText('BS·ASR 2')).toBeInTheDocument();
-    expect(screen.getByText('BS·MEDIA 1')).toBeInTheDocument();
+    // Engine labels render in the faint card form (leading bs -> BLUESHIFT).
+    expect(screen.getByText('BLUESHIFT·ASR 2')).toBeInTheDocument();
+    expect(screen.getByText('BLUESHIFT·MEDIA 1')).toBeInTheDocument();
     // Per-stage cost when known.
     expect(screen.getByText('$0.04')).toBeInTheDocument();
     // The active (in-flight) stage shows no duration.

@@ -55,8 +55,8 @@ test.describe('pipeline hover card', () => {
     }
 
     // Public engine labels only — the versioned neutral names, nothing else.
-    await expect(popover.getByText('BS·ASR 2', { exact: true })).toBeVisible();
-    await expect(popover.getByText('BS·MEDIA 1', { exact: true })).toBeVisible();
+    await expect(popover.getByText('BLUESHIFT·ASR 2', { exact: true })).toBeVisible();
+    await expect(popover.getByText('BLUESHIFT·MEDIA 1', { exact: true })).toBeVisible();
 
     // Footer: QUEUED + TOTAL, both derived values.
     await expect(popover.getByText('QUEUED', { exact: true })).toBeVisible();

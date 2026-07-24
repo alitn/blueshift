@@ -138,10 +138,12 @@ describe('formatCents / totalCostCents', () => {
 });
 
 describe('engineDisplay', () => {
-  it('renders public labels as the faint card form', () => {
-    expect(engineDisplay('bs-asr-2')).toBe('BS·ASR 2');
-    expect(engineDisplay('bs-lm-1')).toBe('BS·LM 1');
-    expect(engineDisplay('bs-media-1')).toBe('BS·MEDIA 1');
+  it('renders public labels as the faint card form, spelling out the leading bs token', () => {
+    expect(engineDisplay('bs-asr-2')).toBe('BLUESHIFT·ASR 2');
+    expect(engineDisplay('bs-lm-1')).toBe('BLUESHIFT·LM 1');
+    expect(engineDisplay('bs-media-1')).toBe('BLUESHIFT·MEDIA 1');
     expect(engineDisplay('custom')).toBe('CUSTOM');
+    // Only the FIRST token expands; a later `bs` keeps the uppercase form.
+    expect(engineDisplay('asr-bs-2')).toBe('ASR·BS 2');
   });
 });

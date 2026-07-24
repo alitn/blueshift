@@ -145,7 +145,9 @@ export function formatCents(cents?: number): string {
 
 /**
  * engineDisplay renders a public engine label for the card: "bs-asr-2" ->
- * "BS·ASR 2" (mono, faint). Unknown shapes are just uppercased.
+ * "BLUESHIFT·ASR 2" (mono, faint). The leading `bs` token spells out the
+ * product name; every other token keeps its uppercase form. Display-only —
+ * the wire label ("bs-asr-2") is untouched. Unknown shapes are just uppercased.
  */
 export function engineDisplay(label: string): string {
   const parts = label.split('-');
@@ -153,7 +155,9 @@ export function engineDisplay(label: string): string {
   const last = parts[parts.length - 1];
   const names = /^\d+$/.test(last) ? parts.slice(0, -1) : parts;
   const version = /^\d+$/.test(last) ? ` ${last}` : '';
-  return names.map((p) => p.toUpperCase()).join('·') + version;
+  return (
+    names.map((p, i) => (i === 0 && p === 'bs' ? 'BLUESHIFT' : p.toUpperCase())).join('·') + version
+  );
 }
 
 /** totalCostCents sums the per-stage costs; undefined when none are known. */
