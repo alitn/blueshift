@@ -15,6 +15,13 @@
 > billing budget alert** SET by the human 2026-07-24 ✓. (Architect TODO: add project-level
 > Speech/LLM quota caps as a second backstop — nice-to-have, not blocking.) **Real Chirp is
 > UNBLOCKED.**
+> **MILESTONE 2026-07-24 ~08:30 UTC: FIRST REAL PROD TRANSCRIPT.** Episode
+> ep_06fs5qyg5nxrk1nc02y3c5zrrw READY via real chirp_3 batch: 641 word-timed fa words,
+> renders in the prod transcript view. Engine saga receipts in the Log (chirp_2 fa-IR
+> closed by provider mid-rollout → forced chirp_3/us switch + word-confidence-flag fix).
+> KNOWN GAP: provider returned the 4-min audio as ONE segment → next task is
+> deterministic pause-based segmentation (word-gap splits; ASR-only timestamps) BEFORE
+> diarize activation (diarize needs real segment boundaries).
 > **NEXT ORDER (updated 2026-07-24):** committed so far: diarize (f3fe3aa), cost-safety
 > (4d4aa6d), `m1-segments-api` (4feb2a8, unpushed — batch w/ transcript-ui). IN FLIGHT:
 > `m1-transcript-ui` (the transcript view). THEN: batch-push segments-api+transcript-ui (1
