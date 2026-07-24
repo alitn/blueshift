@@ -57,6 +57,7 @@ func newSegFixture(t *testing.T) segFixture {
 	t.Cleanup(func() {
 		c, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 		defer cancel()
+		_, _ = st.Pool().Exec(c, `DELETE FROM moments WHERE episode_id = $1`, ep.ID)
 		_, _ = st.Pool().Exec(c, `DELETE FROM segments WHERE episode_id = $1`, ep.ID)
 	})
 	deleteEpisodeOnCleanup(t, st, ep.ID)

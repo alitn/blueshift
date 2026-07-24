@@ -381,13 +381,16 @@ jobs:
           #     retrying the failed prod episode (the two provider errors above
           #     consumed billable attempts against the code default of 5).
           #
-          # Diarize is ON in prod: PIPELINE_STAGES=ingest,transcribe,diarize
-          # activates the three-stage chain (diarize terminal -> ready) and
+          # Diarize AND moments are ON in prod:
+          # PIPELINE_STAGES=ingest,transcribe,diarize,moments activates the
+          # four-stage chain (moments terminal -> ready) and
           # LLM_ENGINE_MODE=live binds the neutral bs-lm-1 label to the real
-          # provider-backed engine. cmd/worker builds the LLM client ONLY when
-          # diarize is in the active chain, so the cost-safety guards (idempotency
-          # skip + the shared MAX_PROCESS_ATTEMPTS cap) wrap the now-live billable
-          # call; dropping PIPELINE_STAGES back to ingest,transcribe (or ingest)
+          # provider-backed engine — the SAME LLM_* env serves both LLM stages
+          # (moments reuses bs-lm-1; no new coordinates). cmd/worker builds an
+          # LLM client ONLY for the LLM stages in the active chain, so the
+          # cost-safety guards (per-stage idempotency skips + the shared
+          # MAX_PROCESS_ATTEMPTS cap) wrap every live billable call; dropping
+          # PIPELINE_STAGES back to ingest,transcribe,diarize (or shorter)
           # is the kill switch, no code change.
           #
           # LLM engine coordinates (researched 2026-07-24 against provider docs —
@@ -415,7 +418,7 @@ jobs:
             --command /app/worker \
             --service-account "$RUNTIME_SA" \
             --set-cloudsql-instances "$SQL_INSTANCE" \
-            --set-env-vars "^@^ENV=prod@AUTH_MODE=identity@BLOB_MODE=gcs@GCS_BUCKET=$BUCKET@WORKER_TRIGGER=cloudrun@WORKER_JOB_NAME=blueshift-worker@WORKER_JOB_REGION=$REGION@WORKER_JOB_PROJECT=$PROJECT@ASR_ENGINE_MODE=speech@ASR_REGION=us@ASR_MODEL=chirp_3@ASR_PROJECT=$PROJECT@ASR_BUCKET=$BUCKET@ASR_LANGUAGE_CODES=fa=fa-IR@LLM_ENGINE_MODE=live@LLM_PROVIDER=gemini@LLM_MODEL=gemini-3.5-flash@LLM_ENDPOINT=https://aiplatform.googleapis.com/v1/projects/$PROJECT/locations/global/publishers/google/models@LLM_PRICE_IN_CENTS_PER_MTOK=150@LLM_PRICE_OUT_CENTS_PER_MTOK=900@PIPELINE_STAGES=ingest,transcribe,diarize@MAX_PROCESS_ATTEMPTS=10" \
+            --set-env-vars "^@^ENV=prod@AUTH_MODE=identity@BLOB_MODE=gcs@GCS_BUCKET=$BUCKET@WORKER_TRIGGER=cloudrun@WORKER_JOB_NAME=blueshift-worker@WORKER_JOB_REGION=$REGION@WORKER_JOB_PROJECT=$PROJECT@ASR_ENGINE_MODE=speech@ASR_REGION=us@ASR_MODEL=chirp_3@ASR_PROJECT=$PROJECT@ASR_BUCKET=$BUCKET@ASR_LANGUAGE_CODES=fa=fa-IR@LLM_ENGINE_MODE=live@LLM_PROVIDER=gemini@LLM_MODEL=gemini-3.5-flash@LLM_ENDPOINT=https://aiplatform.googleapis.com/v1/projects/$PROJECT/locations/global/publishers/google/models@LLM_PRICE_IN_CENTS_PER_MTOK=150@LLM_PRICE_OUT_CENTS_PER_MTOK=900@PIPELINE_STAGES=ingest,transcribe,diarize,moments@MAX_PROCESS_ATTEMPTS=10" \
             --set-secrets "DATABASE_URL=database-url:latest,SESSION_SECRET=session-signing-key:latest,IDP_API_KEY=identity-platform-config:latest" \
             --cpu 4 --memory 2Gi \
             --max-retries 2 --task-timeout 4h --quiet

@@ -2,14 +2,16 @@ import { test, expect } from '@playwright/test';
 import { login, libraryRow, isolate, SAMPLE, uploadFixture } from './helpers';
 
 // AC5: the upload-to-Ready flow, driven end to end against the real demo stack
-// (real API, real worker ingest → transcribe → diarize, real proxy playback).
-// Transcribe AND diarize are in the demo active chain (fake engines), so
-// upload → READY traverses THREE stages and both the seeded sample and the
-// uploaded episode carry a real transcript with deterministic speaker keys.
+// (real API, real worker ingest → transcribe → diarize → moments, real proxy
+// playback). Transcribe, diarize, AND moments are in the demo active chain
+// (fake engines), so upload → READY traverses FOUR stages and both the seeded
+// sample and the uploaded episode carry a real transcript with deterministic
+// speaker keys (and deterministic ranked moments in the DB — rendered by the
+// moment rail in its own task).
 // Starts unauthenticated so the login UI itself is exercised here.
 test.use({ storageState: { cookies: [], origins: [] } });
 
-test('login → sample READY → upload → READY via ingest+transcribe+diarize → transcripts render with speaker chips', async ({
+test('login → sample READY → upload → READY via ingest+transcribe+diarize+moments → transcripts render with speaker chips', async ({
   page
 }, testInfo) => {
   await login(page);
@@ -44,19 +46,19 @@ test('login → sample READY → upload → READY via ingest+transcribe+diarize 
 
   // The new row advances via polling (no reload): non-terminal → READY. The
   // worker was triggered by the app (WORKER_TRIGGER=exec) on upload-complete and
-  // now traverses THREE stages — ingest, then by auto-advance transcribe and
-  // diarize (both fake) — before it reads READY. Isolate by the unique nonce so
-  // exactly this run's row matches.
+  // now traverses FOUR stages — ingest, then by auto-advance transcribe,
+  // diarize, and moments (all fake) — before it reads READY. Isolate by the
+  // unique nonce so exactly this run's row matches.
   await isolate(page, nonce);
   const uploaded = libraryRow(page, uploadTitle);
   await expect(uploaded).toBeVisible();
   await expect(uploaded.getByText('READY')).toBeVisible({ timeout: 60_000 });
 
   // PROVE the auto-advance fake path end to end: the uploaded episode reached
-  // READY by auto-advancing ingest → transcribe → diarize, so its transcript is
-  // populated by the fake ASR AND diarized by the fake grouping — not just the
-  // explicitly-seeded sample. Open it and confirm real segments rendered with
-  // both deterministic speaker chips (S1 host, S2 guest).
+  // READY by auto-advancing ingest → transcribe → diarize → moments, so its
+  // transcript is populated by the fake ASR AND diarized by the fake grouping —
+  // not just the explicitly-seeded sample. Open it and confirm real segments
+  // rendered with both deterministic speaker chips (S1 host, S2 guest).
   await uploaded.focus();
   await page.keyboard.press('Enter');
   await page.waitForURL('**/episode/**');

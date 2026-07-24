@@ -46,6 +46,12 @@ type Querier interface {
 	// signal the stale-claim sweeper reads to force-fail a 'processing' row whose
 	// worker died without finalizing it.
 	ClaimEpisodeForStage(ctx context.Context, arg ClaimEpisodeForStageParams) (Episode, error)
+	// Cost-safety idempotency probe for the moments stage: how many moments the
+	// episode already has. A non-zero count means the moment proposal already
+	// exists, so the stage SKIPS the billable LLM call entirely (never re-bills on a
+	// retry/re-drive). episode_id is the internal id, resolved org-scoped by the
+	// caller.
+	CountEpisodeMoments(ctx context.Context, episodeID int64) (int64, error)
 	// Cost-safety idempotency probe for the transcribe stage: how many transcript
 	// segments the episode already has. A non-zero count means the episode is already
 	// transcribed, so the stage SKIPS the billable ASR call entirely (never re-bills on
@@ -59,6 +65,12 @@ type Querier interface {
 	// re-bills on a retry/re-drive). episode_id is the internal id, resolved org-scoped
 	// by the caller.
 	CountEpisodeSegmentsAndSpeakers(ctx context.Context, episodeID int64) (CountEpisodeSegmentsAndSpeakersRow, error)
+	// Remove all of an episode's moments. Paired with InsertMoment inside one
+	// transaction, this makes a re-run of the moments stage idempotent: the prior
+	// proposal set is replaced wholesale rather than duplicated (mirroring the
+	// segments replace choreography). episode_id is the internal id, resolved
+	// org-scoped by the caller.
+	DeleteEpisodeMoments(ctx context.Context, episodeID int64) error
 	// Remove all of an episode's segments. Paired with InsertSegment inside one
 	// transaction, this makes a re-run of the transcribe stage idempotent: the prior
 	// transcript is replaced wholesale rather than duplicated. episode_id is the
@@ -118,12 +130,22 @@ type Querier interface {
 	// JSON body). cost_cents is NULL when no price is configured for the model;
 	// latency_ms and status record the attempt's outcome.
 	InsertLlmCall(ctx context.Context, arg InsertLlmCallParams) (LlmCall, error)
+	// Insert one proposed moment. rationale_en/quote_fa are stored verbatim as the
+	// validated engine returned them (the quote is a contiguous substring of the
+	// span's transcript text — enforced before persist); start_ms/end_ms are the
+	// stage-derived WORD-ACCURATE times of the quote's first/last word within the
+	// span (ASR word data, never model output, never segment-snapped). status
+	// defaults to 'proposed'; only a human status update ever changes it.
+	InsertMoment(ctx context.Context, arg InsertMomentParams) error
 	// Insert one transcript segment. `words` is the positional jsonb array the schema
 	// documents ([text, start_ms, end_ms, conf] tuples); text/words are stored
 	// verbatim from ASR (no normalization at rest). speaker_key starts NULL (not yet
 	// diarized); the diarize stage sets it later via SetSegmentSpeaker.
 	InsertSegment(ctx context.Context, arg InsertSegmentParams) error
 	ListEpisodesByOrg(ctx context.Context, orgID int64) ([]Episode, error)
+	// List an episode's moments best-first (rank 1 = best). episode_id is the
+	// internal id, resolved org-scoped by the caller.
+	ListMomentsByEpisode(ctx context.Context, episodeID int64) ([]ListMomentsByEpisodeRow, error)
 	// List an episode's transcript in order, including the diarization speaker_key
 	// (NULL until the diarize stage runs). episode_id is the internal id, resolved
 	// org-scoped by the caller.
@@ -199,6 +221,13 @@ type Querier interface {
 	// A neutral error_id is recorded (server-side correlation only, never client
 	// surface) and claimed_at cleared. Returns the count so the caller can WARN.
 	SweepStuckProcessingEpisodes(ctx context.Context, arg SweepStuckProcessingEpisodesParams) (int64, error)
+	// Flip one moment's review status, guarded to the legal transitions only:
+	// proposed -> approved/dismissed (the review verdicts) and approved/dismissed ->
+	// proposed (the undo). Any other combination matches no row, so the caller sees
+	// pgx.ErrNoRows and refuses cleanly. status_changed_at stamps the change.
+	// episode_id is the internal id, resolved org-scoped by the caller; (episode_id,
+	// rank) is the moment's stable natural key (UNIQUE in the schema).
+	TransitionMomentStatus(ctx context.Context, arg TransitionMomentStatusParams) (TransitionMomentStatusRow, error)
 	UpdateEpisodeStatus(ctx context.Context, arg UpdateEpisodeStatusParams) (Episode, error)
 }
 

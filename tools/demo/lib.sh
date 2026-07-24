@@ -147,14 +147,15 @@ demo_build_binaries() {
 }
 
 # demo_migrate_seed — apply migrations, seed identities + the deterministic
-# sample episode, then drive it through the REAL worker three-stage chain
-# (ingest -> transcribe -> diarize) so the sample boots 'ready' at
-# current_stage=diarize WITH a fake-engine transcript AND deterministic speaker
-# keys (S1/S2 chips). The stages run as separate blocking worker invocations
-# with auto-advance OFF, so the seed is deterministic (no detached child races
-# it) and fully processed before the demo banner prints. ASR and the LLM both
-# run in fake mode (ASR_ENGINE_MODE=fake, LLM_ENGINE_MODE=fake) — deterministic,
-# offline, zero cost, no credential. Sets EP_ID.
+# sample episode, then drive it through the REAL worker four-stage chain
+# (ingest -> transcribe -> diarize -> moments) so the sample boots 'ready' at
+# current_stage=moments WITH a fake-engine transcript, deterministic speaker
+# keys (S1/S2 chips), AND the deterministic ranked-moment proposals. The stages
+# run as separate blocking worker invocations with auto-advance OFF, so the
+# seed is deterministic (no detached child races it) and fully processed before
+# the demo banner prints. ASR and the LLM both run in fake mode
+# (ASR_ENGINE_MODE=fake, LLM_ENGINE_MODE=fake) — deterministic, offline, zero
+# cost, no credential. Sets EP_ID.
 demo_migrate_seed() {
   # Migrate CLI is version-locked to the go.mod require (v4.19.1) via `go run`, so
   # it can never drift from the library and needs no PATH binary. The `postgres`
@@ -170,23 +171,27 @@ demo_migrate_seed() {
   EP_ID="$("$BIN_DIR/demoseed" -devseed "$REPO_ROOT/fixtures/dev-seed.sql" | tail -n 1)"
   [ -n "$EP_ID" ] || die "demoseed did not return a sample episode id"
 
-  # Three-stage chain, driven explicitly one blocking step at a time. ingest and
-  # transcribe run with auto-advance OFF (PIPELINE_STAGES makes them
-  # non-terminal, so each hands off and stays 'processing' without spawning a
-  # detached successor that would race this deterministic drive), then the fake
-  # diarize stage — terminal — finalizes the sample 'ready' with segments AND
-  # speaker keys. The uploaded-episode path (via the app) keeps auto-advance ON;
-  # this drive is only so the seeded sample is READY-with-chips at boot.
-  log "running worker ingest -> transcribe -> diarize (fake) for sample episode ($EP_ID)"
-  WORKER_TRIGGER="exec" PIPELINE_STAGES="ingest,transcribe,diarize" \
+  # Four-stage chain, driven explicitly one blocking step at a time. ingest,
+  # transcribe, and diarize run with auto-advance OFF (PIPELINE_STAGES makes
+  # them non-terminal, so each hands off and stays 'processing' without
+  # spawning a detached successor that would race this deterministic drive),
+  # then the fake moments stage — terminal — finalizes the sample 'ready' with
+  # segments, speaker keys, AND ranked moment proposals. The uploaded-episode
+  # path (via the app) keeps auto-advance ON; this drive is only so the seeded
+  # sample is READY-with-chips-and-moments at boot.
+  log "running worker ingest -> transcribe -> diarize -> moments (fake) for sample episode ($EP_ID)"
+  WORKER_TRIGGER="exec" PIPELINE_STAGES="ingest,transcribe,diarize,moments" \
     ASR_ENGINE_MODE="fake" LLM_ENGINE_MODE="fake" \
     PIPELINE_AUTO_ADVANCE="false" "$BIN_DIR/worker" "$EP_ID" ingest
-  WORKER_TRIGGER="exec" PIPELINE_STAGES="ingest,transcribe,diarize" \
+  WORKER_TRIGGER="exec" PIPELINE_STAGES="ingest,transcribe,diarize,moments" \
     ASR_ENGINE_MODE="fake" LLM_ENGINE_MODE="fake" \
     PIPELINE_AUTO_ADVANCE="false" "$BIN_DIR/worker" "$EP_ID" transcribe
-  WORKER_TRIGGER="exec" PIPELINE_STAGES="ingest,transcribe,diarize" \
+  WORKER_TRIGGER="exec" PIPELINE_STAGES="ingest,transcribe,diarize,moments" \
     ASR_ENGINE_MODE="fake" LLM_ENGINE_MODE="fake" \
-    "$BIN_DIR/worker" "$EP_ID" diarize
+    PIPELINE_AUTO_ADVANCE="false" "$BIN_DIR/worker" "$EP_ID" diarize
+  WORKER_TRIGGER="exec" PIPELINE_STAGES="ingest,transcribe,diarize,moments" \
+    ASR_ENGINE_MODE="fake" LLM_ENGINE_MODE="fake" \
+    "$BIN_DIR/worker" "$EP_ID" moments
 }
 
 # demo_start_app — start the API server in the background, record its pid, and
@@ -197,8 +202,8 @@ demo_migrate_seed() {
 # they MUST be on the app's environment: the exec trigger spawns the ingest
 # worker with the app's env inherited (cmd.Env=nil), and each worker's own exec
 # trigger likewise hands its env to the stage it auto-advances into. So an
-# UPLOADED episode's whole ingest->transcribe->diarize chain inherits the
-# three-stage active chain, fake ASR, and fake LLM from here. Omit
+# UPLOADED episode's whole ingest->transcribe->diarize->moments chain inherits
+# the four-stage active chain, fake ASR, and fake LLM from here. Omit
 # PIPELINE_STAGES and the spawned ingest worker falls back to the default
 # ingest-only chain — ingest stays terminal and nothing ever transcribes.
 demo_start_app() {
@@ -214,7 +219,7 @@ demo_start_app() {
   WORKER_BIN="$BIN_DIR/worker" \
   ASR_ENGINE_MODE="fake" \
   LLM_ENGINE_MODE="fake" \
-  PIPELINE_STAGES="ingest,transcribe,diarize" \
+  PIPELINE_STAGES="ingest,transcribe,diarize,moments" \
   PORT="$DEMO_PORT" \
     "$BIN_DIR/app" &
   local pid=$!

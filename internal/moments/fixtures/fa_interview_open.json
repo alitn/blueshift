@@ -1,0 +1,18 @@
+{
+  "moments": [
+    {
+      "rank": 1,
+      "start_idx": 1,
+      "end_idx": 1,
+      "rationale_en": "The guest's warm, self-contained reply is the most quotable beat of the excerpt and stands alone as a clip.",
+      "quote_fa": "خیلی خوش‌حالم که اینجا هستم"
+    },
+    {
+      "rank": 2,
+      "start_idx": 0,
+      "end_idx": 0,
+      "rationale_en": "The host's greeting opens the conversation cleanly and works as a cold-open beat.",
+      "quote_fa": "سلام به برنامه خوش آمدید"
+    }
+  ]
+}

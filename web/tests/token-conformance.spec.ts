@@ -84,18 +84,16 @@ test.describe('token conformance', () => {
 
     // The reported bug: a READY row's reached bars must render done, distinct
     // from the not-reached bars — never five identical greys. The demo chain is
-    // now three-stage (ingest,transcribe,diarize), so the seeded READY sample
-    // sits at diarize: bars 1-3 done, bars 4-5 (moments/render) unreached.
+    // now four-stage (ingest,transcribe,diarize,moments), so the seeded READY
+    // sample sits at moments: bars 1-4 done, bar 5 (render) unreached.
     await isolate(page, SAMPLE.search);
     const sample = libraryRow(page, SAMPLE.title);
     await expect(sample.getByText('READY')).toBeVisible();
     const bars = sample.getByTestId('pipeline-bar');
     await expect(bars).toHaveCount(5);
-    for (let i = 0; i < 3; i++) {
+    for (let i = 0; i < 4; i++) {
       expect(await cssProp(bars.nth(i), 'background-color')).toBe(stepDone);
     }
-    for (let i = 3; i < 5; i++) {
-      expect(await cssProp(bars.nth(i), 'background-color')).toBe(borderDefault);
-    }
+    expect(await cssProp(bars.nth(4), 'background-color')).toBe(borderDefault);
   });
 });

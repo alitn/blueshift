@@ -1,0 +1,97 @@
+[
+  {
+    "idx": 0,
+    "start_ms": 0,
+    "end_ms": 2200,
+    "text": "سلام به برنامه خوش آمدید",
+    "words": [
+      { "text": "سلام", "start_ms": 0, "end_ms": 520, "conf": 0.98 },
+      { "text": "به", "start_ms": 600, "end_ms": 720, "conf": 0.95 },
+      { "text": "برنامه", "start_ms": 760, "end_ms": 1280, "conf": 0.97 },
+      { "text": "خوش", "start_ms": 1340, "end_ms": 1600, "conf": 0.96 },
+      { "text": "آمدید", "start_ms": 1660, "end_ms": 2200, "conf": 0.94 }
+    ],
+    "speaker_key": "S1"
+  },
+  {
+    "idx": 1,
+    "start_ms": 2600,
+    "end_ms": 4600,
+    "text": "خیلی خوش‌حالم که اینجا هستم",
+    "words": [
+      { "text": "خیلی", "start_ms": 2600, "end_ms": 2900, "conf": 0.96 },
+      { "text": "خوش‌حالم", "start_ms": 2960, "end_ms": 3540, "conf": 0.95 },
+      { "text": "که", "start_ms": 3600, "end_ms": 3720, "conf": 0.94 },
+      { "text": "اینجا", "start_ms": 3780, "end_ms": 4180, "conf": 0.96 },
+      { "text": "هستم", "start_ms": 4240, "end_ms": 4600, "conf": 0.95 }
+    ],
+    "speaker_key": "S2"
+  },
+  {
+    "idx": 2,
+    "start_ms": 5000,
+    "end_ms": 7200,
+    "text": "بگذارید با یک سوال شروع کنیم",
+    "words": [
+      { "text": "بگذارید", "start_ms": 5000, "end_ms": 5500, "conf": 0.95 },
+      { "text": "با", "start_ms": 5560, "end_ms": 5680, "conf": 0.96 },
+      { "text": "یک", "start_ms": 5740, "end_ms": 5900, "conf": 0.97 },
+      { "text": "سوال", "start_ms": 5960, "end_ms": 6400, "conf": 0.95 },
+      { "text": "شروع", "start_ms": 6460, "end_ms": 6800, "conf": 0.96 },
+      { "text": "کنیم", "start_ms": 6860, "end_ms": 7200, "conf": 0.94 }
+    ],
+    "speaker_key": "S1"
+  },
+  {
+    "idx": 3,
+    "start_ms": 7600,
+    "end_ms": 12400,
+    "text": "سال اول همه چیز را از دست دادیم ولی دوباره شروع کردیم",
+    "words": [
+      { "text": "سال", "start_ms": 7600, "end_ms": 8000, "conf": 0.96 },
+      { "text": "اول", "start_ms": 8060, "end_ms": 8400, "conf": 0.95 },
+      { "text": "همه", "start_ms": 8460, "end_ms": 8800, "conf": 0.96 },
+      { "text": "چیز", "start_ms": 8860, "end_ms": 9200, "conf": 0.95 },
+      { "text": "را", "start_ms": 9260, "end_ms": 9400, "conf": 0.94 },
+      { "text": "از", "start_ms": 9460, "end_ms": 9600, "conf": 0.95 },
+      { "text": "دست", "start_ms": 9660, "end_ms": 10000, "conf": 0.96 },
+      { "text": "دادیم", "start_ms": 10060, "end_ms": 10500, "conf": 0.95 },
+      { "text": "ولی", "start_ms": 10800, "end_ms": 11000, "conf": 0.96 },
+      { "text": "دوباره", "start_ms": 11060, "end_ms": 11500, "conf": 0.95 },
+      { "text": "شروع", "start_ms": 11560, "end_ms": 11900, "conf": 0.96 },
+      { "text": "کردیم", "start_ms": 11960, "end_ms": 12400, "conf": 0.95 }
+    ],
+    "speaker_key": "S2"
+  },
+  {
+    "idx": 4,
+    "start_ms": 14200,
+    "end_ms": 18000,
+    "text": "مهم‌ترین درس این بود که هیچ وقت تسلیم نشویم",
+    "words": [
+      { "text": "مهم‌ترین", "start_ms": 14200, "end_ms": 14800, "conf": 0.95 },
+      { "text": "درس", "start_ms": 14860, "end_ms": 15100, "conf": 0.96 },
+      { "text": "این", "start_ms": 15160, "end_ms": 15300, "conf": 0.95 },
+      { "text": "بود", "start_ms": 15360, "end_ms": 15600, "conf": 0.96 },
+      { "text": "که", "start_ms": 15660, "end_ms": 15780, "conf": 0.94 },
+      { "text": "هیچ", "start_ms": 16100, "end_ms": 16400, "conf": 0.96 },
+      { "text": "وقت", "start_ms": 16460, "end_ms": 16700, "conf": 0.95 },
+      { "text": "تسلیم", "start_ms": 16760, "end_ms": 17200, "conf": 0.96 },
+      { "text": "نشویم", "start_ms": 17260, "end_ms": 18000, "conf": 0.95 }
+    ],
+    "speaker_key": "S2"
+  },
+  {
+    "idx": 5,
+    "start_ms": 18200,
+    "end_ms": 20000,
+    "text": "از حضور شما سپاسگزارم",
+    "words": [
+      { "text": "از", "start_ms": 18200, "end_ms": 18350, "conf": 0.95 },
+      { "text": "حضور", "start_ms": 18400, "end_ms": 18800, "conf": 0.96 },
+      { "text": "شما", "start_ms": 18860, "end_ms": 19100, "conf": 0.95 },
+      { "text": "سپاسگزارم", "start_ms": 19160, "end_ms": 20000, "conf": 0.94 }
+    ],
+    "speaker_key": "S1"
+  }
+]

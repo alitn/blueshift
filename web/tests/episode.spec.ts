@@ -12,10 +12,11 @@ import {
 
 // The Episode view (prototype screen 01, transcript slice): opened from the
 // Library by the keyboard path, it renders the proxy player beside the RTL
-// Persian transcript. The demo seed now runs the three-stage chain (fake ASR +
-// fake LLM diarize), so the sample carries a REAL deterministic transcript with
-// speaker keys; the fixture stub is used only where a spec needs exact content
-// control (a single/mixed chip state, known summary).
+// Persian transcript. The demo seed now runs the four-stage chain (fake ASR +
+// fake LLM diarize + fake LLM moments), so the sample carries a REAL
+// deterministic transcript with speaker keys (and ranked moments in the DB —
+// the rail renders them in its own task); the fixture stub is used only where
+// a spec needs exact content control (a single/mixed chip state, known summary).
 
 test('opens from the Library by keyboard and renders the transcript verbatim', async ({ page }) => {
   await openSampleEpisode(page, { transcript: TRANSCRIPT_FIXTURE });
@@ -45,10 +46,10 @@ test('opens from the Library by keyboard and renders the transcript verbatim', a
 });
 
 test('the seeded sample renders its transcribed segments from real data', async ({ page }) => {
-  // No transcript stub: the demo seed drives the full fake three-stage chain
-  // (ingest → transcribe → diarize), so the real sample carries a populated
-  // (offline fixture) transcript AND deterministic speaker keys. Proxy stubbed
-  // away for a video-free shot.
+  // No transcript stub: the demo seed drives the full fake four-stage chain
+  // (ingest → transcribe → diarize → moments), so the real sample carries a
+  // populated (offline fixture) transcript AND deterministic speaker keys.
+  // Proxy stubbed away for a video-free shot.
   await openSampleEpisode(page, { proxy: 'none' });
   await expect(page.getByTestId('transcript-summary')).toBeVisible();
   await expect(page.getByTestId('transcript-segment')).toHaveCount(2);

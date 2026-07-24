@@ -75,6 +75,21 @@ type Membership struct {
 	UpdatedAt pgtype.Timestamptz
 }
 
+type Moment struct {
+	ID              int64
+	EpisodeID       int64
+	Rank            int32
+	StartIdx        int32
+	EndIdx          int32
+	StartMs         int32
+	EndMs           int32
+	RationaleEn     string
+	QuoteFa         string
+	Status          string
+	StatusChangedAt pgtype.Timestamptz
+	CreatedAt       pgtype.Timestamptz
+}
+
 type Org struct {
 	ID        int64
 	PublicID  pgtype.UUID

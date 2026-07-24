@@ -325,6 +325,7 @@ func TestSetActiveStagesValidation(t *testing.T) {
 		{"empty -> default ingest-only", nil, []string{"ingest"}},
 		{"ingest only", []Stage{StageIngest}, []string{"ingest"}},
 		{"ingest then transcribe", []Stage{StageIngest, StageTranscribe}, []string{"ingest", "transcribe"}},
+		{"full four-stage chain", []Stage{StageIngest, StageTranscribe, StageDiarize, StageMoments}, []string{"ingest", "transcribe", "diarize", "moments"}},
 	}
 	for _, c := range ok {
 		var r Runner
@@ -341,7 +342,7 @@ func TestSetActiveStagesValidation(t *testing.T) {
 		name string
 		in   []Stage
 	}{
-		{"unregistered stage", []Stage{StageIngest, StageMoments}},
+		{"unregistered stage", []Stage{StageIngest, StageRender}},
 		{"must start with ingest", []Stage{StageTranscribe}},
 		{"duplicate stage", []Stage{StageIngest, StageTranscribe, StageTranscribe}},
 	}

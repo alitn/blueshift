@@ -26,8 +26,9 @@ import (
 // Stage names a unit of pipeline work. The M1 pipeline is ingest -> transcribe
 // -> diarize -> moments -> render; these constants name the whole set (they match
 // the episodes.current_stage CHECK and the Library's five bars). A stage is
-// *runnable* once it is in the stage registry (stageRegistry) — M1 registers
-// ingest and transcribe; the rest register as they land. Which registered stages
+// *runnable* once it is in the stage registry (stageRegistry) — ingest,
+// transcribe, diarize, and moments are registered; render lands with its own
+// task. Which registered stages
 // actually run, and in what order, is the config-driven *active chain*
 // (PIPELINE_STAGES, default ingest-only — see defaultActiveStages). Stage names
 // are neutral product terms, never provider names.
@@ -48,11 +49,16 @@ const (
 	// chain only when PIPELINE_STAGES names it; under the default ingest-only chain
 	// it stays out of the chain with its code and tests intact.
 	StageDiarize Stage = "diarize"
-	// StageMoments, StageRender name the remaining downstream stages. They are
-	// declared here (and allowed by the DB CHECK) but are not yet in the stage
-	// registry, so the worker refuses to run them until their implementations land.
+	// StageMoments proposes the episode's ranked clip-worthy moments as segment
+	// spans via the LLM seam (internal/moments + internal/llm). Registered
+	// (runnable) but, like transcribe and diarize, PARKED — it joins the active
+	// chain only when PIPELINE_STAGES names it; under the default ingest-only
+	// chain it stays out of the chain with its code and tests intact.
 	StageMoments Stage = "moments"
-	StageRender  Stage = "render"
+	// StageRender names the remaining downstream stage. It is declared here (and
+	// allowed by the DB CHECK) but is not yet in the stage registry, so the
+	// worker refuses to run it until its implementation lands.
+	StageRender Stage = "render"
 )
 
 // stageDef is one entry in the ordered stage registry: a runnable stage's name
@@ -84,9 +90,9 @@ type stageOutput struct {
 // config-driven active chain (see defaultActiveStages / (*Runner).SetActiveStages).
 //
 // COST-SAFETY KILL SWITCH (CLAUDE.md "Billable-service cost safety", item 4):
-// transcribe and diarize are the only BILLABLE stages here (the metered ASR / LLM
-// engines); both are registered but PARKED — out of the default active chain.
-// PIPELINE_STAGES is
+// transcribe, diarize, and moments are the only BILLABLE stages here (the
+// metered ASR / LLM engines); all are registered but PARKED — out of the default
+// active chain. PIPELINE_STAGES is
 // the operator escape hatch: setting it to `ingest` (or unsetting it — the default)
 // removes every billable stage from the active chain, so a worker makes ZERO paid
 // engine calls, effective on the next execution with no code change and no deploy
@@ -97,6 +103,7 @@ var stageRegistry = []stageDef{
 	{name: StageIngest, run: (*Runner).runIngest},
 	{name: StageTranscribe, run: (*Runner).runTranscribe},
 	{name: StageDiarize, run: (*Runner).runDiarize},
+	{name: StageMoments, run: (*Runner).runMoments},
 }
 
 // defaultActiveStages is the active chain when PIPELINE_STAGES is unset: ingest
@@ -123,8 +130,8 @@ func lookupRegistered(name Stage) (stageDef, bool) {
 }
 
 // ValidStage reports whether s names a registered stage the worker knows how to
-// run (ingest or transcribe in M1) — regardless of whether it is in the active
-// chain. cmd/worker validates its stage argument against this, so a
+// run (ingest, transcribe, diarize, moments) — regardless of whether it is in
+// the active chain. cmd/worker validates its stage argument against this, so a
 // not-yet-implemented stage name is rejected up front while a
 // registered-but-inactive stage stays a legal argument.
 func ValidStage(s string) bool {
@@ -425,6 +432,15 @@ type Runner struct {
 	// resulting speaker_key per segment (idempotent, org-scoped). Only the diarize
 	// stage consults it; nil when diarize is not in the active chain.
 	Speakers SpeakerStore
+	// Selector proposes an episode's ranked moments via the LLM seam
+	// (internal/moments, behind internal/llm). Only the moments stage consults
+	// it; nil for a worker whose active chain excludes moments (the default).
+	// Provider choice never crosses this seam.
+	Selector MomentSelector
+	// Moments reads the speaker-aware transcript (with the audit scope) and
+	// persists the proposed moment set (idempotent, org-scoped). Only the moments
+	// stage consults it; nil when moments is not in the active chain.
+	Moments MomentStore
 	// stages is the runner's active stage chain (ordered). Nil falls back to the
 	// default ingest-only chain (defaultActiveDefs). cmd/worker installs the
 	// config-driven chain via SetActiveStages (PIPELINE_STAGES); tests either call

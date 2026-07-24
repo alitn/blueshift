@@ -1,0 +1,29 @@
+[
+  {
+    "rank": 1,
+    "start_idx": 3,
+    "end_idx": 4,
+    "rationale_en": "The comeback story and its closing lesson form the strongest self-contained arc of the interview.",
+    "quote_fa": "هیچ وقت تسلیم نشویم",
+    "start_ms": 16100,
+    "end_ms": 18000
+  },
+  {
+    "rank": 2,
+    "start_idx": 1,
+    "end_idx": 1,
+    "rationale_en": "The guest's warm, personal opening reply is short and quotable on its own.",
+    "quote_fa": "خیلی خوش‌حالم که اینجا هستم",
+    "start_ms": 2600,
+    "end_ms": 4600
+  },
+  {
+    "rank": 3,
+    "start_idx": 2,
+    "end_idx": 2,
+    "rationale_en": "The host's setup question frames the whole conversation and works as a teaser beat.",
+    "quote_fa": "با یک سوال شروع کنیم",
+    "start_ms": 5560,
+    "end_ms": 7200
+  }
+]

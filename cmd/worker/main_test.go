@@ -11,6 +11,7 @@ import (
 	"blueshift/internal/config"
 	"blueshift/internal/diarize"
 	"blueshift/internal/llm"
+	"blueshift/internal/moments"
 )
 
 // TestShutdownContextCancelsOnSIGTERM proves the worker traps SIGTERM — the stop
@@ -51,21 +52,22 @@ func (discardWriter) Write(p []byte) (int, error) { return len(p), nil }
 
 // TestBuildLLMClientFakeModeNeedsNoConfig proves the demo/CI path: fake mode
 // builds a working client from ZERO provider configuration — no model, no
-// endpoint, no credential — replaying the committed deterministic grouping
-// recording under the neutral label. This is what LLM_ENGINE_MODE=fake resolves
-// to for `make demo`/e2e, so no live LLM can ever be constructed there.
+// endpoint, no credential — replaying the calling stage's committed
+// deterministic recording under the neutral label. This is what
+// LLM_ENGINE_MODE=fake resolves to for `make demo`/e2e, so no live LLM can
+// ever be constructed there.
 func TestBuildLLMClientFakeModeNeedsNoConfig(t *testing.T) {
 	cfg := config.Config{LLMMode: config.LLMModeFake, LLMEngineLabel: "bs-lm-1"}
-	client, err := buildLLMClient(cfg, nil, discardLogger())
+	client, err := buildLLMClient(cfg, nil, discardLogger(), diarize.DefaultFakeGroupingResponse())
 	if err != nil {
 		t.Fatalf("buildLLMClient(fake): %v", err)
 	}
 	if client == nil {
 		t.Fatal("buildLLMClient(fake) returned a nil client")
 	}
-	// The committed recording is the fixture the fake replays; it must be the
-	// well-formed grouping shape (assignments array), or the demo diarize stage
-	// could never validate it.
+	// The committed recording is the fixture the diarize fake replays; it must
+	// be the well-formed grouping shape (assignments array), or the demo diarize
+	// stage could never validate it.
 	var out struct {
 		Assignments []struct {
 			SegmentIdx int    `json:"segment_idx"`
@@ -77,6 +79,37 @@ func TestBuildLLMClientFakeModeNeedsNoConfig(t *testing.T) {
 	}
 	if len(out.Assignments) == 0 {
 		t.Fatal("committed grouping recording has no assignments")
+	}
+}
+
+// TestBuildLLMClientFakeModeMomentsFixture proves the moments stage's fake
+// wiring mirrors diarize's: fake mode builds a working client around the
+// committed proposal recording with zero provider configuration, and the
+// recording is the well-formed proposal shape (moments array), or the demo
+// moments stage could never validate it.
+func TestBuildLLMClientFakeModeMomentsFixture(t *testing.T) {
+	cfg := config.Config{LLMMode: config.LLMModeFake, LLMEngineLabel: "bs-lm-1"}
+	client, err := buildLLMClient(cfg, nil, discardLogger(), moments.DefaultFakeSelectionResponse())
+	if err != nil {
+		t.Fatalf("buildLLMClient(fake, moments fixture): %v", err)
+	}
+	if client == nil {
+		t.Fatal("buildLLMClient(fake, moments fixture) returned a nil client")
+	}
+	var out struct {
+		Moments []struct {
+			Rank        int    `json:"rank"`
+			StartIdx    int    `json:"start_idx"`
+			EndIdx      int    `json:"end_idx"`
+			RationaleEn string `json:"rationale_en"`
+			QuoteFa     string `json:"quote_fa"`
+		} `json:"moments"`
+	}
+	if err := json.Unmarshal(moments.DefaultFakeSelectionResponse(), &out); err != nil {
+		t.Fatalf("committed proposal recording is not valid JSON: %v", err)
+	}
+	if len(out.Moments) == 0 {
+		t.Fatal("committed proposal recording has no moments")
 	}
 }
 
@@ -104,7 +137,7 @@ func TestBuildLLMClientLiveModeFailsFastOnMisconfig(t *testing.T) {
 	}
 	for name, cfg := range cases {
 		t.Run(name, func(t *testing.T) {
-			if _, err := buildLLMClient(cfg, nil, discardLogger()); err == nil {
+			if _, err := buildLLMClient(cfg, nil, discardLogger(), nil); err == nil {
 				t.Fatal("buildLLMClient(live, misconfigured): expected error, got nil")
 			}
 		})
@@ -131,7 +164,8 @@ func TestBuildLLMClientLiveModeConstructs(t *testing.T) {
 	}
 	for name, cfg := range cases {
 		t.Run(name, func(t *testing.T) {
-			client, err := buildLLMClient(cfg, nil, discardLogger())
+			// A nil fixture is fine here: live mode never touches it.
+			client, err := buildLLMClient(cfg, nil, discardLogger(), nil)
 			if err != nil {
 				t.Fatalf("buildLLMClient(live): %v", err)
 			}
