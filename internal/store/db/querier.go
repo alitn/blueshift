@@ -46,12 +46,14 @@ type Querier interface {
 	// signal the stale-claim sweeper reads to force-fail a 'processing' row whose
 	// worker died without finalizing it.
 	ClaimEpisodeForStage(ctx context.Context, arg ClaimEpisodeForStageParams) (Episode, error)
-	// Cost-safety idempotency probe for the moments stage: how many moments the
-	// episode already has. A non-zero count means the moment proposal already
-	// exists, so the stage SKIPS the billable LLM call entirely (never re-bills on a
-	// retry/re-drive). episode_id is the internal id, resolved org-scoped by the
-	// caller.
-	CountEpisodeMoments(ctx context.Context, episodeID int64) (int64, error)
+	// Cost-safety idempotency probe for the moments stage: how many PIPELINE
+	// (source='auto') moments the episode already has. A non-zero count means the
+	// stage's proposal set already exists, so the stage SKIPS the billable LLM
+	// call entirely (never re-bills on a retry/re-drive). Scoped to 'auto'
+	// deliberately: a kept user-composed moment is NOT the stage's output and
+	// must never suppress the stage's own proposal run. episode_id is the
+	// internal id, resolved org-scoped by the caller.
+	CountAutoMoments(ctx context.Context, episodeID int64) (int64, error)
 	// Cost-safety idempotency probe for the transcribe stage: how many transcript
 	// segments the episode already has. A non-zero count means the episode is already
 	// transcribed, so the stage SKIPS the billable ASR call entirely (never re-bills on
@@ -65,12 +67,14 @@ type Querier interface {
 	// re-bills on a retry/re-drive). episode_id is the internal id, resolved org-scoped
 	// by the caller.
 	CountEpisodeSegmentsAndSpeakers(ctx context.Context, episodeID int64) (CountEpisodeSegmentsAndSpeakersRow, error)
-	// Remove all of an episode's moments. Paired with InsertMoment inside one
-	// transaction, this makes a re-run of the moments stage idempotent: the prior
-	// proposal set is replaced wholesale rather than duplicated (mirroring the
-	// segments replace choreography). episode_id is the internal id, resolved
-	// org-scoped by the caller.
-	DeleteEpisodeMoments(ctx context.Context, episodeID int64) error
+	// Remove all of an episode's PIPELINE-PROPOSED moments (source='auto').
+	// Paired with InsertMoment inside one transaction, this makes a re-run of the
+	// moments stage idempotent: the prior proposal set is replaced wholesale
+	// rather than duplicated (mirroring the segments replace choreography).
+	// Kept user-composed moments (source='prompt') deliberately survive the
+	// replace — a reprocess never discards a human's kept composition. episode_id
+	// is the internal id, resolved org-scoped by the caller.
+	DeleteAutoMoments(ctx context.Context, episodeID int64) error
 	// Remove all of an episode's segments. Paired with InsertSegment inside one
 	// transaction, this makes a re-run of the transcribe stage idempotent: the prior
 	// transcript is replaced wholesale rather than duplicated. episode_id is the
@@ -130,22 +134,40 @@ type Querier interface {
 	// JSON body). cost_cents is NULL when no price is configured for the model;
 	// latency_ms and status record the attempt's outcome.
 	InsertLlmCall(ctx context.Context, arg InsertLlmCallParams) (LlmCall, error)
-	// Insert one proposed moment. rationale_en/quote_fa are stored verbatim as the
-	// validated engine returned them (the quote is a contiguous substring of the
-	// span's transcript text — enforced before persist); start_ms/end_ms are the
-	// stage-derived WORD-ACCURATE times of the quote's first/last word within the
-	// span (ASR word data, never model output, never segment-snapped). status
-	// defaults to 'proposed'; only a human status update ever changes it.
+	// Insert one stage-proposed moment (source defaults to 'auto'). rationale_en/
+	// quote_fa are stored verbatim as the validated engine returned them (the
+	// quote is a contiguous substring of the span's transcript text — enforced
+	// before persist); start_ms/end_ms are the stage-derived WORD-ACCURATE times
+	// of the quote's first/last word within the span (ASR word data, never model
+	// output, never segment-snapped). status defaults to 'proposed'; only a human
+	// status update ever changes it.
 	InsertMoment(ctx context.Context, arg InsertMomentParams) error
+	// Persist one KEPT user-composed moment (approve-to-keep) at the episode's
+	// next free rank — rank = max(rank)+1 computed atomically in the same
+	// statement, so UNIQUE(episode_id, rank) holds without the caller reading
+	// first (a concurrent keep loses the race as a unique violation the caller
+	// retries). The row lands source='prompt' and status='approved' with
+	// status_changed_at stamped: keeping IS the human's approval verdict. Texts
+	// and times carry the same verbatim/word-accurate contract as InsertMoment —
+	// the caller re-validated the quote and re-derived the times against the
+	// CURRENT transcript before persisting. episode_id is the internal id,
+	// resolved org-scoped by the caller.
+	InsertPromptMoment(ctx context.Context, arg InsertPromptMomentParams) (InsertPromptMomentRow, error)
 	// Insert one transcript segment. `words` is the positional jsonb array the schema
 	// documents ([text, start_ms, end_ms, conf] tuples); text/words are stored
 	// verbatim from ASR (no normalization at rest). speaker_key starts NULL (not yet
 	// diarized); the diarize stage sets it later via SetSegmentSpeaker.
 	InsertSegment(ctx context.Context, arg InsertSegmentParams) error
 	ListEpisodesByOrg(ctx context.Context, orgID int64) ([]Episode, error)
-	// List an episode's moments best-first (rank 1 = best). episode_id is the
-	// internal id, resolved org-scoped by the caller.
+	// List an episode's moments best-first (rank 1 = best; kept composed moments
+	// rank after the auto set by construction). episode_id is the internal id,
+	// resolved org-scoped by the caller.
 	ListMomentsByEpisode(ctx context.Context, episodeID int64) ([]ListMomentsByEpisodeRow, error)
+	// The episode's kept composed moments (source='prompt') in rank order — the
+	// rows the stage replace must renumber to follow a fresh auto set (see
+	// ReplaceMoments: the new auto ranks are 1..n, composed rows continue n+1..).
+	// episode_id is the internal id, resolved org-scoped by the caller.
+	ListPromptMomentIDs(ctx context.Context, episodeID int64) ([]int64, error)
 	// List an episode's transcript in order, including the diarization speaker_key
 	// (NULL until the diarize stage runs). episode_id is the internal id, resolved
 	// org-scoped by the caller.
@@ -175,6 +197,10 @@ type Querier interface {
 	// landed. Org-scoped so a caller can only complete an upload for their own org's
 	// episode. Status is left as 'uploaded'; the worker flips it later.
 	SetEpisodeMasterKey(ctx context.Context, arg SetEpisodeMasterKeyParams) (Episode, error)
+	// Renumber one moment (by internal id) during the replace choreography. Only
+	// ever called inside the ReplaceMoments transaction; rank is otherwise
+	// immutable.
+	SetMomentRank(ctx context.Context, arg SetMomentRankParams) error
 	// Stamp one segment's episode-local diarization label (speaker_key) by
 	// (episode_id, idx). The diarize stage calls this for every segment inside one
 	// transaction, so a re-run overwrites the prior speaker grouping wholesale

@@ -324,6 +324,15 @@ jobs:
           # allowlist emitted by deploy/gcloud.sh. --set-env-vars REPLACES the env
           # on every deploy, so it must be listed alongside the others to survive
           # each rollout.
+          #
+          # LLM_*: the SERVICE now hosts the free-prompt moment compose seam
+          # (m1-prompt-moments — cmd/app builds an llm.Client at boot and
+          # fail-fasts in a prod ENV without valid provider coordinates), so it
+          # carries the SAME LLM_* set as the worker Job below — one engine
+          # config serves the pipeline stages and compose alike. Keep the two
+          # blocks in lockstep; the values' rationale is documented on the
+          # worker step. ^@^ switches gcloud's list delimiter to @ so values
+          # may carry commas, mirroring the worker line's form.
           PROJECT_NUMBER="$(gcloud projects describe "$PROJECT" --format='value(projectNumber)')"
           PUBLIC_BASE_URL="https://blueshift-app-${PROJECT_NUMBER}.${REGION}.run.app"
           gcloud run deploy blueshift-app \
@@ -332,7 +341,7 @@ jobs:
             --no-invoker-iam-check \
             --service-account "$RUNTIME_SA" \
             --add-cloudsql-instances "$SQL_INSTANCE" \
-            --set-env-vars "ENV=prod,AUTH_MODE=identity,BLOB_MODE=gcs,GCS_BUCKET=$BUCKET,WORKER_TRIGGER=cloudrun,WORKER_JOB_NAME=blueshift-worker,WORKER_JOB_REGION=$REGION,WORKER_JOB_PROJECT=$PROJECT,PUBLIC_BASE_URL=$PUBLIC_BASE_URL" \
+            --set-env-vars "^@^ENV=prod@AUTH_MODE=identity@BLOB_MODE=gcs@GCS_BUCKET=$BUCKET@WORKER_TRIGGER=cloudrun@WORKER_JOB_NAME=blueshift-worker@WORKER_JOB_REGION=$REGION@WORKER_JOB_PROJECT=$PROJECT@PUBLIC_BASE_URL=$PUBLIC_BASE_URL@LLM_ENGINE_MODE=live@LLM_PROVIDER=gemini@LLM_MODEL=gemini-3.5-flash@LLM_ENDPOINT=https://aiplatform.googleapis.com/v1/projects/$PROJECT/locations/global/publishers/google/models@LLM_PRICE_IN_CENTS_PER_MTOK=150@LLM_PRICE_OUT_CENTS_PER_MTOK=900" \
             --set-secrets "DATABASE_URL=database-url:latest,SESSION_SECRET=session-signing-key:latest,IDP_API_KEY=identity-platform-config:latest" \
             --quiet
           # Same image; ENTRYPOINT overridden to the worker. It never

@@ -88,6 +88,7 @@ type Moment struct {
 	Status          string
 	StatusChangedAt pgtype.Timestamptz
 	CreatedAt       pgtype.Timestamptz
+	Source          string
 }
 
 type Org struct {

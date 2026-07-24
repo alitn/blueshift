@@ -29,3 +29,24 @@ var defaultFakeSelection []byte
 func DefaultFakeSelectionResponse() []byte {
 	return append([]byte(nil), defaultFakeSelection...)
 }
+
+// defaultFakeCompose is the committed COMPOSE recording: the model output the
+// offline app server replays for the free-prompt compose call. One
+// single-segment result over the demo sample's guest reply, its quote a
+// verbatim ZWNJ-carrying substring of segment 1's text — deliberately a
+// one-moment set, which the stage validator would reject (below the clamped
+// minimum) but the compose validator accepts, so demo/e2e prove the
+// no-min-count contract through the REAL llm.Client validate loop. The
+// pairing with the demo transcript is proven by
+// TestDefaultFakeComposeMatchesDemoTranscript.
+//
+//go:embed fixtures/fa_compose_prompt.json
+var defaultFakeCompose []byte
+
+// DefaultFakeComposeResponse returns a copy of the committed deterministic
+// compose recording, the output an offline FakeEngine replays for the
+// free-prompt compose call. Callers get a fresh copy so no one can mutate the
+// embedded bytes.
+func DefaultFakeComposeResponse() []byte {
+	return append([]byte(nil), defaultFakeCompose...)
+}

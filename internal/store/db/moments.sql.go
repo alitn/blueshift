@@ -11,33 +11,37 @@ import (
 	"github.com/jackc/pgx/v5/pgtype"
 )
 
-const countEpisodeMoments = `-- name: CountEpisodeMoments :one
-SELECT count(*) FROM moments WHERE episode_id = $1
+const countAutoMoments = `-- name: CountAutoMoments :one
+SELECT count(*) FROM moments WHERE episode_id = $1 AND source = 'auto'
 `
 
-// Cost-safety idempotency probe for the moments stage: how many moments the
-// episode already has. A non-zero count means the moment proposal already
-// exists, so the stage SKIPS the billable LLM call entirely (never re-bills on a
-// retry/re-drive). episode_id is the internal id, resolved org-scoped by the
-// caller.
-func (q *Queries) CountEpisodeMoments(ctx context.Context, episodeID int64) (int64, error) {
-	row := q.db.QueryRow(ctx, countEpisodeMoments, episodeID)
+// Cost-safety idempotency probe for the moments stage: how many PIPELINE
+// (source='auto') moments the episode already has. A non-zero count means the
+// stage's proposal set already exists, so the stage SKIPS the billable LLM
+// call entirely (never re-bills on a retry/re-drive). Scoped to 'auto'
+// deliberately: a kept user-composed moment is NOT the stage's output and
+// must never suppress the stage's own proposal run. episode_id is the
+// internal id, resolved org-scoped by the caller.
+func (q *Queries) CountAutoMoments(ctx context.Context, episodeID int64) (int64, error) {
+	row := q.db.QueryRow(ctx, countAutoMoments, episodeID)
 	var count int64
 	err := row.Scan(&count)
 	return count, err
 }
 
-const deleteEpisodeMoments = `-- name: DeleteEpisodeMoments :exec
-DELETE FROM moments WHERE episode_id = $1
+const deleteAutoMoments = `-- name: DeleteAutoMoments :exec
+DELETE FROM moments WHERE episode_id = $1 AND source = 'auto'
 `
 
-// Remove all of an episode's moments. Paired with InsertMoment inside one
-// transaction, this makes a re-run of the moments stage idempotent: the prior
-// proposal set is replaced wholesale rather than duplicated (mirroring the
-// segments replace choreography). episode_id is the internal id, resolved
-// org-scoped by the caller.
-func (q *Queries) DeleteEpisodeMoments(ctx context.Context, episodeID int64) error {
-	_, err := q.db.Exec(ctx, deleteEpisodeMoments, episodeID)
+// Remove all of an episode's PIPELINE-PROPOSED moments (source='auto').
+// Paired with InsertMoment inside one transaction, this makes a re-run of the
+// moments stage idempotent: the prior proposal set is replaced wholesale
+// rather than duplicated (mirroring the segments replace choreography).
+// Kept user-composed moments (source='prompt') deliberately survive the
+// replace — a reprocess never discards a human's kept composition. episode_id
+// is the internal id, resolved org-scoped by the caller.
+func (q *Queries) DeleteAutoMoments(ctx context.Context, episodeID int64) error {
+	_, err := q.db.Exec(ctx, deleteAutoMoments, episodeID)
 	return err
 }
 
@@ -57,12 +61,13 @@ type InsertMomentParams struct {
 	QuoteFa     string
 }
 
-// Insert one proposed moment. rationale_en/quote_fa are stored verbatim as the
-// validated engine returned them (the quote is a contiguous substring of the
-// span's transcript text — enforced before persist); start_ms/end_ms are the
-// stage-derived WORD-ACCURATE times of the quote's first/last word within the
-// span (ASR word data, never model output, never segment-snapped). status
-// defaults to 'proposed'; only a human status update ever changes it.
+// Insert one stage-proposed moment (source defaults to 'auto'). rationale_en/
+// quote_fa are stored verbatim as the validated engine returned them (the
+// quote is a contiguous substring of the span's transcript text — enforced
+// before persist); start_ms/end_ms are the stage-derived WORD-ACCURATE times
+// of the quote's first/last word within the span (ASR word data, never model
+// output, never segment-snapped). status defaults to 'proposed'; only a human
+// status update ever changes it.
 func (q *Queries) InsertMoment(ctx context.Context, arg InsertMomentParams) error {
 	_, err := q.db.Exec(ctx, insertMoment,
 		arg.EpisodeID,
@@ -75,6 +80,71 @@ func (q *Queries) InsertMoment(ctx context.Context, arg InsertMomentParams) erro
 		arg.QuoteFa,
 	)
 	return err
+}
+
+const insertPromptMoment = `-- name: InsertPromptMoment :one
+INSERT INTO moments (episode_id, rank, start_idx, end_idx, start_ms, end_ms, rationale_en, quote_fa, status, status_changed_at, source)
+SELECT $1, COALESCE(MAX(rank), 0) + 1, $2, $3, $4, $5, $6, $7, 'approved', now(), 'prompt'
+FROM moments
+WHERE episode_id = $1
+RETURNING rank, start_idx, end_idx, start_ms, end_ms, rationale_en, quote_fa, status, status_changed_at
+`
+
+type InsertPromptMomentParams struct {
+	EpisodeID   int64
+	StartIdx    int32
+	EndIdx      int32
+	StartMs     int32
+	EndMs       int32
+	RationaleEn string
+	QuoteFa     string
+}
+
+type InsertPromptMomentRow struct {
+	Rank            int32
+	StartIdx        int32
+	EndIdx          int32
+	StartMs         int32
+	EndMs           int32
+	RationaleEn     string
+	QuoteFa         string
+	Status          string
+	StatusChangedAt pgtype.Timestamptz
+}
+
+// Persist one KEPT user-composed moment (approve-to-keep) at the episode's
+// next free rank — rank = max(rank)+1 computed atomically in the same
+// statement, so UNIQUE(episode_id, rank) holds without the caller reading
+// first (a concurrent keep loses the race as a unique violation the caller
+// retries). The row lands source='prompt' and status='approved' with
+// status_changed_at stamped: keeping IS the human's approval verdict. Texts
+// and times carry the same verbatim/word-accurate contract as InsertMoment —
+// the caller re-validated the quote and re-derived the times against the
+// CURRENT transcript before persisting. episode_id is the internal id,
+// resolved org-scoped by the caller.
+func (q *Queries) InsertPromptMoment(ctx context.Context, arg InsertPromptMomentParams) (InsertPromptMomentRow, error) {
+	row := q.db.QueryRow(ctx, insertPromptMoment,
+		arg.EpisodeID,
+		arg.StartIdx,
+		arg.EndIdx,
+		arg.StartMs,
+		arg.EndMs,
+		arg.RationaleEn,
+		arg.QuoteFa,
+	)
+	var i InsertPromptMomentRow
+	err := row.Scan(
+		&i.Rank,
+		&i.StartIdx,
+		&i.EndIdx,
+		&i.StartMs,
+		&i.EndMs,
+		&i.RationaleEn,
+		&i.QuoteFa,
+		&i.Status,
+		&i.StatusChangedAt,
+	)
+	return i, err
 }
 
 const listMomentsByEpisode = `-- name: ListMomentsByEpisode :many
@@ -96,8 +166,9 @@ type ListMomentsByEpisodeRow struct {
 	StatusChangedAt pgtype.Timestamptz
 }
 
-// List an episode's moments best-first (rank 1 = best). episode_id is the
-// internal id, resolved org-scoped by the caller.
+// List an episode's moments best-first (rank 1 = best; kept composed moments
+// rank after the auto set by construction). episode_id is the internal id,
+// resolved org-scoped by the caller.
 func (q *Queries) ListMomentsByEpisode(ctx context.Context, episodeID int64) ([]ListMomentsByEpisodeRow, error) {
 	rows, err := q.db.Query(ctx, listMomentsByEpisode, episodeID)
 	if err != nil {
@@ -126,6 +197,51 @@ func (q *Queries) ListMomentsByEpisode(ctx context.Context, episodeID int64) ([]
 		return nil, err
 	}
 	return items, nil
+}
+
+const listPromptMomentIDs = `-- name: ListPromptMomentIDs :many
+SELECT id FROM moments WHERE episode_id = $1 AND source = 'prompt' ORDER BY rank
+`
+
+// The episode's kept composed moments (source='prompt') in rank order — the
+// rows the stage replace must renumber to follow a fresh auto set (see
+// ReplaceMoments: the new auto ranks are 1..n, composed rows continue n+1..).
+// episode_id is the internal id, resolved org-scoped by the caller.
+func (q *Queries) ListPromptMomentIDs(ctx context.Context, episodeID int64) ([]int64, error) {
+	rows, err := q.db.Query(ctx, listPromptMomentIDs, episodeID)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	items := []int64{}
+	for rows.Next() {
+		var id int64
+		if err := rows.Scan(&id); err != nil {
+			return nil, err
+		}
+		items = append(items, id)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return items, nil
+}
+
+const setMomentRank = `-- name: SetMomentRank :exec
+UPDATE moments SET rank = $2 WHERE id = $1
+`
+
+type SetMomentRankParams struct {
+	ID   int64
+	Rank int32
+}
+
+// Renumber one moment (by internal id) during the replace choreography. Only
+// ever called inside the ReplaceMoments transaction; rank is otherwise
+// immutable.
+func (q *Queries) SetMomentRank(ctx context.Context, arg SetMomentRankParams) error {
+	_, err := q.db.Exec(ctx, setMomentRank, arg.ID, arg.Rank)
+	return err
 }
 
 const transitionMomentStatus = `-- name: TransitionMomentStatus :one

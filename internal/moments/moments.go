@@ -287,7 +287,16 @@ func validateMoments(ordered []pipeline.MomentSegment, props []proposal) error {
 	if len(props) < minWant || len(props) > maxMoments {
 		return fmt.Errorf("moments: %d moments proposed, want %d..%d", len(props), minWant, maxMoments)
 	}
+	return validateProposalSet(ordered, props)
+}
 
+// validateProposalSet is the count-agnostic core shared by the stage validator
+// (validateMoments, which additionally clamps the 3..8 window) and the compose
+// validator (validateComposed, where an EMPTY set is a valid "no matches"
+// answer): ranks exactly 1..n, spans well-formed/known/non-overlapping,
+// rationale non-blank, and the quote verbatim + word-aligned. It accepts an
+// empty set (nothing to check).
+func validateProposalSet(ordered []pipeline.MomentSegment, props []proposal) error {
 	// Ranks: exactly 1..n, no duplicate, no gap.
 	ranks := make(map[int]bool, len(props))
 	for _, p := range props {

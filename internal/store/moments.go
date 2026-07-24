@@ -19,8 +19,10 @@ import (
 	"fmt"
 
 	"github.com/jackc/pgx/v5"
+	"github.com/jackc/pgx/v5/pgconn"
 
 	"blueshift/internal/api"
+	"blueshift/internal/asr"
 	"blueshift/internal/ids"
 	"blueshift/internal/pipeline"
 	"blueshift/internal/store/db"
@@ -63,14 +65,17 @@ func (s *Store) SegmentsForMoments(ctx context.Context, orgID, episodePublicID s
 	return pipeline.MomentSegmentSet{OrgID: orgInternal, EpisodeID: ep.ID, Segments: segs}, true, nil
 }
 
-// MomentsExist reports whether the episode already has persisted moments,
-// org-scoped. It is the moments stage's cost-safety idempotency probe
-// (CLAUDE.md "Billable-service cost safety"): a true result means the proposal
-// set already exists, so the stage SKIPS the billable LLM call entirely and
-// never re-bills on a retry/re-drive. ReplaceMoments writes the whole set in
-// one transaction, so any row means a completed stage — there is no partial
-// state to mistake for done. An unknown/foreign org or missing episode yields
-// false (no error), matching the segment store's contract.
+// MomentsExist reports whether the episode already has persisted PIPELINE
+// (source='auto') moments, org-scoped. It is the moments stage's cost-safety
+// idempotency probe (CLAUDE.md "Billable-service cost safety"): a true result
+// means the stage's proposal set already exists, so the stage SKIPS the
+// billable LLM call entirely and never re-bills on a retry/re-drive.
+// ReplaceMoments writes the whole auto set in one transaction, so any auto row
+// means a completed stage — there is no partial state to mistake for done.
+// Kept user-composed moments (source='prompt') deliberately do NOT count: a
+// human keeping a composed moment before the stage ever ran must never
+// suppress the stage's own proposal run. An unknown/foreign org or missing
+// episode yields false (no error), matching the segment store's contract.
 func (s *Store) MomentsExist(ctx context.Context, orgID, episodePublicID string) (bool, error) {
 	_, ep, ok, err := s.resolveEpisodeForSegments(ctx, orgID, episodePublicID)
 	if err != nil {
@@ -79,25 +84,37 @@ func (s *Store) MomentsExist(ctx context.Context, orgID, episodePublicID string)
 	if !ok {
 		return false, nil
 	}
-	n, err := s.CountEpisodeMoments(ctx, ep.ID)
+	n, err := s.CountAutoMoments(ctx, ep.ID)
 	if err != nil {
 		return false, fmt.Errorf("store: count moments: %w", err)
 	}
 	return n > 0, nil
 }
 
+// tempRankBase parks kept composed rows on transiently-high ranks inside the
+// ReplaceMoments transaction so the fresh auto set can insert at 1..n without
+// tripping UNIQUE(episode_id, rank), before the composed rows are renumbered
+// to follow the new set. It only ever exists inside that one transaction.
+const tempRankBase = 1_000_000
+
 // ReplaceMoments persists the moments stage's proposal set idempotently.
-// Within one transaction it deletes the episode's existing moments and inserts
-// the new set, so a re-run replaces the proposals wholesale rather than
-// duplicating them (the UNIQUE(episode_id, rank) constraint would reject a
-// naive re-insert anyway) — the same choreography as ReplaceSegments.
+// Within one transaction it deletes the episode's existing PIPELINE
+// (source='auto') moments and inserts the new set, so a re-run replaces the
+// stage's proposals wholesale rather than duplicating them — the same
+// choreography as ReplaceSegments. Kept user-composed moments
+// (source='prompt') SURVIVE the replace: a reprocess never discards a human's
+// kept composition. Because the fresh auto set always ranks 1..n, surviving
+// composed rows are renumbered inside the same transaction to n+1, n+2, …
+// (their relative order preserved), so UNIQUE(episode_id, rank) holds no
+// matter how the new set's size compares to the old one.
 //
 // It is org-scoped: the episode is resolved by (org public id, episode public
 // id), so a caller can only ever write moments for its own tenant's episode.
 // An unknown/foreign org, or an episode that resolves to no row for that org,
 // is a clean no-op (nothing to write). Every inserted row starts at the
 // 'proposed' status (the column default); a replace therefore also resets any
-// prior human verdicts — a deliberate property of reprocessing.
+// prior human verdicts on the AUTO set — a deliberate property of
+// reprocessing (kept composed rows keep their verdicts).
 func (s *Store) ReplaceMoments(ctx context.Context, orgID, episodePublicID string, rows []pipeline.MomentRow) error {
 	_, ep, ok, err := s.resolveEpisodeForSegments(ctx, orgID, episodePublicID)
 	if err != nil {
@@ -115,8 +132,20 @@ func (s *Store) ReplaceMoments(ctx context.Context, orgID, episodePublicID strin
 	defer func() { _ = tx.Rollback(ctx) }()
 	q := s.WithTx(tx)
 
-	if err := q.DeleteEpisodeMoments(ctx, ep.ID); err != nil {
+	if err := q.DeleteAutoMoments(ctx, ep.ID); err != nil {
 		return fmt.Errorf("store: delete moments: %w", err)
+	}
+	// Park the surviving composed rows on transient high ranks so the fresh
+	// auto set can take 1..n; then insert; then renumber the composed rows to
+	// follow the new set in their preserved relative order.
+	kept, err := q.ListPromptMomentIDs(ctx, ep.ID)
+	if err != nil {
+		return fmt.Errorf("store: list kept moments: %w", err)
+	}
+	for i, id := range kept {
+		if err := q.SetMomentRank(ctx, db.SetMomentRankParams{ID: id, Rank: int32(tempRankBase + i)}); err != nil {
+			return fmt.Errorf("store: park kept moment: %w", err)
+		}
 	}
 	for _, m := range rows {
 		if err := q.InsertMoment(ctx, db.InsertMomentParams{
@@ -130,6 +159,11 @@ func (s *Store) ReplaceMoments(ctx context.Context, orgID, episodePublicID strin
 			QuoteFa:     m.QuoteFa,
 		}); err != nil {
 			return fmt.Errorf("store: insert moment rank %d: %w", m.Rank, err)
+		}
+	}
+	for i, id := range kept {
+		if err := q.SetMomentRank(ctx, db.SetMomentRankParams{ID: id, Rank: int32(len(rows) + 1 + i)}); err != nil {
+			return fmt.Errorf("store: renumber kept moment: %w", err)
 		}
 	}
 	if err := tx.Commit(ctx); err != nil {
@@ -236,4 +270,106 @@ func (s *Store) SetMomentStatus(ctx context.Context, orgPublicID, episodePublicI
 		return false, fmt.Errorf("store: set moment status: %w", err)
 	}
 	return true, nil
+}
+
+// TranscriptForCompose returns the episode's speaker-aware transcript
+// (idx-ordered), its content language, and the INTERNAL org/episode ids the
+// compose llm_calls audit is scoped by — the free-prompt compose read. It
+// serves the api compose surface, so it resolves the episode with the REVIEW
+// dialect (the session principal's canonical org UUID, like EpisodeMoments),
+// not the pipeline's encoded ids. ok=false (nil error) for an unknown/foreign
+// episode — the handler's indistinguishable 404. A found episode with no
+// segments yet returns an empty Segments slice (the caller's "not transcribed
+// yet" refusal).
+func (s *Store) TranscriptForCompose(ctx context.Context, orgPublicID, episodePublicID string) (pipeline.MomentSegmentSet, string, bool, error) {
+	ep, ok, err := s.resolveEpisodeForReview(ctx, orgPublicID, episodePublicID)
+	if err != nil {
+		return pipeline.MomentSegmentSet{}, "", false, err
+	}
+	if !ok {
+		return pipeline.MomentSegmentSet{}, "", false, nil
+	}
+	rows, err := s.ListSegmentsByEpisode(ctx, ep.ID)
+	if err != nil {
+		return pipeline.MomentSegmentSet{}, "", false, fmt.Errorf("store: list segments for compose: %w", err)
+	}
+	segs := make([]pipeline.MomentSegment, 0, len(rows))
+	for _, r := range rows {
+		words, derr := decodeWords(r.Words)
+		if derr != nil {
+			return pipeline.MomentSegmentSet{}, "", false, derr
+		}
+		segs = append(segs, pipeline.MomentSegment{
+			Segment: asr.Segment{
+				Idx:     int(r.Idx),
+				StartMs: int(r.StartMs),
+				EndMs:   int(r.EndMs),
+				Text:    r.Text,
+				Words:   words,
+			},
+			SpeakerKey: r.SpeakerKey.String, // pgtype.Text zero value -> "" when NULL
+		})
+	}
+	return pipeline.MomentSegmentSet{OrgID: ep.OrgID, EpisodeID: ep.ID, Segments: segs}, ep.Language, true, nil
+}
+
+// insertComposedAttempts bounds the keep insert's races: rank = max(rank)+1 is
+// computed atomically per statement, but two concurrent keeps can still
+// compute the same next rank; the loser's unique violation is retried afresh.
+const insertComposedAttempts = 3
+
+// InsertComposedMoment persists one KEPT user-composed moment (approve-to-keep)
+// at the episode's next free rank with source='prompt' and status='approved'
+// (keeping IS the approval; status_changed_at is stamped). Org-scoped with the
+// review dialect like TranscriptForCompose; ok=false (nil error) for an
+// unknown/foreign episode. The caller (the compose seam) has already
+// re-validated the quote verbatim against the CURRENT transcript and re-derived
+// the word-accurate times — this method only persists. A concurrent-keep rank
+// race is retried a bounded number of times, never looped unboundedly.
+func (s *Store) InsertComposedMoment(ctx context.Context, orgPublicID, episodePublicID string, row pipeline.MomentRow) (api.EpisodeMoment, bool, error) {
+	ep, ok, err := s.resolveEpisodeForReview(ctx, orgPublicID, episodePublicID)
+	if err != nil {
+		return api.EpisodeMoment{}, false, err
+	}
+	if !ok {
+		return api.EpisodeMoment{}, false, nil
+	}
+	var lastErr error
+	for attempt := 0; attempt < insertComposedAttempts; attempt++ {
+		r, err := s.InsertPromptMoment(ctx, db.InsertPromptMomentParams{
+			EpisodeID:   ep.ID,
+			StartIdx:    int32(row.StartIdx),
+			EndIdx:      int32(row.EndIdx),
+			StartMs:     int32(row.StartMs),
+			EndMs:       int32(row.EndMs),
+			RationaleEn: row.RationaleEn,
+			QuoteFa:     row.QuoteFa,
+		})
+		if isUniqueViolation(err) {
+			lastErr = err
+			continue // a concurrent keep took the rank; recompute and retry
+		}
+		if err != nil {
+			return api.EpisodeMoment{}, false, fmt.Errorf("store: insert composed moment: %w", err)
+		}
+		return api.EpisodeMoment{
+			Rank:            int(r.Rank),
+			StartIdx:        int(r.StartIdx),
+			EndIdx:          int(r.EndIdx),
+			StartMs:         int(r.StartMs),
+			EndMs:           int(r.EndMs),
+			RationaleEn:     r.RationaleEn,
+			QuoteFa:         r.QuoteFa,
+			Status:          r.Status,
+			StatusChangedAt: r.StatusChangedAt.Time,
+		}, true, nil
+	}
+	return api.EpisodeMoment{}, false, fmt.Errorf("store: insert composed moment: rank contention persisted: %w", lastErr)
+}
+
+// isUniqueViolation reports whether err is a Postgres unique-constraint
+// violation (SQLSTATE 23505) — the composed-rank race signal.
+func isUniqueViolation(err error) bool {
+	var pgErr *pgconn.PgError
+	return errors.As(err, &pgErr) && pgErr.Code == "23505"
 }

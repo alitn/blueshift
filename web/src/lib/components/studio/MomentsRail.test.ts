@@ -1,7 +1,7 @@
 import { fireEvent, render, screen, within } from '@testing-library/svelte';
 import { describe, expect, it, vi } from 'vitest';
 import MomentsRail from './MomentsRail.svelte';
-import type { EpisodeMoments, Moment, MomentStatus } from '$lib/moments';
+import type { ComposedMoment, EpisodeMoments, Moment, MomentStatus } from '$lib/moments';
 
 // U+200C ZERO WIDTH NON-JOINER — must survive verbatim from the API to the DOM.
 const ZWNJ = '‌';
@@ -257,5 +257,190 @@ describe('MomentsRail review actions (optimistic)', () => {
     expect(save).toHaveBeenCalledExactlyOnceWith('ep_x', 1, 'proposed');
     expect(screen.getByTestId('moment-card').getAttribute('data-status')).toBe('proposed');
     expect(screen.getByTestId('moment-approve')).toBeInTheDocument();
+  });
+});
+
+// --- compose (m1-prompt-moments) ---------------------------------------------
+
+function composedMoment(rank: number, overrides: Partial<ComposedMoment> = {}): ComposedMoment {
+  return {
+    rank,
+    startIdx: 1,
+    endIdx: 1,
+    startMs: 2960,
+    endMs: 4600,
+    rationaleEn: `Prompt match ${rank}`,
+    quoteFa: persianQuote,
+    ...overrides
+  };
+}
+
+/** submitPrompt types the prompt and submits the compose form. */
+async function submitPrompt(text: string): Promise<void> {
+  await fireEvent.input(screen.getByTestId('compose-input'), { target: { value: text } });
+  await fireEvent.submit(screen.getByTestId('compose-form'));
+}
+
+describe('MomentsRail compose flow', () => {
+  it('submits the trimmed prompt, shows the loading line, then renders the PROMPT RESULTS group', async () => {
+    let resolve!: (r: ComposedMoment[]) => void;
+    const compose = vi.fn(() => new Promise<ComposedMoment[]>((r) => (resolve = r)));
+    render(MomentsRail, {
+      props: { episodeId: 'ep_x', load: loader(episode([moment(1)])), compose }
+    });
+    await screen.findByTestId('moments-summary');
+
+    await submitPrompt('  find the joy  ');
+    expect(compose).toHaveBeenCalledExactlyOnceWith('ep_x', 'find the joy');
+    expect(screen.getByTestId('compose-loading')).toHaveTextContent('COMPOSING…');
+
+    resolve([composedMoment(1)]);
+    const results = await screen.findByTestId('compose-results');
+    expect(within(results).getByText('PROMPT RESULTS')).toBeInTheDocument();
+    expect(screen.getByTestId('compose-summary')).toHaveTextContent('1 MATCH');
+    const card = screen.getByTestId('composed-card');
+    expect(within(card).getByTestId('composed-rank')).toHaveTextContent('#1');
+    expect(within(card).getByTestId('composed-range')).toHaveTextContent('00:02–00:04');
+    expect(within(card).getByTestId('composed-rationale')).toHaveTextContent('Prompt match 1');
+    // Verbatim RTL quote in a <bdi>, ZWNJ byte-exact — same rules as the rail.
+    const quote = within(card).getByTestId('composed-quote');
+    expect(quote.getAttribute('dir')).toBe('rtl');
+    expect(quote.querySelector('bdi')).not.toBeNull();
+    expect(quote.textContent).toBe(persianQuote);
+    expect(quote.textContent).toContain(ZWNJ);
+    // The ranked list is untouched underneath.
+    expect(screen.getByTestId('moment-card')).toBeInTheDocument();
+  });
+
+  it('ignores a blank prompt', async () => {
+    const compose = vi.fn(() => Promise.resolve([composedMoment(1)]));
+    render(MomentsRail, {
+      props: { episodeId: 'ep_x', load: loader(episode([moment(1)])), compose }
+    });
+    await screen.findByTestId('moments-summary');
+    await submitPrompt('   ');
+    expect(compose).not.toHaveBeenCalled();
+    expect(screen.queryByTestId('compose-loading')).not.toBeInTheDocument();
+  });
+
+  it('renders the neutral "no matches" line (not an error) for an empty result set', async () => {
+    const compose = vi.fn(() => Promise.resolve([] as ComposedMoment[]));
+    render(MomentsRail, {
+      props: { episodeId: 'ep_x', load: loader(episode([moment(1)])), compose }
+    });
+    await screen.findByTestId('moments-summary');
+    await submitPrompt('nothing matches this');
+    const empty = await screen.findByTestId('compose-empty');
+    expect(empty).toHaveTextContent('No matches');
+    expect(screen.queryByTestId('compose-error')).not.toBeInTheDocument();
+    expect(screen.queryByTestId('compose-results')).not.toBeInTheDocument();
+  });
+
+  it('renders a neutral error line when the compose call fails', async () => {
+    const compose = vi.fn(() => Promise.reject(new Error('compose_failed')));
+    render(MomentsRail, {
+      props: { episodeId: 'ep_x', load: loader(episode([moment(1)])), compose }
+    });
+    await screen.findByTestId('moments-summary');
+    await submitPrompt('boom');
+    const err = await screen.findByTestId('compose-error');
+    expect(err).toHaveTextContent('Compose failed');
+    expect(screen.queryByTestId('compose-results')).not.toBeInTheDocument();
+  });
+
+  it('KEEP persists: the card leaves the group and the kept moment joins the ranked list in rank order', async () => {
+    const keptMoment = moment(3, 'approved', { rationaleEn: 'Prompt match 1' });
+    const compose = vi.fn(() => Promise.resolve([composedMoment(1)]));
+    const keep = vi.fn(() => Promise.resolve(keptMoment));
+    render(MomentsRail, {
+      props: {
+        episodeId: 'ep_x',
+        load: loader(episode([moment(1), moment(2)])),
+        compose,
+        keep
+      }
+    });
+    await screen.findByTestId('moments-summary');
+    await submitPrompt('find the joy');
+    await screen.findByTestId('compose-results');
+
+    await fireEvent.click(screen.getByTestId('composed-keep'));
+    expect(keep).toHaveBeenCalledExactlyOnceWith('ep_x', composedMoment(1));
+
+    // The group emptied and disappeared; the ranked list gained rank 3, approved.
+    await vi.waitFor(() =>
+      expect(screen.queryByTestId('compose-results')).not.toBeInTheDocument()
+    );
+    const cards = screen.getAllByTestId('moment-card');
+    expect(cards).toHaveLength(3);
+    expect(within(cards[2]).getByTestId('moment-rank')).toHaveTextContent('#3');
+    expect(cards[2].getAttribute('data-status')).toBe('approved');
+    expect(within(cards[2]).getByTestId('moment-status')).toHaveTextContent('APPROVED');
+    // From here it is an ordinary moment: UNDO is offered like any approved card.
+    expect(within(cards[2]).getByTestId('moment-undo')).toBeInTheDocument();
+  });
+
+  it('a refused keep leaves the card in place with a neutral line', async () => {
+    const compose = vi.fn(() => Promise.resolve([composedMoment(1)]));
+    const keep = vi.fn(() => Promise.reject(new Error('keep_failed')));
+    render(MomentsRail, {
+      props: { episodeId: 'ep_x', load: loader(episode([moment(1)])), compose, keep }
+    });
+    await screen.findByTestId('moments-summary');
+    await submitPrompt('find the joy');
+    await screen.findByTestId('compose-results');
+
+    await fireEvent.click(screen.getByTestId('composed-keep'));
+    const err = await screen.findByTestId('compose-keep-error');
+    expect(err).toHaveTextContent('Couldn’t keep that moment');
+    expect(screen.getByTestId('composed-card')).toBeInTheDocument();
+    expect(screen.getAllByTestId('moment-card')).toHaveLength(1); // nothing joined the list
+  });
+
+  it('DISCARD drops the card; the group disappears with the last one', async () => {
+    const compose = vi.fn(() => Promise.resolve([composedMoment(1), composedMoment(2)]));
+    render(MomentsRail, {
+      props: { episodeId: 'ep_x', load: loader(episode([moment(1)])), compose }
+    });
+    await screen.findByTestId('moments-summary');
+    await submitPrompt('find the joy');
+    await screen.findByTestId('compose-results');
+    expect(screen.getAllByTestId('composed-card')).toHaveLength(2);
+
+    await fireEvent.click(screen.getAllByTestId('composed-discard')[0]);
+    expect(screen.getAllByTestId('composed-card')).toHaveLength(1);
+    await fireEvent.click(screen.getByTestId('composed-discard'));
+    expect(screen.queryByTestId('compose-results')).not.toBeInTheDocument();
+    expect(screen.queryByTestId('compose-empty')).not.toBeInTheDocument(); // idle, not "no matches"
+  });
+
+  it('keyboard on a focused result card: Enter seeks, K keeps, D discards; KEEP click never seeks', async () => {
+    const onSeek = vi.fn();
+    const compose = vi.fn(() => Promise.resolve([composedMoment(1), composedMoment(2)]));
+    const keep = vi.fn(() => Promise.resolve(moment(2, 'approved')));
+    render(MomentsRail, {
+      props: { episodeId: 'ep_x', load: loader(episode([])), compose, keep, onSeek }
+    });
+    await screen.findByTestId('moments-empty');
+    await submitPrompt('find the joy');
+    await screen.findByTestId('compose-results');
+
+    const cards = screen.getAllByTestId('composed-card');
+    expect(cards[0]).toHaveAttribute('tabindex', '0');
+    cards[0].focus();
+    await fireEvent.keyDown(cards[0], { key: 'Enter' });
+    expect(onSeek).toHaveBeenCalledExactlyOnceWith(2960);
+
+    await fireEvent.keyDown(cards[0], { key: 'k' });
+    expect(keep).toHaveBeenCalledExactlyOnceWith('ep_x', composedMoment(1));
+    await vi.waitFor(() => expect(screen.getAllByTestId('composed-card')).toHaveLength(1));
+
+    const last = screen.getByTestId('composed-card');
+    last.focus();
+    await fireEvent.keyDown(last, { key: 'd' });
+    expect(screen.queryByTestId('compose-results')).not.toBeInTheDocument();
+
+    // Seek count unchanged by keep/discard/button interactions.
+    expect(onSeek).toHaveBeenCalledTimes(1);
   });
 });

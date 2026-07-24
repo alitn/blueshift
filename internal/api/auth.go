@@ -38,6 +38,13 @@ type Deps struct {
 	// Episodes is the org-scoped episode persistence port. When it and Blob are
 	// both set, the episode routes are registered.
 	Episodes EpisodeRepo
+	// Composer is the free-prompt moment composition port. Optional: the
+	// compose/keep routes register only when it is set alongside the episode
+	// routes (a deployment without an engine simply has no compose surface).
+	Composer MomentComposer
+	// ComposeRatePerMin caps compose calls per org per minute (the billable
+	// user-triggered engine call). <=0 uses 6.
+	ComposeRatePerMin int
 	// Blob mints upload URLs and stats uploaded objects.
 	Blob blob.Store
 	// PublicBaseURL is the app's public base URL, used only as the fallback
@@ -64,6 +71,7 @@ type handler struct {
 	deps             Deps
 	limiter          *rateLimiter
 	clientErrLimiter *rateLimiter
+	composeLimiter   *rateLimiter
 }
 
 // NewRouter builds the /api mux with the auth routes registered. The returned
@@ -80,10 +88,14 @@ func NewRouter(d Deps) http.Handler {
 	if d.RatePerMin <= 0 {
 		d.RatePerMin = 5
 	}
+	if d.ComposeRatePerMin <= 0 {
+		d.ComposeRatePerMin = defaultComposePerMin
+	}
 	h := &handler{
 		deps:             d,
 		limiter:          newRateLimiter(float64(d.RatePerMin), time.Minute, d.Now),
 		clientErrLimiter: newClientErrLimiter(d.Now),
+		composeLimiter:   newRateLimiter(float64(d.ComposeRatePerMin), time.Minute, d.Now),
 	}
 	mux := http.NewServeMux()
 	mux.HandleFunc("POST "+auth.LoginPath, h.login)
@@ -99,6 +111,12 @@ func NewRouter(d Deps) http.Handler {
 		mux.HandleFunc("GET /api/episodes/{id}/transcript", h.episodeTranscript)
 		mux.HandleFunc("GET /api/episodes/{id}/moments", h.episodeMoments)
 		mux.HandleFunc("POST /api/episodes/{id}/moments/{rank}/status", h.setMomentStatus)
+		// Free-prompt composition needs an engine seam; without one the routes
+		// stay off (the rest of the episode surface still serves).
+		if d.Composer != nil {
+			mux.HandleFunc("POST /api/episodes/{id}/moments/compose", h.composeMoments)
+			mux.HandleFunc("POST /api/episodes/{id}/moments/keep", h.keepComposedMoment)
+		}
 		mux.HandleFunc("POST /api/episodes/{id}/retry", h.retryEpisode)
 		mux.HandleFunc("DELETE /api/episodes/{id}", h.deleteEpisode)
 	}
