@@ -1,7 +1,7 @@
 import { test as setup, expect } from '@playwright/test';
 import { execFileSync } from 'node:child_process';
 import { mkdirSync, existsSync } from 'node:fs';
-import { APPROVER, authDir, storageStatePath, uploadFixture } from '../helpers';
+import { APPROVER, authDir, storageStatePath, syncProxyFixture, uploadFixture } from '../helpers';
 
 // Log in once through the real UI and persist the session. Every authed spec
 // reuses this state, so the whole run makes a single login POST here plus the
@@ -32,5 +32,23 @@ setup('generate upload fixture', async () => {
     '-f', 'lavfi', '-i', 'sine=frequency=330:duration=1',
     '-c:v', 'libx264', '-pix_fmt', 'yuv420p', '-c:a', 'aac', '-shortest',
     uploadFixture
+  ]);
+});
+
+// Generate the ~6s playable clip the sync specs serve in place of the signed
+// proxy (the seeded sample's real proxy is ~2s — shorter than the second
+// seeded segment's 2.6s start). faststart puts the moov atom first so the
+// route-fulfilled response is seekable immediately. Deterministic and offline;
+// regenerated only if missing.
+setup('generate sync proxy fixture', async () => {
+  mkdirSync(authDir, { recursive: true });
+  if (existsSync(syncProxyFixture)) return;
+  execFileSync('ffmpeg', [
+    '-nostdin', '-y', '-loglevel', 'error',
+    '-f', 'lavfi', '-i', 'testsrc2=duration=6:size=320x180:rate=30',
+    '-f', 'lavfi', '-i', 'sine=frequency=330:duration=6',
+    '-c:v', 'libx264', '-pix_fmt', 'yuv420p', '-c:a', 'aac', '-shortest',
+    '-movflags', '+faststart',
+    syncProxyFixture
   ]);
 });
