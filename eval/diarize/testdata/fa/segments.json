@@ -1,0 +1,55 @@
+[
+  {
+    "idx": 0,
+    "start_ms": 0,
+    "end_ms": 2200,
+    "text": "سلام به برنامه خوش آمدید",
+    "words": [
+      { "text": "سلام", "start_ms": 0, "end_ms": 520, "conf": 0.98 },
+      { "text": "به", "start_ms": 600, "end_ms": 720, "conf": 0.95 },
+      { "text": "برنامه", "start_ms": 760, "end_ms": 1280, "conf": 0.97 },
+      { "text": "خوش", "start_ms": 1340, "end_ms": 1600, "conf": 0.96 },
+      { "text": "آمدید", "start_ms": 1660, "end_ms": 2200, "conf": 0.94 }
+    ]
+  },
+  {
+    "idx": 1,
+    "start_ms": 2600,
+    "end_ms": 4600,
+    "text": "خیلی خوش‌حالم که اینجا هستم",
+    "words": [
+      { "text": "خیلی", "start_ms": 2600, "end_ms": 2900, "conf": 0.96 },
+      { "text": "خوش‌حالم", "start_ms": 2960, "end_ms": 3540, "conf": 0.95 },
+      { "text": "که", "start_ms": 3600, "end_ms": 3720, "conf": 0.94 },
+      { "text": "اینجا", "start_ms": 3780, "end_ms": 4180, "conf": 0.96 },
+      { "text": "هستم", "start_ms": 4240, "end_ms": 4600, "conf": 0.95 }
+    ]
+  },
+  {
+    "idx": 2,
+    "start_ms": 5000,
+    "end_ms": 7200,
+    "text": "بگذارید با یک سوال شروع کنیم",
+    "words": [
+      { "text": "بگذارید", "start_ms": 5000, "end_ms": 5500, "conf": 0.95 },
+      { "text": "با", "start_ms": 5560, "end_ms": 5680, "conf": 0.96 },
+      { "text": "یک", "start_ms": 5740, "end_ms": 5900, "conf": 0.97 },
+      { "text": "سوال", "start_ms": 5960, "end_ms": 6400, "conf": 0.95 },
+      { "text": "شروع", "start_ms": 6460, "end_ms": 6800, "conf": 0.96 },
+      { "text": "کنیم", "start_ms": 6860, "end_ms": 7200, "conf": 0.94 }
+    ]
+  },
+  {
+    "idx": 3,
+    "start_ms": 7600,
+    "end_ms": 9400,
+    "text": "بله حتما با کمال میل",
+    "words": [
+      { "text": "بله", "start_ms": 7600, "end_ms": 7900, "conf": 0.97 },
+      { "text": "حتما", "start_ms": 7960, "end_ms": 8400, "conf": 0.95 },
+      { "text": "با", "start_ms": 8460, "end_ms": 8580, "conf": 0.96 },
+      { "text": "کمال", "start_ms": 8640, "end_ms": 9020, "conf": 0.95 },
+      { "text": "میل", "start_ms": 9080, "end_ms": 9400, "conf": 0.94 }
+    ]
+  }
+]

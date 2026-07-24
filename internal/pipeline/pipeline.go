@@ -41,11 +41,15 @@ const (
 	// out of the chain — so a worker with no ASR config is ingest-terminal — with
 	// its code and tests intact for the moment it is re-enabled.
 	StageTranscribe Stage = "transcribe"
-	// StageDiarize, StageMoments, StageRender name the remaining downstream stages.
-	// They are declared here (and allowed by the DB CHECK) but are not yet in the
-	// stage registry, so the worker refuses to run them until their implementations
-	// land.
+	// StageDiarize assigns an episode-local speaker label to each transcript
+	// segment via the LLM seam, text-anchored (internal/diarize + internal/llm). It
+	// is registered (runnable) but, like transcribe, PARKED — it joins the active
+	// chain only when PIPELINE_STAGES names it; under the default ingest-only chain
+	// it stays out of the chain with its code and tests intact.
 	StageDiarize Stage = "diarize"
+	// StageMoments, StageRender name the remaining downstream stages. They are
+	// declared here (and allowed by the DB CHECK) but are not yet in the stage
+	// registry, so the worker refuses to run them until their implementations land.
 	StageMoments Stage = "moments"
 	StageRender  Stage = "render"
 )
@@ -80,6 +84,7 @@ type stageOutput struct {
 var stageRegistry = []stageDef{
 	{name: StageIngest, run: (*Runner).runIngest},
 	{name: StageTranscribe, run: (*Runner).runTranscribe},
+	{name: StageDiarize, run: (*Runner).runDiarize},
 }
 
 // defaultActiveStages is the active chain when PIPELINE_STAGES is unset: ingest
@@ -331,6 +336,15 @@ type Runner struct {
 	// Segments persists an episode's transcript (idempotent, org-scoped). Only the
 	// transcribe stage consults it; nil for an ingest-only worker.
 	Segments SegmentStore
+	// Diarizer groups an episode's transcript into speaker turns via the LLM seam
+	// (internal/diarize, behind internal/llm). Only the diarize stage consults it;
+	// nil for a worker whose active chain excludes diarize (the default). Provider
+	// choice never crosses this seam.
+	Diarizer Diarizer
+	// Speakers reads the segments to diarize (with the audit scope) and persists the
+	// resulting speaker_key per segment (idempotent, org-scoped). Only the diarize
+	// stage consults it; nil when diarize is not in the active chain.
+	Speakers SpeakerStore
 	// stages is the runner's active stage chain (ordered). Nil falls back to the
 	// default ingest-only chain (defaultActiveDefs). cmd/worker installs the
 	// config-driven chain via SetActiveStages (PIPELINE_STAGES); tests either call

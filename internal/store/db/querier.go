@@ -95,10 +95,12 @@ type Querier interface {
 	InsertLlmCall(ctx context.Context, arg InsertLlmCallParams) (LlmCall, error)
 	// Insert one transcript segment. `words` is the positional jsonb array the schema
 	// documents ([text, start_ms, end_ms, conf] tuples); text/words are stored
-	// verbatim from ASR (no normalization at rest).
+	// verbatim from ASR (no normalization at rest). speaker_key starts NULL (not yet
+	// diarized); the diarize stage sets it later via SetSegmentSpeaker.
 	InsertSegment(ctx context.Context, arg InsertSegmentParams) error
 	ListEpisodesByOrg(ctx context.Context, orgID int64) ([]Episode, error)
-	// List an episode's transcript in order. episode_id is the internal id, resolved
+	// List an episode's transcript in order, including the diarization speaker_key
+	// (NULL until the diarize stage runs). episode_id is the internal id, resolved
 	// org-scoped by the caller.
 	ListSegmentsByEpisode(ctx context.Context, episodeID int64) ([]ListSegmentsByEpisodeRow, error)
 	// Finalize an exhausted stage: record a neutral error_id and flip to 'failed'.
@@ -126,6 +128,13 @@ type Querier interface {
 	// landed. Org-scoped so a caller can only complete an upload for their own org's
 	// episode. Status is left as 'uploaded'; the worker flips it later.
 	SetEpisodeMasterKey(ctx context.Context, arg SetEpisodeMasterKeyParams) (Episode, error)
+	// Stamp one segment's episode-local diarization label (speaker_key) by
+	// (episode_id, idx). The diarize stage calls this for every segment inside one
+	// transaction, so a re-run overwrites the prior speaker grouping wholesale
+	// (idempotent). episode_id is the internal id, resolved org-scoped by the caller.
+	// Only speaker_key changes — text, words, and timings are never touched here
+	// (verbatim invariant: the LLM decides grouping, it never rewrites the transcript).
+	SetSegmentSpeaker(ctx context.Context, arg SetSegmentSpeakerParams) error
 	// System-level TTL sweep of abandoned uploads: a create can succeed
 	// server-side and then the CLIENT abandons the upload (CORS failure, closed tab,
 	// lost network), leaving a row stuck at 'uploaded' with no master key that no

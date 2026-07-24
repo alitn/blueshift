@@ -683,12 +683,18 @@ func TestCrossOrgIsolation(t *testing.T) {
 }
 
 func TestUnknownStageErrors(t *testing.T) {
-	// diarize is a declared Stage but not in the stage registry, so the worker must
-	// refuse it (transcribe is registered — a valid stage — but out of the default
-	// active chain, so running it on a default runner is likewise refused).
+	// moments is a declared Stage but not in the stage registry, so the worker must
+	// refuse it. (transcribe and diarize are registered — valid stage arguments —
+	// but out of the default active chain, so running them on a default runner is
+	// likewise refused: not in the active chain.)
 	r := newRunner(newFakeRepo(), newRemoteBlob(t), &fakeMedia{}, Config{})
-	if err := r.Run(context.Background(), epA, "diarize"); err == nil {
+	if err := r.Run(context.Background(), epA, "moments"); err == nil {
 		t.Fatal("Run with unregistered stage: want error, got nil")
+	}
+	// diarize is registered-but-parked: valid as an argument, yet refused on a
+	// default (ingest-only) runner because it is not in the active chain.
+	if err := r.Run(context.Background(), epA, "diarize"); err == nil {
+		t.Fatal("Run with registered-but-inactive diarize on default chain: want error, got nil")
 	}
 }
 

@@ -7,6 +7,8 @@ package db
 
 import (
 	"context"
+
+	"github.com/jackc/pgx/v5/pgtype"
 )
 
 const deleteEpisodeSegments = `-- name: DeleteEpisodeSegments :exec
@@ -38,7 +40,8 @@ type InsertSegmentParams struct {
 
 // Insert one transcript segment. `words` is the positional jsonb array the schema
 // documents ([text, start_ms, end_ms, conf] tuples); text/words are stored
-// verbatim from ASR (no normalization at rest).
+// verbatim from ASR (no normalization at rest). speaker_key starts NULL (not yet
+// diarized); the diarize stage sets it later via SetSegmentSpeaker.
 func (q *Queries) InsertSegment(ctx context.Context, arg InsertSegmentParams) error {
 	_, err := q.db.Exec(ctx, insertSegment,
 		arg.EpisodeID,
@@ -52,21 +55,23 @@ func (q *Queries) InsertSegment(ctx context.Context, arg InsertSegmentParams) er
 }
 
 const listSegmentsByEpisode = `-- name: ListSegmentsByEpisode :many
-SELECT idx, start_ms, end_ms, text, words
+SELECT idx, start_ms, end_ms, text, words, speaker_key
 FROM segments
 WHERE episode_id = $1
 ORDER BY idx
 `
 
 type ListSegmentsByEpisodeRow struct {
-	Idx     int32
-	StartMs int32
-	EndMs   int32
-	Text    string
-	Words   []byte
+	Idx        int32
+	StartMs    int32
+	EndMs      int32
+	Text       string
+	Words      []byte
+	SpeakerKey pgtype.Text
 }
 
-// List an episode's transcript in order. episode_id is the internal id, resolved
+// List an episode's transcript in order, including the diarization speaker_key
+// (NULL until the diarize stage runs). episode_id is the internal id, resolved
 // org-scoped by the caller.
 func (q *Queries) ListSegmentsByEpisode(ctx context.Context, episodeID int64) ([]ListSegmentsByEpisodeRow, error) {
 	rows, err := q.db.Query(ctx, listSegmentsByEpisode, episodeID)
@@ -83,6 +88,7 @@ func (q *Queries) ListSegmentsByEpisode(ctx context.Context, episodeID int64) ([
 			&i.EndMs,
 			&i.Text,
 			&i.Words,
+			&i.SpeakerKey,
 		); err != nil {
 			return nil, err
 		}
@@ -92,4 +98,25 @@ func (q *Queries) ListSegmentsByEpisode(ctx context.Context, episodeID int64) ([
 		return nil, err
 	}
 	return items, nil
+}
+
+const setSegmentSpeaker = `-- name: SetSegmentSpeaker :exec
+UPDATE segments SET speaker_key = $3 WHERE episode_id = $1 AND idx = $2
+`
+
+type SetSegmentSpeakerParams struct {
+	EpisodeID  int64
+	Idx        int32
+	SpeakerKey pgtype.Text
+}
+
+// Stamp one segment's episode-local diarization label (speaker_key) by
+// (episode_id, idx). The diarize stage calls this for every segment inside one
+// transaction, so a re-run overwrites the prior speaker grouping wholesale
+// (idempotent). episode_id is the internal id, resolved org-scoped by the caller.
+// Only speaker_key changes — text, words, and timings are never touched here
+// (verbatim invariant: the LLM decides grouping, it never rewrites the transcript).
+func (q *Queries) SetSegmentSpeaker(ctx context.Context, arg SetSegmentSpeakerParams) error {
+	_, err := q.db.Exec(ctx, setSegmentSpeaker, arg.EpisodeID, arg.Idx, arg.SpeakerKey)
+	return err
 }

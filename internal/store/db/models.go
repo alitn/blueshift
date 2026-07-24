@@ -83,14 +83,15 @@ type Org struct {
 }
 
 type Segment struct {
-	ID        int64
-	EpisodeID int64
-	Idx       int32
-	StartMs   int32
-	EndMs     int32
-	Text      string
-	Words     []byte
-	CreatedAt pgtype.Timestamptz
+	ID         int64
+	EpisodeID  int64
+	Idx        int32
+	StartMs    int32
+	EndMs      int32
+	Text       string
+	Words      []byte
+	CreatedAt  pgtype.Timestamptz
+	SpeakerKey pgtype.Text
 }
 
 type Show struct {

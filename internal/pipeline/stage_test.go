@@ -315,7 +315,7 @@ func TestSetActiveStagesValidation(t *testing.T) {
 		name string
 		in   []Stage
 	}{
-		{"unregistered stage", []Stage{StageIngest, StageDiarize}},
+		{"unregistered stage", []Stage{StageIngest, StageMoments}},
 		{"must start with ingest", []Stage{StageTranscribe}},
 		{"duplicate stage", []Stage{StageIngest, StageTranscribe, StageTranscribe}},
 	}
