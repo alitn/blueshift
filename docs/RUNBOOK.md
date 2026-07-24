@@ -63,18 +63,33 @@ the engine is only ever `bs-asr-1`.
 ### Engine configuration (region, model, phrase cap)
 
 The engine is fully specified by `asr.SpeechConfig` (no provider constants in code). The
-label→provider binding is data, resolved at wiring time (the env→config wiring lands with
-the worker transcribe stage; the parameters and their operational defaults are):
+label→provider binding is data, resolved at wiring time (`cmd/worker` builds the engine
+from the `ASR_*` env — see deploy/README.md; the parameters and their operational
+defaults are):
 
 | Config field | Purpose | Value / default |
 |---|---|---|
-| `Model` | provider model | `chirp_2` (only model serving fa-IR word timestamps) |
-| `Region` | provider region + regional endpoint | `us-central1` (default: co-located with the media bucket, no cross-region egress; Architect live-verified 2026-07-23 that chirp_2 + fa-IR + word offsets works there. The supported-languages table still lists fa-IR only under `asia-southeast1`, which also works. Region/endpoint are config, so switching is a config row, not a code change) |
+| `Model` | provider model | `chirp_3` — forced, not preferential: the first real prod batch on `chirp_2` failed 403 **"Permission denied for project … on model chirp_2 locale fa-IR. It is no longer generally available."** (2026-07-24) — chirp_2's Persian is closed off for API callers. chirp_3 + fa-IR returns word timestamps (live-verified on the real prod audio: 641 words WITH offsets on the 4-min file; the docs' feature table claiming chirp_3 lacks word timestamps is wrong/stale). Note fa-IR on chirp_3 is **Preview** status — expect provider-side movement; the nightly smoke is the drift detector |
+| `Region` | provider **serving location** + endpoint | `us` — the multiregion location chirp_3 serves fa-IR from; the endpoint derives as `https://us-speech.googleapis.com` (form: `https://{location}-speech.googleapis.com`). This is a provider location, independent of the GCP **compute** region: deploy sets the literal `us`, never `$REGION` (`us-central1`). Region/endpoint are config, so switching is a config row, not a code change |
 | `Project` | project owning the recognizer + bucket | the deploy project |
 | `Bucket` | media bucket holding the audio object | the media bucket (`<project>-media`) |
 | `LanguageCodes` | BCP-47 content tag → provider code | e.g. `{"fa":"fa-IR"}`; an unmapped tag passes through verbatim |
 | `PhraseCap` | max inline glossary bias phrases sent | `500` (conservative bound under the documented inline model-adaptation limit; excess terms dropped in glossary order) |
 | `AdaptationEnabled` | send glossary bias terms as an inline phrase set | on; set false via config if a model version rejects the adaptation block |
+
+**chirp_3 wire semantics (prod receipts, 2026-07-24).** Two behaviours the engine
+codifies — both hit the first real prod episode:
+
+- **No word confidence, and the flag must not be sent.** chirp_3 rejects
+  `features.enable_word_confidence` outright: the second prod attempt failed 400
+  **"Recognizer does not support feature: word_level_confidence"**. (chirp_2 accepted
+  the flag and returned zeros anyway, so nothing is lost.) The engine sends only
+  `enableWordTimeOffsets`; per-word `confidence` is stored as the provider returns it —
+  absent parses to `0`, never fabricated.
+- **Absent zero offsets.** chirp_3 omits zero-value proto3 Durations, so the FIRST
+  word of a transcript arrives with **no `startOffset` key**. The engine parses an
+  absent offset as `0 ms` (`start_ms=0`); the regression fixture
+  `internal/asr/testdata/speech/batch_op_done_absent_offset.json` pins this.
 
 **Long audio.** The documented batch limit is 1 min–1 hour in general, but only up to
 ~20 min when word timestamps are enabled. Masters here run 40 min+, so the worker transcribe
@@ -85,8 +100,9 @@ with `asr.StitchTranscripts`; the engine itself transcribes one object per call.
 
 A capped or already-processed episode is skipped by design: the transcribe/diarize
 stages call the paid engine only when their output is missing, and a per-episode
-`process_attempts` counter (`MAX_PROCESS_ATTEMPTS`, default 5) hard-stops runaway
-re-drives before any paid call. To force a fresh billable run of one episode:
+`process_attempts` counter (`MAX_PROCESS_ATTEMPTS`, code default 5; the prod worker
+Job sets 10) hard-stops runaway re-drives before any paid call. To force a fresh
+billable run of one episode:
 
 ```
 # 1. reset the counter for that episode
@@ -108,7 +124,7 @@ To run it (nightly job, or a deliberate manual check):
 
 ```sh
 ASR_LIVE_SMOKE=1 \
-ASR_SMOKE_PROJECT="<project>" ASR_SMOKE_REGION="us-central1" ASR_SMOKE_MODEL="chirp_2" \
+ASR_SMOKE_PROJECT="<project>" ASR_SMOKE_REGION="us" ASR_SMOKE_MODEL="chirp_3" \
 ASR_SMOKE_BUCKET="<media-bucket>" ASR_SMOKE_AUDIO_KEY="<org>/<episode>/proxies/audio.flac" \
 ASR_SMOKE_LANGUAGE="fa" \
 go test -tags live ./internal/asr/ -run TestSpeechLiveSmoke -v

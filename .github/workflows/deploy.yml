@@ -364,12 +364,28 @@ jobs:
           # PIPELINE_STAGES's value has a comma, so the list uses gcloud's ^@^
           # delimiter. Provider names are allowed in this deploy script (CLAUDE.md);
           # nothing here is client-visible — externally the engine is only bs-asr-1.
+          #
+          # Engine coordinates (prod receipts 2026-07-24 — codified here so a
+          # redeploy cannot revert the operational fix):
+          #   - ASR_MODEL=chirp_3: the first real prod batch on chirp_2 failed 403
+          #     "Permission denied for project … on model chirp_2 locale fa-IR.
+          #     It is no longer generally available." — chirp_2's Persian is
+          #     closed off for API callers, so chirp_3 is forced, not
+          #     preferential. chirp_3 + fa-IR was live-verified on the real prod
+          #     audio: 641 words WITH word offsets on the 4-min file.
+          #   - ASR_REGION=us: the LITERAL `us` multiregion serving location the
+          #     live probes verified (endpoint us-speech.googleapis.com) —
+          #     deliberately NOT $REGION, which is the us-central1 COMPUTE region;
+          #     the two are independent and must stay decoupled.
+          #   - MAX_PROCESS_ATTEMPTS=10: the operational value applied while
+          #     retrying the failed prod episode (the two provider errors above
+          #     consumed billable attempts against the code default of 5).
           gcloud run jobs deploy blueshift-worker \
             --image "$IMAGE:${{ github.sha }}" --region "$REGION" \
             --command /app/worker \
             --service-account "$RUNTIME_SA" \
             --set-cloudsql-instances "$SQL_INSTANCE" \
-            --set-env-vars "^@^ENV=prod@AUTH_MODE=identity@BLOB_MODE=gcs@GCS_BUCKET=$BUCKET@WORKER_TRIGGER=cloudrun@WORKER_JOB_NAME=blueshift-worker@WORKER_JOB_REGION=$REGION@WORKER_JOB_PROJECT=$PROJECT@ASR_ENGINE_MODE=speech@ASR_REGION=$REGION@ASR_MODEL=chirp_2@ASR_PROJECT=$PROJECT@ASR_BUCKET=$BUCKET@ASR_LANGUAGE_CODES=fa=fa-IR@PIPELINE_STAGES=ingest,transcribe" \
+            --set-env-vars "^@^ENV=prod@AUTH_MODE=identity@BLOB_MODE=gcs@GCS_BUCKET=$BUCKET@WORKER_TRIGGER=cloudrun@WORKER_JOB_NAME=blueshift-worker@WORKER_JOB_REGION=$REGION@WORKER_JOB_PROJECT=$PROJECT@ASR_ENGINE_MODE=speech@ASR_REGION=us@ASR_MODEL=chirp_3@ASR_PROJECT=$PROJECT@ASR_BUCKET=$BUCKET@ASR_LANGUAGE_CODES=fa=fa-IR@PIPELINE_STAGES=ingest,transcribe@MAX_PROCESS_ATTEMPTS=10" \
             --set-secrets "DATABASE_URL=database-url:latest,SESSION_SECRET=session-signing-key:latest,IDP_API_KEY=identity-platform-config:latest" \
             --cpu 4 --memory 2Gi \
             --max-retries 2 --task-timeout 4h --quiet

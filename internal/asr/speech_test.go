@@ -17,22 +17,35 @@ import (
 )
 
 // Fixture provenance (record/replay). These batch-operation envelopes are
-// SCHEMA-FAITHFUL fixtures, not live captures: batchRecognize was not exercised
-// from this offline environment (no ADC available), so each envelope is authored
-// to the documented Speech v2 batchRecognize wire shape and to the Architect's
-// live sync `recognize` verification (real 30s Persian audio: per-word
-// startOffset/endOffset present, per-word confidence 0). Project ids and bucket
+// placeholder-scrubbed AUTHORED fixtures matching the wire shape the Architect
+// live-verified with chirp_3 batchRecognize on the real prod audio at location
+// `us` (2026-07-24; see the facts block in speech.go). Project ids and bucket
 // are placeholders (PROJECT_ID / PROJECT_NUM / BUCKET) — no real ids in the repo.
-//   - batch_submit.json             LRO submit response (operation name, no result)
-//   - batch_op_running.json          in-progress poll (progressPercent, not done)
-//   - batch_op_done_success.json     terminal op, inline transcript results
-//   - batch_op_done_fileerror.json   terminal op, per-file PermissionDenied — the
-//                                    exact error a missing Speech-service-agent
-//                                    bucket-read grant produces (see docs/RUNBOOK.md)
-// The success fixture's wire shape (proto3 Duration offset strings, per-word
-// confidence 0, resultEndOffset, inlineResult.transcript.results[].alternatives[].
-// words[]) matches the v2 API; its Persian text + ms mirror the committed
-// fa_interview_open.json fixture so the fake and this engine stay consistent.
+//   - batch_submit.json                  LRO submit response (operation name, no
+//                                        result). Its echoed request carries NO
+//                                        enable_word_confidence: chirp_3 rejects
+//                                        the feature (400 "Recognizer does not
+//                                        support feature: word_level_confidence",
+//                                        prod 2026-07-24)
+//   - batch_op_running.json              in-progress poll (progressPercent, not done)
+//   - batch_op_done_success.json         terminal op, inline transcript results
+//   - batch_op_done_absent_offset.json   terminal op whose FIRST word has NO
+//                                        startOffset and whose words carry no
+//                                        confidence keys — chirp_3 omits
+//                                        zero-value proto3 Durations (observed on
+//                                        the prod probe) and cannot return word
+//                                        confidence; pins absent→0 parsing
+//   - batch_op_done_fileerror.json       terminal op, per-file PermissionDenied —
+//                                        the exact error a missing
+//                                        Speech-service-agent bucket-read grant
+//                                        produces (see docs/RUNBOOK.md)
+// The success fixture's wire shape (proto3 Duration offset strings, resultEndOffset,
+// inlineResult.transcript.results[].alternatives[].words[]) matches the v2 API; its
+// Persian text + ms mirror the committed fa_interview_open.json fixture so the fake
+// and this engine stay consistent. It deliberately KEEPS the explicit-zero variants
+// ("startOffset": "0s", per-word "confidence": 0) an emitter may also produce, while
+// the absent_offset fixture covers the omitted-key variant — both must parse to the
+// same ms ints.
 
 const (
 	testKey    = "org_demo/ep_demo/proxies/audio.flac"
@@ -89,8 +102,8 @@ func testEngine(t *testing.T, srv *speechSrv, mutate func(*SpeechConfig)) *Speec
 	t.Helper()
 	cfg := SpeechConfig{
 		Label:             "bs-asr-1",
-		Model:             "chirp_2",
-		Region:            "us-central1",
+		Model:             "chirp_3",
+		Region:            "us",
 		Project:           "testproj",
 		Bucket:            testBucket,
 		LanguageCodes:     map[string]string{"fa": "fa-IR"},
@@ -174,8 +187,8 @@ func TestSpeechTranscribeSuccess(t *testing.T) {
 		t.Fatalf("submit body not JSON: %v", err)
 	}
 	cfgMap, _ := sent["config"].(map[string]any)
-	if cfgMap["model"] != "chirp_2" {
-		t.Errorf("config.model = %v, want chirp_2", cfgMap["model"])
+	if cfgMap["model"] != "chirp_3" {
+		t.Errorf("config.model = %v, want chirp_3", cfgMap["model"])
 	}
 	if codes, _ := cfgMap["languageCodes"].([]any); len(codes) != 1 || codes[0] != "fa-IR" {
 		t.Errorf("config.languageCodes = %v, want [fa-IR]", cfgMap["languageCodes"])
@@ -183,6 +196,16 @@ func TestSpeechTranscribeSuccess(t *testing.T) {
 	feats, _ := cfgMap["features"].(map[string]any)
 	if feats["enableWordTimeOffsets"] != true {
 		t.Errorf("features.enableWordTimeOffsets = %v, want true", feats["enableWordTimeOffsets"])
+	}
+	// chirp_3 rejects word_level_confidence (400 "Recognizer does not support
+	// feature: word_level_confidence", prod 2026-07-24) — the key must be absent
+	// from features AND from the whole request body, not merely false.
+	if v, present := feats["enableWordConfidence"]; present {
+		t.Errorf("features.enableWordConfidence = %v — must not be sent at all (chirp_3 rejects the feature)", v)
+	}
+	if body := string(srv.postBody.Load().([]byte)); strings.Contains(body, "enableWordConfidence") ||
+		strings.Contains(body, "enable_word_confidence") {
+		t.Error("submit body contains an enable-word-confidence key — the rejected feature must never be sent")
 	}
 	if _, ok := cfgMap["autoDecodingConfig"]; !ok {
 		t.Error("config.autoDecodingConfig missing")
@@ -412,6 +435,64 @@ func TestSpeechRecordedSuccessValidates(t *testing.T) {
 	}
 }
 
+func TestSpeechAbsentStartOffsetParsesToZero(t *testing.T) {
+	// chirp_3 omits zero-value proto3 Durations: on the live prod probe the FIRST
+	// word came back with NO startOffset key (2026-07-24). parseOffsetMs maps an
+	// absent offset to 0 ms, so start_ms must be exactly 0 and the transcript must
+	// still pass Validate. This pins that behaviour: if the len(raw)==0 -> 0 guard
+	// ever regresses, the first word of every real chirp_3 transcript would break.
+
+	// The fixture itself is load-bearing: assert the recorded first word really
+	// lacks startOffset (and any word confidence), so a later fixture edit cannot
+	// silently gut this test.
+	raw := loadSpeechFixture(t, "batch_op_done_absent_offset.json")
+	var recorded operation
+	if err := json.Unmarshal(raw, &recorded); err != nil {
+		t.Fatalf("decode fixture: %v", err)
+	}
+	if recorded.Response == nil {
+		t.Fatal("fixture has no response")
+	}
+	fr, ok := recorded.Response.Results[testGSURI]
+	if !ok || fr.InlineResult == nil || fr.InlineResult.Transcript == nil ||
+		len(fr.InlineResult.Transcript.Results) == 0 ||
+		len(fr.InlineResult.Transcript.Results[0].Alternatives) == 0 ||
+		len(fr.InlineResult.Transcript.Results[0].Alternatives[0].Words) == 0 {
+		t.Fatal("fixture missing inline transcript words")
+	}
+	w0 := fr.InlineResult.Transcript.Results[0].Alternatives[0].Words[0]
+	if len(w0.StartOffset) != 0 {
+		t.Fatalf("fixture drift: first word carries startOffset %s — it must be ABSENT (chirp_3 omits zero Durations)", w0.StartOffset)
+	}
+
+	// End-to-end through Transcribe (submit -> poll -> parse -> Validate).
+	srv := newSpeechSrv(t,
+		loadSpeechFixture(t, "batch_submit.json"),
+		loadSpeechFixture(t, "batch_op_running.json"),
+		raw, 1)
+	e := testEngine(t, srv, nil)
+	tr, err := e.Transcribe(context.Background(), TranscribeRequest{AudioKey: testKey, Language: "fa"})
+	if err != nil {
+		t.Fatalf("Transcribe: %v", err)
+	}
+	if err := tr.Validate(); err != nil {
+		t.Fatalf("transcript with absent first startOffset failed Validate: %v", err)
+	}
+	if len(tr.Segments) != 1 {
+		t.Fatalf("segments = %d, want 1", len(tr.Segments))
+	}
+	first := tr.Segments[0].Words[0]
+	if first.Text != "سلام" || first.StartMs != 0 || first.EndMs != 520 {
+		t.Errorf("first word = %+v, want {سلام 0 520} (absent startOffset -> start_ms 0)", first)
+	}
+	if first.Conf != 0 {
+		t.Errorf("first word Conf = %v, want 0 (word confidence absent on chirp_3 -> stored 0, never fabricated)", first.Conf)
+	}
+	if got := tr.Segments[0]; got.StartMs != 0 || got.EndMs != 2200 {
+		t.Errorf("segment = [%d,%d], want [0,2200] (segment start = first word start = 0)", got.StartMs, got.EndMs)
+	}
+}
+
 func TestSpeechFileErrorNeutral(t *testing.T) {
 	srv := newSpeechSrv(t,
 		loadSpeechFixture(t, "batch_submit.json"),
@@ -428,7 +509,7 @@ func TestSpeechFileErrorNeutral(t *testing.T) {
 func TestSpeechSubmitNon2xxNeutral(t *testing.T) {
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
 		w.WriteHeader(http.StatusInternalServerError)
-		_, _ = w.Write([]byte(`{"error":{"message":"chirp_2 boom at speech.googleapis.com"}}`))
+		_, _ = w.Write([]byte(`{"error":{"message":"chirp_3 boom at speech.googleapis.com"}}`))
 	}))
 	defer srv.Close()
 	e := testEngine(t, &speechSrv{Server: srv}, nil)
@@ -524,7 +605,7 @@ func TestSpeechReturnedDataNeutral(t *testing.T) {
 }
 
 func TestNewSpeechEngineRejectsMisconfig(t *testing.T) {
-	base := SpeechConfig{Label: "bs-asr-1", Model: "chirp_2", Region: "us-central1", Project: "p", Bucket: "b"}
+	base := SpeechConfig{Label: "bs-asr-1", Model: "chirp_3", Region: "us", Project: "p", Bucket: "b"}
 	cases := []struct {
 		name   string
 		mutate func(*SpeechConfig)
@@ -544,19 +625,21 @@ func TestNewSpeechEngineRejectsMisconfig(t *testing.T) {
 			}
 		})
 	}
-	// A minimal valid config succeeds and defaults the endpoint from the region.
+	// A minimal valid config succeeds and defaults the endpoint from the serving
+	// location: Region "us" (the multiregion chirp_3 serves fa-IR from) derives
+	// the documented endpoint form https://us-speech.googleapis.com.
 	e, err := NewSpeechEngine(base)
 	if err != nil {
 		t.Fatalf("valid config rejected: %v", err)
 	}
-	if !strings.Contains(e.endpoint, "us-central1-speech.googleapis.com") {
-		t.Errorf("default endpoint = %q, want the regional speech host", e.endpoint)
+	if e.endpoint != "https://us-speech.googleapis.com" {
+		t.Errorf("default endpoint = %q, want https://us-speech.googleapis.com", e.endpoint)
 	}
 }
 
 func TestSpeechRegistryIntegration(t *testing.T) {
 	// The concrete engine registers under its neutral label like any Engine.
-	e, err := NewSpeechEngine(SpeechConfig{Label: "bs-asr-1", Model: "chirp_2", Region: "us-central1", Project: "p", Bucket: "b"})
+	e, err := NewSpeechEngine(SpeechConfig{Label: "bs-asr-1", Model: "chirp_3", Region: "us", Project: "p", Bucket: "b"})
 	if err != nil {
 		t.Fatalf("NewSpeechEngine: %v", err)
 	}

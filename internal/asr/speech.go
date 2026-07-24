@@ -9,29 +9,35 @@ package asr
 // (carrying only an opaque internal error id), and the raw provider envelope is
 // retained solely in Transcript.Raw for the internal audit (never client-visible).
 //
-// Facts this file is built on (Architect research + live verification, 2026-07-23;
-// cite before changing):
+// Facts this file is built on (Architect research + live verification; the prod
+// receipts of 2026-07-24 supersede the 2026-07-23 chirp_2 findings — cite before
+// changing):
 //
-//   - Persian (fa-IR) is served with word-level timestamps ONLY by model
-//     `chirp_2`. The supported-languages table lists fa-IR only under region
-//     `asia-southeast1` (speech-to-text/docs/speech-to-text-supported-languages),
-//     but the Architect live-verified 2026-07-23 that `chirp_2` + fa-IR +
-//     enableWordTimeOffsets also works in `us-central1` (sync recognize returned
-//     the full Persian transcript with 82 word offsets, identical to the
-//     asia-southeast1 result) — the table lags rollout reality. So the documented
-//     DEFAULT region is `us-central1`, co-located with the media bucket to avoid
-//     cross-region egress; region, endpoint, and model stay config (SpeechConfig),
-//     never constants, so switching regions is a config row, not a code change.
-//     chirp_3 has no word timestamps and fa only in preview — rejected.
-//   - Architect-live-verified request/response shape (sync recognizers/_:recognize,
-//     real 30s Persian broadcast audio): v2 recognizers/_ with inline config,
-//     config.model="chirp_2", config.languageCodes=["fa-IR"],
-//     config.features.enableWordTimeOffsets=true (+ enableWordConfidence), and
-//     config.autoDecodingConfig={} returned a full Persian transcript with per-word
-//     startOffset/endOffset (82 words, monotonic). Word `confidence` came back 0
-//     even with enableWordConfidence, so real per-word confidences are not
-//     currently available from this model — we store what the provider returns (0)
-//     and never fabricate one.
+//   - The model is `chirp_3` and the choice is FORCED, not preferential: the
+//     first real prod batch call on chirp_2 failed 403 "Permission denied for
+//     project … on model chirp_2 locale fa-IR. It is no longer generally
+//     available." (2026-07-24) — chirp_2's Persian is closed off for API
+//     callers. chirp_3 + fa-IR + enableWordTimeOffsets was then live-verified on
+//     the real prod audio (sync AND batchRecognize, location `us`): 641 words
+//     WITH offsets on the 4-min file. The docs' feature table claiming chirp_3
+//     lacks word timestamps is wrong/stale — overturned empirically. fa-IR on
+//     chirp_3 is Preview status. Region, endpoint, and model stay config
+//     (SpeechConfig), never constants, so the next engine shift is a config row,
+//     not a code change.
+//   - chirp_3's serving location is the `us` MULTIREGION (endpoint
+//     `https://us-speech.googleapis.com`) — a provider serving location,
+//     independent of the GCP compute region (us-central1). Deploy sets the
+//     literal `us`, never the $REGION compute var.
+//   - chirp_3 rejects `features.enable_word_confidence`: the second prod attempt
+//     failed 400 "Recognizer does not support feature: word_level_confidence"
+//     (2026-07-24). chirp_2 accepted the flag and returned zeros anyway, so
+//     nothing is lost: the request sends ONLY enableWordTimeOffsets, and word
+//     `confidence` parses defaulting to 0 when absent — we store what the
+//     provider returns and never fabricate one.
+//   - chirp_3 omits zero-value proto3 Durations on the wire: the FIRST word's
+//     startOffset came back ABSENT on the prod probe. parseOffsetMs maps an
+//     empty offset to 0 ms; the regression fixture
+//     testdata/speech/batch_op_done_absent_offset.json pins that behaviour.
 //   - batchRecognize (used here for long masters) takes GCS URIs that are read by
 //     the per-product Speech service agent
 //     `service-{projectnumber}@gcp-sa-speech.iam.gserviceaccount.com`, NOT the
@@ -40,9 +46,10 @@ package asr
 //     the error-mapping test replays). We request inlineResponseConfig so the
 //     terminal operation carries results inline and no bucket *write* grant is
 //     needed. The batch request/response wire types below follow the documented
-//     Speech v2 batchRecognize schema; batch was not exercised live from this
-//     offline environment (no ADC), so its fixtures are schema-faithful rather than
-//     live captures (see speech_test.go).
+//     Speech v2 batchRecognize schema, cross-checked against the Architect's live
+//     chirp_3 batch probe (2026-07-24); the committed fixtures are
+//     placeholder-scrubbed authored envelopes matching that verified shape (see
+//     speech_test.go).
 //
 // Auth is a bearer token from the module's oauth2/ADC plumbing (adc.go); tests
 // inject a static token via the tokenFunc seam so the transport is exercised
@@ -99,13 +106,14 @@ const (
 type SpeechConfig struct {
 	// Label is the neutral engine label this engine answers to (e.g. "bs-asr-1").
 	Label string
-	// Model is the concrete provider model (e.g. "chirp_2").
+	// Model is the concrete provider model (e.g. "chirp_3").
 	Model string
-	// Region is the provider region; it also selects the regional endpoint when
-	// Endpoint is unset. Documented default/recommended: "us-central1" —
-	// co-located with the media bucket (no cross-region egress) and live-verified
-	// for chirp_2 + fa-IR with word offsets (2026-07-23). The supported-languages
-	// table still lists fa-IR only under "asia-southeast1", which also works.
+	// Region is the provider SERVING LOCATION; it also selects the regional
+	// endpoint when Endpoint is unset. Documented default/recommended: "us" — the
+	// multiregion location chirp_3 serves fa-IR from (endpoint derives as
+	// https://us-speech.googleapis.com), live-verified with word offsets on the
+	// real prod audio (2026-07-24). It is independent of the GCP compute region:
+	// deploy sets the literal "us", never the $REGION compute var (us-central1).
 	Region string
 	// Project is the GCP project id owning the recognizer and the bucket.
 	Project string
@@ -121,8 +129,8 @@ type SpeechConfig struct {
 	// terms are dropped deterministically (glossary order preserved).
 	PhraseCap int
 	// AdaptationEnabled turns glossary bias terms into an inline adaptation phrase
-	// set. Defaults on. NOTE: chirp_2's adaptation support is provider-version
-	// dependent and was not live-verifiable here; if the provider rejects the
+	// set. Defaults on. NOTE: adaptation support is model/version dependent and
+	// was not part of the chirp_3 live probes; if the provider rejects the
 	// adaptation block, set this false via config and the terms are simply omitted.
 	AdaptationEnabled bool
 	// Endpoint overrides the derived regional endpoint (host, no path), e.g. for
@@ -286,9 +294,14 @@ type batchConfig struct {
 	Adaptation         *batchAdaptation `json:"adaptation,omitempty"`
 }
 
+// batchFeatures requests word time offsets and nothing else. enable_word_confidence
+// is deliberately NOT a field here (not even sent as false): chirp_3 rejects the
+// feature outright — the second prod attempt failed 400 "Recognizer does not
+// support feature: word_level_confidence" (2026-07-24). chirp_2 accepted the flag
+// and returned zeros anyway, so dropping it loses nothing: word `confidence`
+// parses defaulting to 0 when absent (speechWord), stored, never fabricated.
 type batchFeatures struct {
 	EnableWordTimeOffsets bool `json:"enableWordTimeOffsets"`
-	EnableWordConfidence  bool `json:"enableWordConfidence"`
 }
 
 type batchAdaptation struct {
@@ -326,7 +339,6 @@ func (e *SpeechEngine) buildBatchRequest(req TranscribeRequest) batchRequest {
 			LanguageCodes: []string{e.languageCode(req.Language)},
 			Features: batchFeatures{
 				EnableWordTimeOffsets: true,
-				EnableWordConfidence:  true,
 			},
 		},
 		Files: []batchFile{{URI: e.gsURI(req.AudioKey)}},

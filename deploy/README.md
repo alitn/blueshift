@@ -183,15 +183,21 @@ Same image, `--command /app/worker`, invoked per stage as
 | `DATABASE_URL`   | secret `database-url`             | `--set-secrets`     |
 | `SESSION_SECRET` | secret `session-signing-key`      | `--set-secrets`     |
 | `IDP_API_KEY`    | secret `identity-platform-config` | `--set-secrets`     |
-| `PIPELINE_STAGES`      | `ingest` (kill switch — omit billable stages until human-gated) | `--set-env-vars` |
-| `MAX_PROCESS_ATTEMPTS` | `5` (per-episode billable-attempt ceiling)                      | `--set-env-vars` |
+| `PIPELINE_STAGES`      | `ingest,transcribe` (drop back to `ingest` = billable kill switch) | `--set-env-vars` |
+| `MAX_PROCESS_ATTEMPTS` | `10` (per-episode billable-attempt ceiling; code default 5 — prod raised while retrying the failed episode, codified 2026-07-24) | `--set-env-vars` |
 | `PIPELINE_REPROCESS`   | unset / `false` (deliberate reprocess only, per-execution)      | `--set-env-vars` |
+| `ASR_ENGINE_MODE`      | `speech` (binds `bs-asr-1` to the provider-backed engine)       | `--set-env-vars` |
+| `ASR_MODEL`            | `chirp_3` (chirp_2's fa-IR "no longer generally available" — prod 403, 2026-07-24) | `--set-env-vars` |
+| `ASR_REGION`           | `us` — LITERAL multiregion serving location, deliberately NOT `$REGION`/`<region>` (see docs/RUNBOOK.md) | `--set-env-vars` |
+| `ASR_PROJECT`          | `<project>`                                                     | `--set-env-vars` |
+| `ASR_BUCKET`           | `<project>-media`                                               | `--set-env-vars` |
+| `ASR_LANGUAGE_CODES`   | `fa=fa-IR`                                                      | `--set-env-vars` |
 
 Also: `--set-cloudsql-instances`, `--service-account app-runtime`,
 `--cpu 4 --memory 2Gi --max-retries 2 --task-timeout 4h` (sized for a real
 transcode with a per-attempt deadline; see the pipeline-robustness change).
 
-**Cost safety (billable stages).** `PIPELINE_STAGES=ingest` is the kill switch —
+**Cost safety (billable stages).** Setting `PIPELINE_STAGES=ingest` is the kill switch —
 the worker constructs no ASR/LLM engine and makes no paid call while the active
 chain excludes `transcribe`/`diarize`, and switching back to `ingest` needs no
 deploy. Billable calls are idempotent (a plain retry/re-drive re-bills nothing;

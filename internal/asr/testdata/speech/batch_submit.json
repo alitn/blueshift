@@ -1,19 +1,18 @@
 {
-  "name": "projects/PROJECT_NUM/locations/us-central1/operations/v2-OPERATION_ID",
+  "name": "projects/PROJECT_NUM/locations/us/operations/v2-OPERATION_ID",
   "metadata": {
     "@type": "type.googleapis.com/google.cloud.speech.v2.OperationMetadata",
-    "createTime": "2026-07-23T10:15:59.182462Z",
-    "updateTime": "2026-07-23T10:15:59.182462Z",
+    "createTime": "2026-07-24T09:40:59.182462Z",
+    "updateTime": "2026-07-24T09:40:59.182462Z",
     "batchRecognizeRequest": {
-      "recognizer": "projects/PROJECT_ID/locations/us-central1/recognizers/_",
+      "recognizer": "projects/PROJECT_ID/locations/us/recognizers/_",
       "files": [{ "uri": "gs://BUCKET/org_demo/ep_demo/proxies/audio.flac" }],
       "config": {
         "features": {
-          "enableWordTimeOffsets": true,
-          "enableWordConfidence": true
+          "enableWordTimeOffsets": true
         },
         "autoDecodingConfig": {},
-        "model": "chirp_2",
+        "model": "chirp_3",
         "languageCodes": ["fa-IR"]
       },
       "recognitionOutputConfig": { "inlineResponseConfig": {} }
