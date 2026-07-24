@@ -116,6 +116,38 @@ retry/auto-advance. In dev the exec trigger inherits the parent env, so a reproc
 run cascades to auto-advanced child stages (harmless — the attempt cap still bounds
 cost); the prod cloudrun trigger uses per-execution env and does not cascade.
 
+
+## LLM engine (`bs-lm-1`) — enabling and operating
+
+The first LLM engine behind `/internal/llm` powers the diarize stage (text-anchored
+speaker grouping). Externally it is only ever `bs-lm-1`; the label→provider binding is
+data — `cmd/worker` builds the client from the `LLM_*` env **only when `diarize` is in
+`PIPELINE_STAGES`**.
+
+- `LLM_ENGINE_MODE`: `fake` (dev/demo/CI — replays the committed deterministic grouping
+  fixture through the real validate/retry/audit loop; refused when ENV is staging/prod)
+  | `live`.
+- `LLM_PROVIDER` / `LLM_MODEL`: deploy data, never code. Current prod: `gemini` /
+  `gemini-3.5-flash` (verified GA flash-class 2026-07-24; `gemini-3-flash` is
+  preview-only; `gemini-3.6-flash` GA'd 2026-07-21, regional rollout unconfirmed).
+- `LLM_ENDPOINT`: full API base up to the models collection. **Required for Gemini 3.x**
+  (served from the global endpoint only — regional hosts 404):
+  `https://aiplatform.googleapis.com/v1/projects/<project>/locations/global/publishers/google/models`.
+  Unset it (and set `LLM_PROJECT`/`LLM_REGION`) only for a regionally-served model.
+- Auth: worker SA default credentials with `roles/aiplatform.user` (deploy/gcloud.sh
+  grants it). `LLM_API_KEY` only for the key-authenticated fallback provider.
+- `LLM_PRICE_IN_CENTS_PER_MTOK` / `LLM_PRICE_OUT_CENTS_PER_MTOK`: integer cents per 1M
+  tokens (prod: 150/900, pricing page 2026-07-24). Both-or-neither; unset ⇒
+  `llm_calls.cost_cents` NULL + WARN per call.
+- Cost safety: diarize shares `MAX_PROCESS_ATTEMPTS` with transcribe; a re-drive of a
+  diarized episode is a free skip; only `PIPELINE_REPROCESS=true` re-bills. Removing
+  `diarize` from `PIPELINE_STAGES` is the kill switch — no client is even constructed.
+  Expect ~0.5–6¢/episode. Model swap = env-only worker redeploy.
+- Persistent dev/demo databases seeded before the 3-stage chain: the old sample stays
+  READY-at-transcribe (the known READY-reprocess gap) and never gains speaker chips —
+  recreate the demo DB (or delete the sample row) and re-boot to reseed through all
+  three stages.
+
 ### Nightly live smoke
 
 `internal/asr/speech_live_test.go` is a real end-to-end call, compiled only under
