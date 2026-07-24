@@ -341,7 +341,7 @@ jobs:
             --no-invoker-iam-check \
             --service-account "$RUNTIME_SA" \
             --add-cloudsql-instances "$SQL_INSTANCE" \
-            --set-env-vars "^@^ENV=prod@AUTH_MODE=identity@BLOB_MODE=gcs@GCS_BUCKET=$BUCKET@WORKER_TRIGGER=cloudrun@WORKER_JOB_NAME=blueshift-worker@WORKER_JOB_REGION=$REGION@WORKER_JOB_PROJECT=$PROJECT@PUBLIC_BASE_URL=$PUBLIC_BASE_URL@LLM_ENGINE_MODE=live@LLM_PROVIDER=gemini@LLM_MODEL=gemini-3.5-flash@LLM_ENDPOINT=https://aiplatform.googleapis.com/v1/projects/$PROJECT/locations/global/publishers/google/models@LLM_PRICE_IN_CENTS_PER_MTOK=150@LLM_PRICE_OUT_CENTS_PER_MTOK=900" \
+            --set-env-vars "^@^ENV=prod@AUTH_MODE=identity@BLOB_MODE=gcs@GCS_BUCKET=$BUCKET@WORKER_TRIGGER=cloudrun@WORKER_JOB_NAME=blueshift-worker@WORKER_JOB_REGION=$REGION@WORKER_JOB_PROJECT=$PROJECT@PUBLIC_BASE_URL=$PUBLIC_BASE_URL@PIPELINE_STAGES=ingest,transcribe,diarize,moments@LLM_ENGINE_MODE=live@LLM_PROVIDER=gemini@LLM_MODEL=gemini-3.5-flash@LLM_ENDPOINT=https://aiplatform.googleapis.com/v1/projects/$PROJECT/locations/global/publishers/google/models@LLM_PRICE_IN_CENTS_PER_MTOK=150@LLM_PRICE_OUT_CENTS_PER_MTOK=900" \
             --set-secrets "DATABASE_URL=database-url:latest,SESSION_SECRET=session-signing-key:latest,IDP_API_KEY=identity-platform-config:latest" \
             --quiet
           # Same image; ENTRYPOINT overridden to the worker. It never
@@ -359,8 +359,16 @@ jobs:
           # when unitless — so the prior "3600" meant 1h). --max-retries stays 2
           # (1 + 2 = 3 attempts). On timeout Cloud Run sends SIGTERM (~10s grace)
           # before SIGKILL; the worker traps it and marks the episode failed.
+          # The service also carries PIPELINE_STAGES: the app never runs a
+          # stage, but GET /api/episodes/{id}/pipeline displays this active
+          # chain for stages that have not run yet (the hover card's pending
+          # rows). Keep it in lockstep with the worker Job's value below.
           # Transcribe is ON in prod: ASR_ENGINE_MODE=speech binds the neutral
-          # bs-asr-1 label to the real provider-backed engine (region/model/project/
+          # bs-asr-2 label (bumped from bs-asr-1 to mark the 2026-07-24 forced
+          # chirp_2 -> chirp_3 engine change; the label->provider mapping is
+          # recorded in docs/RUNBOOK.md, and stage_runs provenance rows carry
+          # the label each run actually used) to the real provider-backed
+          # engine (region/model/project/
           # bucket/language-codes per docs/RUNBOOK.md — the engine constructor
           # validates requiredness at wiring time, and cmd/worker builds the engine
           # ONLY when transcribe is in the active chain, so the cost-safety guards
@@ -372,7 +380,7 @@ jobs:
           # ASR + LLM config.
           # PIPELINE_STAGES's value has a comma, so the list uses gcloud's ^@^
           # delimiter. Provider names are allowed in this deploy script (CLAUDE.md);
-          # nothing here is client-visible — externally the engine is only bs-asr-1.
+          # nothing here is client-visible — externally the engine is only bs-asr-2.
           #
           # Engine coordinates (prod receipts 2026-07-24 — codified here so a
           # redeploy cannot revert the operational fix):

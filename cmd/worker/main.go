@@ -106,7 +106,18 @@ func run(args []string) error {
 			SegmentGapMs:         cfg.SegmentGapMs,
 			SegmentMaxDurationMs: cfg.SegmentMaxDurationMs,
 			SegmentMaxWords:      cfg.SegmentMaxWords,
+			// Provenance-only ASR duration rate (ASR_PRICE_CENTS_PER_HOUR): costs
+			// the transcribe stage-run record; 0 records no cost. Gates nothing.
+			ASRPriceCentsPerHour: cfg.ASRPriceCentsPerHour,
 		},
+		// Stage-run provenance (stage_runs): the store opens a history row at
+		// claim and closes it at finalize. Best-effort observability by contract —
+		// a provenance miss never fails a run and never touches claim atomicity.
+		Runs: st,
+		// The engine identity each stage's provenance rows carry: the PUBLIC
+		// versioned neutral label plus the PRIVATE provider detail (model@location
+		// from the deploy env — server/DB only, never a client surface).
+		Engines: stageEngines(cfg),
 		// The worker launches the next stage on auto-advance through the same
 		// neutral trigger the API server uses (its SA already holds the runner
 		// role). Dormant under the default ingest-only chain (ingest is terminal);
@@ -182,6 +193,34 @@ func run(args []string) error {
 	}
 	logger.Info("worker done", "episode", episodeID, "stage", stage)
 	return nil
+}
+
+// stageEngines maps each stage to the engine identity its stage-run provenance
+// rows record. Label is the PUBLIC versioned neutral label (config-driven:
+// MEDIA_ENGINE_LABEL / ASR_ENGINE_LABEL / LLM_ENGINE_LABEL — engine-behaviour
+// changes bump it per docs/RUNBOOK.md). Detail is the PRIVATE provider truth
+// (concrete model@location from the deploy env), which this main may name
+// because it goes to the DB/server logs only — the api port type has no field
+// for it, so it can never reach a client surface.
+func stageEngines(cfg config.Config) map[pipeline.Stage]pipeline.StageEngine {
+	asrDetail := "fake"
+	if cfg.ASRMode == config.ASRModeSpeech {
+		asrDetail = cfg.ASRModel + "@" + cfg.ASRRegion
+	}
+	llmDetail := "fake"
+	if cfg.LLMMode == config.LLMModeLive {
+		llmDetail = cfg.LLMProvider + "/" + cfg.LLMModel
+		if cfg.LLMRegion != "" {
+			llmDetail += "@" + cfg.LLMRegion
+		}
+	}
+	llm := pipeline.StageEngine{Label: cfg.LLMEngineLabel, Detail: llmDetail}
+	return map[pipeline.Stage]pipeline.StageEngine{
+		pipeline.StageIngest:     {Label: cfg.MediaEngineLabel, Detail: "ffmpeg"},
+		pipeline.StageTranscribe: {Label: cfg.ASREngineLabel, Detail: asrDetail},
+		pipeline.StageDiarize:    llm,
+		pipeline.StageMoments:    llm,
+	}
 }
 
 // toStages converts the configured stage-name list (PIPELINE_STAGES) to the

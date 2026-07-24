@@ -121,6 +121,22 @@ type Show struct {
 	DeletedAt pgtype.Timestamptz
 }
 
+type StageRun struct {
+	ID           int64
+	EpisodeID    int64
+	Stage        string
+	StartedAt    pgtype.Timestamptz
+	FinishedAt   pgtype.Timestamptz
+	Outcome      pgtype.Text
+	EngineLabel  pgtype.Text
+	EngineDetail pgtype.Text
+	CostCents    pgtype.Int4
+	ItemsIn      pgtype.Int4
+	ItemsOut     pgtype.Int4
+	Attempt      pgtype.Int4
+	Params       []byte
+}
+
 type User struct {
 	ID          int64
 	Email       string

@@ -15,6 +15,7 @@ package pipeline
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"log/slog"
@@ -227,8 +228,55 @@ func (r *Runner) runTranscribe(parent context.Context, ep Episode, attempt int) 
 		slog.Int("segments", len(segmented.Segments)))
 
 	// No outputs to record: the terminal MarkReady preserves ingest's proxy key and
-	// measured duration (MarkEpisodeReady COALESCEs a NULL arg).
-	return stageOutput{}, nil
+	// measured duration (MarkEpisodeReady COALESCEs a NULL arg). Prov is the
+	// stage_runs provenance: provider segments in -> resegmented segments out, the
+	// billable counter value this run consumed, the ASR duration-rate cost (0 =
+	// unpriced -> NULL), and the resolved segmentation tunables.
+	return stageOutput{Prov: StageRunFacts{
+		ItemsIn:   len(stitched.Segments),
+		ItemsOut:  len(segmented.Segments),
+		Attempt:   billAttempt,
+		CostCents: asrCostCents(ep.DurationMs, r.Config.ASRPriceCentsPerHour),
+		Params:    resegmentParamsJSON(r.Config.resegmentOptions()),
+	}}, nil
+}
+
+// asrCostCents prices a transcribe run from the engine's duration-rate:
+// ceil(durationMs x centsPerHour / 1h). 0 when no rate is configured or nothing
+// was measured — the provenance row then records NULL, never a guessed cost.
+func asrCostCents(durationMs int64, centsPerHour int) int {
+	if durationMs <= 0 || centsPerHour <= 0 {
+		return 0
+	}
+	const msPerHour = 3_600_000
+	cents := (durationMs*int64(centsPerHour) + msPerHour - 1) / msPerHour
+	return int(cents)
+}
+
+// resegmentParamsJSON records the RESOLVED segmentation thresholds the run used
+// as the stage_runs params object: a config override where set (> 0), else the
+// documented internal/asr default — the same resolution asr.Resegment applies.
+// A nil return simply records NULL.
+func resegmentParamsJSON(opts asr.ResegmentOptions) []byte {
+	gap, dur, words := opts.GapMs, opts.MaxDurationMs, opts.MaxWords
+	if gap <= 0 {
+		gap = asr.DefaultResegmentGapMs
+	}
+	if dur <= 0 {
+		dur = asr.DefaultResegmentMaxDurationMs
+	}
+	if words <= 0 {
+		words = asr.DefaultResegmentMaxWords
+	}
+	b, err := json.Marshal(map[string]int{
+		"segment_gap_ms":          gap,
+		"segment_max_duration_ms": dur,
+		"segment_max_words":       words,
+	})
+	if err != nil {
+		return nil
+	}
+	return b
 }
 
 // transcribeChunks transcribes each planned window and returns the per-chunk

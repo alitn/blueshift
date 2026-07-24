@@ -460,8 +460,43 @@ func TestLoadASRDefaults(t *testing.T) {
 	if cfg.ASREngineLabel != defaultASREngineLabel {
 		t.Errorf("ASREngineLabel = %q, want %q", cfg.ASREngineLabel, defaultASREngineLabel)
 	}
+	// The public speech label is PINNED at bs-asr-2 (bumped from bs-asr-1 for
+	// the 2026-07-24 engine-behaviour change): a drift here silently mislabels
+	// every new stage-run provenance row, so the literal is asserted, not just
+	// the constant.
+	if cfg.ASREngineLabel != "bs-asr-2" {
+		t.Errorf("ASREngineLabel default = %q, want the versioned public label bs-asr-2", cfg.ASREngineLabel)
+	}
 	if len(cfg.ASRLanguageCodes) != 0 {
 		t.Errorf("ASRLanguageCodes = %v, want empty", cfg.ASRLanguageCodes)
+	}
+	// Provenance knobs: no duration rate by default (no cost recorded), and the
+	// ingest provenance label defaults to the neutral bs-media-1.
+	if cfg.ASRPriceCentsPerHour != 0 {
+		t.Errorf("ASRPriceCentsPerHour = %d, want 0 (unset records no cost)", cfg.ASRPriceCentsPerHour)
+	}
+	if cfg.MediaEngineLabel != "bs-media-1" {
+		t.Errorf("MediaEngineLabel = %q, want bs-media-1", cfg.MediaEngineLabel)
+	}
+}
+
+func TestLoadASRPriceAndMediaLabelOverrides(t *testing.T) {
+	cfg, err := load(env(map[string]string{
+		"ASR_PRICE_CENTS_PER_HOUR": "96",
+		"MEDIA_ENGINE_LABEL":       "bs-media-2",
+	}))
+	if err != nil {
+		t.Fatalf("load: %v", err)
+	}
+	if cfg.ASRPriceCentsPerHour != 96 {
+		t.Errorf("ASRPriceCentsPerHour = %d, want 96", cfg.ASRPriceCentsPerHour)
+	}
+	if cfg.MediaEngineLabel != "bs-media-2" {
+		t.Errorf("MediaEngineLabel = %q, want bs-media-2", cfg.MediaEngineLabel)
+	}
+	// A malformed rate is a startup error, never a silent zero.
+	if _, err := load(env(map[string]string{"ASR_PRICE_CENTS_PER_HOUR": "-3"})); err == nil {
+		t.Error("negative ASR_PRICE_CENTS_PER_HOUR: want error, got nil")
 	}
 }
 

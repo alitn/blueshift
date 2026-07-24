@@ -150,6 +150,7 @@ ENTRYPOINT `/app/app`. Serves the embedded SPA + `/api`, `/healthz`, `/readyz`.
 | `BLOB_MODE`         | `gcs`                              | `--set-env-vars`             |
 | `GCS_BUCKET`        | `<project>-media`                  | `--set-env-vars`             |
 | `PUBLIC_BASE_URL`   | deterministic `run.app` url        | `--set-env-vars`             |
+| `PIPELINE_STAGES`   | `ingest,transcribe,diarize,moments` — the API displays this active chain on `GET /api/episodes/{id}/pipeline` (stages not yet run); the app itself never runs a stage | `--set-env-vars` |
 | `PORT`              | injected by Cloud Run              | platform (config reads it)   |
 | `DATABASE_URL`      | secret `database-url`              | `--set-secrets`              |
 | `SESSION_SECRET`    | secret `session-signing-key`       | `--set-secrets`              |
@@ -186,7 +187,8 @@ Same image, `--command /app/worker`, invoked per stage as
 | `PIPELINE_STAGES`      | `ingest,transcribe,diarize` (drop back to `ingest` = billable kill switch) | `--set-env-vars` |
 | `MAX_PROCESS_ATTEMPTS` | `10` (per-episode billable-attempt ceiling SHARED by transcribe + diarize; code default 5 — prod raised while retrying the failed episode, codified 2026-07-24) | `--set-env-vars` |
 | `PIPELINE_REPROCESS`   | unset / `false` (deliberate reprocess only, per-execution)      | `--set-env-vars` |
-| `ASR_ENGINE_MODE`      | `speech` (binds `bs-asr-1` to the provider-backed engine)       | `--set-env-vars` |
+| `ASR_ENGINE_MODE`      | `speech` (binds `bs-asr-2` to the provider-backed engine — the public label bumped from `bs-asr-1` for the 2026-07-24 engine change; label→provider mapping in docs/RUNBOOK.md) | `--set-env-vars` |
+| `ASR_PRICE_CENTS_PER_HOUR` | optional; integer cents per hour of audio — costs the transcribe row in `stage_runs` provenance only (unset = no cost recorded; gates nothing) | `--set-env-vars` |
 | `ASR_MODEL`            | `chirp_3` (chirp_2's fa-IR "no longer generally available" — prod 403, 2026-07-24) | `--set-env-vars` |
 | `ASR_REGION`           | `us` — LITERAL multiregion serving location, deliberately NOT `$REGION`/`<region>` (see docs/RUNBOOK.md) | `--set-env-vars` |
 | `ASR_PROJECT`          | `<project>`                                                     | `--set-env-vars` |

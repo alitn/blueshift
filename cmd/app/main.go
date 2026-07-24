@@ -175,6 +175,12 @@ func buildAPI(cfg config.Config, logger *slog.Logger, st *store.Store, bs blob.S
 	// database they stay off (the rest of /api still serves).
 	if st != nil {
 		deps.Episodes = st
+		// Stage-run provenance read port (the pipeline hover card) plus the
+		// active chain the endpoint displays for not-yet-run stages. Both are
+		// neutral: stage names are product terms and the store's port type
+		// carries only the public engine label.
+		deps.StageRuns = st
+		deps.PipelineStages = cfg.PipelineStages
 		deps.Trigger = buildTrigger(cfg, logger)
 		// The free-prompt compose seam: the same audited LLM client shape the
 		// worker's LLM stages use, replaying the committed compose recording in

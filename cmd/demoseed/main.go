@@ -169,6 +169,27 @@ func run() error {
 		return fmt.Errorf("insert sample episode: %w", err)
 	}
 
+	// 4b. On a PERSISTENT demo database the sample is already terminal from an
+	//     earlier boot, so the caller's worker drive would refuse every claim and
+	//     record nothing — leaving the sample without current stage-run
+	//     provenance (the hover card's data). Reset a terminal sample to
+	//     're-drivable': the real worker chain then re-runs it each boot, with
+	//     every engine-output stage taking its idempotency skip (segments/
+	//     speakers/moments already exist — no engine re-run, no billable-shaped
+	//     call even against the fake engines), and fresh stage_runs history rows
+	//     are recorded exactly as production would. Narrowly gated on the fixed
+	//     sample id + a terminal status, so it can never touch an in-flight run
+	//     or any other row. Fresh databases match no row (still 'uploaded').
+	if _, err := pool.Exec(ctx, `
+		UPDATE episodes
+		SET status = 'uploaded', current_stage = NULL, claimed_at = NULL,
+		    error_id = NULL, updated_at = now()
+		WHERE public_id = $1 AND status IN ('ready', 'failed')`,
+		pgtype.UUID{Bytes: epUUID, Valid: true},
+	); err != nil {
+		return fmt.Errorf("reset sample episode for re-drive: %w", err)
+	}
+
 	fmt.Fprintf(os.Stderr, "demoseed: sample episode %s master=%s (%d bytes)\n", epEncoded, masterKey, info.Size())
 	// The only stdout line: the encoded episode id for the worker invocation.
 	fmt.Println(epEncoded)

@@ -160,6 +160,17 @@ type Config struct {
 	// and no "fa" assumption lives in this package. Empty means every tag passes
 	// through to the engine verbatim.
 	ASRLanguageCodes map[string]string
+	// ASRPriceCentsPerHour is the speech engine's duration-rate in integer cents
+	// per hour of audio (ASR_PRICE_CENTS_PER_HOUR; money in integer cents — a
+	// price is config data, never a code constant). Used ONLY to cost the
+	// stage-run provenance row of a transcribe run that actually called the
+	// engine; 0 (unset) records no cost. It gates nothing.
+	ASRPriceCentsPerHour int
+
+	// MediaEngineLabel is the neutral label the ingest stage's provenance rows
+	// carry (MEDIA_ENGINE_LABEL, default "bs-media-1"). It never carries a
+	// provider/tool name.
+	MediaEngineLabel string
 
 	// LLMMode selects the language-model backend (fake|live). Defaults to fake in
 	// dev and live in staging/prod. Only the worker's diarize stage (and later LLM
@@ -289,11 +300,21 @@ const (
 
 	// defaultASREngineLabel is the neutral ASR engine label when ASR_ENGINE_LABEL
 	// is unset. It names no provider (CLAUDE.md, "Vendor neutrality").
-	defaultASREngineLabel = "bs-asr-1"
+	// bs-asr-2 marks the 2026-07-24 speech-engine behaviour change (the forced
+	// provider model/locale switch): engine-behaviour changes bump the PUBLIC
+	// label so provenance rows written under the old engine stay attributable
+	// (selective reprocessing = WHERE engine_label = 'bs-asr-1'); the
+	// label -> provider mapping is recorded in docs/RUNBOOK.md.
+	defaultASREngineLabel = "bs-asr-2"
 
 	// defaultLLMEngineLabel is the neutral LLM engine label when LLM_ENGINE_LABEL
 	// is unset. It names no provider (CLAUDE.md, "Vendor neutrality").
 	defaultLLMEngineLabel = "bs-lm-1"
+
+	// defaultMediaEngineLabel is the neutral media engine label when
+	// MEDIA_ENGINE_LABEL is unset — the ingest stage's public engine identity on
+	// stage-run provenance rows. It names no provider/tool.
+	defaultMediaEngineLabel = "bs-media-1"
 
 	// defaultProxyMaxRemuxBitrate is the remux bitrate ceiling (~6 Mbps, in
 	// bits/sec) when PROXY_MAX_REMUX_BITRATE is unset. Mirrors
@@ -435,6 +456,17 @@ func loadASR(cfg *Config, getenv func(string) string) error {
 		return err
 	}
 	cfg.ASRLanguageCodes = codes
+
+	// Provenance-only duration rate; unset (0) records no cost. An explicit
+	// value must be a positive integer (a typo fails startup).
+	if err := loadPositiveInt(getenv, "ASR_PRICE_CENTS_PER_HOUR", &cfg.ASRPriceCentsPerHour); err != nil {
+		return err
+	}
+
+	cfg.MediaEngineLabel = defaultMediaEngineLabel
+	if v := strings.TrimSpace(getenv("MEDIA_ENGINE_LABEL")); v != "" {
+		cfg.MediaEngineLabel = v
+	}
 
 	return nil
 }

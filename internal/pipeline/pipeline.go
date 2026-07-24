@@ -76,10 +76,69 @@ type stageDef struct {
 // stageOutput is what a completed stage records on success. Today only ingest
 // produces outputs (the browser proxy key and the measured duration); the
 // finalize persists them the same way whether the stage is terminal (MarkReady)
-// or intermediate (AdvanceStage).
+// or intermediate (AdvanceStage). Prov carries the run's provenance facts for
+// the stage_runs record (best-effort observability, never load-bearing).
 type stageOutput struct {
 	ProxyKey   string
 	DurationMs int64
+	Prov       StageRunFacts
+}
+
+// StageRunFacts is what one stage run learned about itself, recorded on the
+// stage_runs provenance row at finalize. Zero values mean "unknown" and are
+// persisted as NULL — provenance never invents a number. It is observability
+// data only: nothing in the status machine or the cost-safety guards reads it.
+type StageRunFacts struct {
+	// ItemsIn/ItemsOut are stage-meaningful unit counts (e.g. transcribe:
+	// provider segments in -> resegmented segments out; moments: segments in ->
+	// proposals out). 0 = unknown.
+	ItemsIn  int
+	ItemsOut int
+	// Attempt is the billable counter (episodes.process_attempts) at the stage's
+	// paid engine call — the value BeginBillableAttempt returned. 0 = the run
+	// made no billable call (ingest, or an idempotency skip).
+	Attempt int
+	// CostCents is an explicitly computed cost in integer cents (the ASR
+	// duration-rate). 0 = not computed here; the store may still link a cost
+	// from the llm_calls audit for LLM stages.
+	CostCents int
+	// Params records the tunables the run used (e.g. segmentation thresholds)
+	// as a JSON object, only where tunables exist. Nil = none.
+	Params []byte
+}
+
+// StageRunFinish is the finalize half of the provenance record: the outcome
+// plus the run's facts. Outcome is 'ok' or 'failed' (the stage_runs CHECK).
+type StageRunFinish struct {
+	Outcome string
+	Facts   StageRunFacts
+}
+
+// Stage-run outcome values (stage_runs.outcome CHECK).
+const (
+	RunOutcomeOK     = "ok"
+	RunOutcomeFailed = "failed"
+)
+
+// RunRecorder is the stage-run provenance seam (stage_runs). StartStageRun
+// opens a history row at claim time (append-only: a re-run inserts a new row);
+// FinishStageRun closes it at finalize. Both are org-scoped like every other
+// finalizer, and both are BEST-EFFORT from the runner's point of view: a
+// provenance miss is logged and swallowed, it never fails a run, never touches
+// the status machine, and never rides inside the claim's compare-and-set.
+// runID 0 from Start means "no row opened" and Finish must no-op on it.
+type RunRecorder interface {
+	StartStageRun(ctx context.Context, orgID, episodePublicID, stage, engineLabel, engineDetail string) (runID int64, err error)
+	FinishStageRun(ctx context.Context, runID int64, fin StageRunFinish) error
+}
+
+// StageEngine names the engine identity a stage runs under, for the provenance
+// record only. Label is the PUBLIC versioned neutral label (bs-media-1,
+// bs-asr-2, bs-lm-1); Detail is the PRIVATE provider truth (model@location) —
+// it goes to the DB/server only and never crosses into a client surface.
+type StageEngine struct {
+	Label  string
+	Detail string
 }
 
 // stageRegistry is the full set of runnable stages the worker knows how to
@@ -308,6 +367,13 @@ type Config struct {
 	SegmentGapMs         int
 	SegmentMaxDurationMs int
 	SegmentMaxWords      int
+	// ASRPriceCentsPerHour is the speech engine's duration-rate in integer cents
+	// per hour of audio (money in integer cents; a price is config data, never a
+	// code constant). It maps to ASR_PRICE_CENTS_PER_HOUR and is used ONLY to
+	// cost the stage_runs provenance row for a transcribe run that actually
+	// called the engine. <=0 (unset) records no cost (NULL) — provenance never
+	// invents a number. It has no effect on any cost-safety guard.
+	ASRPriceCentsPerHour int
 }
 
 const (
@@ -441,6 +507,15 @@ type Runner struct {
 	// persists the proposed moment set (idempotent, org-scoped). Only the moments
 	// stage consults it; nil when moments is not in the active chain.
 	Moments MomentStore
+	// Runs records stage-run provenance (stage_runs): a history row opened at
+	// claim and closed at finalize. Nil disables recording (tests, or a wiring
+	// that opts out) — provenance is best-effort observability and never
+	// load-bearing, so every call through this seam logs-and-swallows errors.
+	Runs RunRecorder
+	// Engines names the engine identity each stage runs under, for the
+	// provenance record only (public label + private detail). Nil or a missing
+	// stage records NULL engine fields. cmd/worker builds it from config.
+	Engines map[Stage]StageEngine
 	// stages is the runner's active stage chain (ordered). Nil falls back to the
 	// default ingest-only chain (defaultActiveDefs). cmd/worker installs the
 	// config-driven chain via SetActiveStages (PIPELINE_STAGES); tests either call
@@ -550,12 +625,18 @@ func (r *Runner) Run(ctx context.Context, episodePublicID, stage string) error {
 	log.InfoContext(ctx, "stage claimed",
 		slog.String("episode", ep.PublicID), slog.String("stage", stage))
 
+	// Open the stage-run provenance row (history: a re-run inserts a new row;
+	// latest-per-stage wins for display). Best-effort by contract: a miss is
+	// logged and the run proceeds with runID 0 (Finish no-ops on it) — the
+	// provenance record never gates the status machine.
+	runID := r.startStageRun(ctx, ep, stage)
+
 	attempts := 1 + r.Config.retries()
 	var lastErr error
 	for attempt := 1; attempt <= attempts; attempt++ {
 		out, aerr := def.run(r, ctx, ep, attempt)
 		if aerr == nil {
-			return r.finalizeSuccess(ctx, ep, stage, idx, out, attempt)
+			return r.finalizeSuccess(ctx, ep, stage, idx, runID, out, attempt)
 		}
 		lastErr = aerr
 		// The raw cause (which may name codecs/tools) stays in server logs only.
@@ -595,6 +676,11 @@ func (r *Runner) Run(ctx context.Context, episodePublicID, stage string) error {
 	if err := r.Repo.MarkFailed(finCtx, ep.OrgID, ep.PublicID, errID); err != nil {
 		return fmt.Errorf("pipeline: mark failed: %w", err)
 	}
+	// Close the provenance row as failed — AFTER the load-bearing mark-failed,
+	// on the SAME context: in the shutdown case that is the detached, bounded
+	// finalize context, so this best-effort write shares (never stretches) the
+	// existing grace-window budget and is simply cut off with it if time runs out.
+	r.finishStageRun(finCtx, ep, stage, runID, StageRunFinish{Outcome: RunOutcomeFailed})
 	if shutdown {
 		// A shutdown/timeout is operationally distinct from a stage that exhausted
 		// its retries — log it as such (WARN, with the cause and elapsed) so the
@@ -622,7 +708,7 @@ func (r *Runner) Run(ctx context.Context, episodePublicID, stage string) error {
 // Auto-advance can never loop or skip: the trigger is fired for exactly the next
 // registered stage, and the store's continuation claim only accepts it from this
 // stage as predecessor.
-func (r *Runner) finalizeSuccess(ctx context.Context, ep Episode, stage string, idx int, out stageOutput, attempt int) error {
+func (r *Runner) finalizeSuccess(ctx context.Context, ep Episode, stage string, idx int, runID int64, out stageOutput, attempt int) error {
 	log := r.logger()
 	next, hasNext := r.nextStageName(idx)
 	if !hasNext {
@@ -630,6 +716,7 @@ func (r *Runner) finalizeSuccess(ctx context.Context, ep Episode, stage string, 
 		if err := r.Repo.MarkReady(ctx, ep.OrgID, ep.PublicID, out.ProxyKey, out.DurationMs); err != nil {
 			return fmt.Errorf("pipeline: mark ready: %w", err)
 		}
+		r.finishStageRun(ctx, ep, stage, runID, StageRunFinish{Outcome: RunOutcomeOK, Facts: out.Prov})
 		log.InfoContext(ctx, "stage complete",
 			slog.String("episode", ep.PublicID), slog.String("stage", stage),
 			slog.Int("attempt", attempt), slog.Int64("duration_ms", out.DurationMs),
@@ -641,6 +728,9 @@ func (r *Runner) finalizeSuccess(ctx context.Context, ep Episode, stage string, 
 	if err := r.Repo.AdvanceStage(ctx, ep.OrgID, ep.PublicID, stage, out.ProxyKey, out.DurationMs); err != nil {
 		return fmt.Errorf("pipeline: advance stage: %w", err)
 	}
+	// Provenance close AFTER the load-bearing handoff and BEFORE the trigger, so
+	// the completed run's timing is durable before the next stage can start.
+	r.finishStageRun(ctx, ep, stage, runID, StageRunFinish{Outcome: RunOutcomeOK, Facts: out.Prov})
 	log.InfoContext(ctx, "stage complete",
 		slog.String("episode", ep.PublicID), slog.String("stage", stage),
 		slog.Int("attempt", attempt), slog.Int64("duration_ms", out.DurationMs),
@@ -680,6 +770,41 @@ func (r *Runner) runIngest(ctx context.Context, ep Episode, attempt int) (stageO
 		return stageOutput{}, err
 	}
 	return stageOutput{ProxyKey: proxyKey, DurationMs: durationMs}, nil
+}
+
+// startStageRun opens the stage-run provenance row for a just-claimed stage and
+// returns its id (0 when no recorder is wired, the row could not be opened, or
+// the episode is invisible to the recorder — Finish no-ops on 0). Best-effort:
+// an error is logged at WARN and swallowed; provenance never fails a run and
+// sits outside the claim's compare-and-set, so claim atomicity is untouched.
+func (r *Runner) startStageRun(ctx context.Context, ep Episode, stage string) int64 {
+	if r.Runs == nil {
+		return 0
+	}
+	eng := r.Engines[Stage(stage)]
+	runID, err := r.Runs.StartStageRun(ctx, ep.OrgID, ep.PublicID, stage, eng.Label, eng.Detail)
+	if err != nil {
+		r.logger().WarnContext(ctx, "stage run provenance open failed",
+			slog.String("episode", ep.PublicID), slog.String("stage", stage),
+			slog.String("error", err.Error()))
+		return 0
+	}
+	return runID
+}
+
+// finishStageRun closes the stage-run provenance row (outcome + facts).
+// Best-effort like startStageRun: a miss is logged at WARN and swallowed. On
+// the shutdown path the caller passes the detached, bounded finalize context,
+// so this write shares the existing grace-window budget and never stretches it.
+func (r *Runner) finishStageRun(ctx context.Context, ep Episode, stage string, runID int64, fin StageRunFinish) {
+	if r.Runs == nil || runID == 0 {
+		return
+	}
+	if err := r.Runs.FinishStageRun(ctx, runID, fin); err != nil {
+		r.logger().WarnContext(ctx, "stage run provenance close failed",
+			slog.String("episode", ep.PublicID), slog.String("stage", stage),
+			slog.String("error", err.Error()))
+	}
 }
 
 func (r *Runner) logger() *slog.Logger {

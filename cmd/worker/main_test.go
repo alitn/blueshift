@@ -12,6 +12,7 @@ import (
 	"blueshift/internal/diarize"
 	"blueshift/internal/llm"
 	"blueshift/internal/moments"
+	"blueshift/internal/pipeline"
 )
 
 // TestShutdownContextCancelsOnSIGTERM proves the worker traps SIGTERM — the stop
@@ -173,5 +174,49 @@ func TestBuildLLMClientLiveModeConstructs(t *testing.T) {
 				t.Fatal("buildLLMClient(live) returned a nil client")
 			}
 		})
+	}
+}
+
+// TestStageEnginesIdentity pins the provenance engine map the worker records on
+// stage_runs rows: the PUBLIC config-driven labels per stage, and the PRIVATE
+// detail — the concrete model@location in live/speech mode, the literal "fake"
+// in fake mode (so a replayed run is never mistaken for a provider run).
+func TestStageEnginesIdentity(t *testing.T) {
+	live := stageEngines(config.Config{
+		MediaEngineLabel: "bs-media-1",
+		ASRMode:          config.ASRModeSpeech,
+		ASREngineLabel:   "bs-asr-2",
+		ASRModel:         "model-x",
+		ASRRegion:        "loc",
+		LLMMode:          config.LLMModeLive,
+		LLMEngineLabel:   "bs-lm-1",
+		LLMProvider:      "prov",
+		LLMModel:         "m-9",
+		LLMRegion:        "global",
+	})
+	if e := live[pipeline.StageIngest]; e.Label != "bs-media-1" || e.Detail != "ffmpeg" {
+		t.Errorf("ingest engine = %+v, want bs-media-1/ffmpeg", e)
+	}
+	if e := live[pipeline.StageTranscribe]; e.Label != "bs-asr-2" || e.Detail != "model-x@loc" {
+		t.Errorf("transcribe engine = %+v, want bs-asr-2/model-x@loc", e)
+	}
+	for _, st := range []pipeline.Stage{pipeline.StageDiarize, pipeline.StageMoments} {
+		if e := live[st]; e.Label != "bs-lm-1" || e.Detail != "prov/m-9@global" {
+			t.Errorf("%s engine = %+v, want bs-lm-1/prov/m-9@global (one LLM identity serves both stages)", st, e)
+		}
+	}
+
+	fake := stageEngines(config.Config{
+		MediaEngineLabel: "bs-media-1",
+		ASRMode:          config.ASRModeFake,
+		ASREngineLabel:   "bs-asr-2",
+		LLMMode:          config.LLMModeFake,
+		LLMEngineLabel:   "bs-lm-1",
+	})
+	if e := fake[pipeline.StageTranscribe]; e.Detail != "fake" {
+		t.Errorf("fake-mode transcribe detail = %q, want fake", e.Detail)
+	}
+	if e := fake[pipeline.StageDiarize]; e.Detail != "fake" {
+		t.Errorf("fake-mode diarize detail = %q, want fake", e.Detail)
 	}
 }

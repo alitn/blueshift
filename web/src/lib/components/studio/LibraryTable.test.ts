@@ -112,6 +112,26 @@ describe('LibraryTable interactions', () => {
     await userEvent.setup().click(screen.getByText('RETRY'));
     expect(onRetry).toHaveBeenCalledTimes(1);
   });
+
+  it('the pipeline-details trigger never interferes with row open', async () => {
+    const onOpen = vi.fn();
+    render(LibraryTable, {
+      props: { episodes: [ep('EP-RD', 'ready', 'x')], onOpen, onRetry: vi.fn(), onRemove: vi.fn() }
+    });
+    const trigger = screen.getByTestId('pipeline-cell-trigger');
+
+    // A MOUSE click on the pipeline cell bubbles to the row exactly as before
+    // (the whole Ready row opens on click).
+    await userEvent.setup().click(trigger);
+    expect(onOpen).toHaveBeenCalledTimes(1);
+
+    // A KEYBOARD activation of the focused trigger (a synthesized click with
+    // detail 0) is stopped: focusing the cell shows details, it must not open
+    // the episode underneath.
+    trigger.focus();
+    trigger.click(); // jsdom element.click() dispatches with detail 0
+    expect(onOpen).toHaveBeenCalledTimes(1);
+  });
 });
 
 describe('LibraryTable remove action', () => {

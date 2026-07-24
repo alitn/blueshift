@@ -89,6 +89,17 @@ type Querier interface {
 	// deleted_at IS NULL: a soft-deleted row is a frozen record of a tenant action
 	// and no hard-delete path may touch it.
 	DeleteOrphanEpisode(ctx context.Context, arg DeleteOrphanEpisodeParams) (int64, error)
+	// Close a stage-run row at finalize time: stamp finished_at, the outcome, and
+	// whatever the run learned (unit counts, billable attempt, tunables). Gated on
+	// finished_at IS NULL so a double finalize (e.g. a lost race) is an idempotent
+	// no-op that never rewrites a closed run.
+	//
+	// cost_cents: an explicitly computed cost (the ASR duration-rate) wins; when
+	// none is passed, an LLM-backed stage (diarize/moments) links the cost from the
+	// llm_calls audit — the sum of the episode's call costs recorded since this
+	// run started. SUM over no rows is NULL, so a run with no audited cost stays
+	// honestly unknown rather than zero.
+	FinishStageRun(ctx context.Context, arg FinishStageRunParams) (int64, error)
 	// Resolve a seeded user's authentication context by email: their display name,
 	// their org (public id + name) and their role in that org. One membership per
 	// user in M0, so LIMIT 1 is exact. Soft-deleted users are excluded.
@@ -158,6 +169,18 @@ type Querier interface {
 	// verbatim from ASR (no normalization at rest). speaker_key starts NULL (not yet
 	// diarized); the diarize stage sets it later via SetSegmentSpeaker.
 	InsertSegment(ctx context.Context, arg InsertSegmentParams) error
+	// Open a stage-run provenance row at claim time: append-only history, so a
+	// re-run/retry INSERTS a new row (never updates the old one) and display reads
+	// take the latest row per stage. started_at is the DB clock (DEFAULT now()) —
+	// the wall-clock record; duration is derived at read time, never stored.
+	// engine_detail is the PRIVATE provider truth and never leaves the server;
+	// engine_label is the PUBLIC versioned neutral label.
+	InsertStageRun(ctx context.Context, arg InsertStageRunParams) (int64, error)
+	// The display read: the LATEST run per stage for one episode (history rows on
+	// re-runs; latest-per-stage wins). engine_detail is deliberately selected too —
+	// this query serves the SERVER-side port; the api layer's port type has no
+	// field for it, so it can never reach a DTO.
+	LatestStageRuns(ctx context.Context, episodeID int64) ([]StageRun, error)
 	ListEpisodesByOrg(ctx context.Context, orgID int64) ([]Episode, error)
 	// List an episode's moments best-first (rank 1 = best; kept composed moments
 	// rank after the auto set by construction). episode_id is the internal id,

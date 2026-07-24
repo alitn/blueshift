@@ -208,7 +208,13 @@ func (r *Runner) runMoments(parent context.Context, ep Episode, _ int) (stageOut
 
 	// No outputs to record: a terminal moments stage marks ready preserving
 	// ingest's proxy key + measured duration (MarkEpisodeReady COALESCEs a NULL arg).
-	return stageOutput{}, nil
+	// Prov: segments read -> moments proposed, plus the billable counter value
+	// this run consumed; the store links the LLM cost from the llm_calls audit.
+	return stageOutput{Prov: StageRunFacts{
+		ItemsIn:  len(set.Segments),
+		ItemsOut: len(rows),
+		Attempt:  billAttempt,
+	}}, nil
 }
 
 // DeriveMomentRows derives each proposal's persisted times WORD-ACCURATELY

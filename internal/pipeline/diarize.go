@@ -173,7 +173,13 @@ func (r *Runner) runDiarize(parent context.Context, ep Episode, _ int) (stageOut
 
 	// No outputs to record: a terminal diarize marks ready preserving ingest's
 	// proxy key + measured duration (MarkEpisodeReady COALESCEs a NULL arg).
-	return stageOutput{}, nil
+	// Prov: segments read -> segments labeled, plus the billable counter value
+	// this run consumed; the store links the LLM cost from the llm_calls audit.
+	return stageOutput{Prov: StageRunFacts{
+		ItemsIn:  len(set.Segments),
+		ItemsOut: len(byIdx),
+		Attempt:  billAttempt,
+	}}, nil
 }
 
 // distinctSpeakers counts the distinct speaker_key values in an assignment, for

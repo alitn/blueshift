@@ -47,6 +47,9 @@ func deleteEpisodeOnCleanup(t *testing.T, st *Store, id int64) {
 		if _, err := st.Pool().Exec(ctx, `DELETE FROM llm_calls WHERE episode_id = $1`, id); err != nil {
 			t.Logf("cleanup: delete llm_calls for episode %d: %v", id, err)
 		}
+		if _, err := st.Pool().Exec(ctx, `DELETE FROM stage_runs WHERE episode_id = $1`, id); err != nil {
+			t.Logf("cleanup: delete stage_runs for episode %d: %v", id, err)
+		}
 		if _, err := st.Pool().Exec(ctx, `DELETE FROM episodes WHERE id = $1`, id); err != nil {
 			t.Logf("cleanup: delete episode %d: %v", id, err)
 		}

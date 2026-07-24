@@ -6,6 +6,7 @@
   // danger RETRY. All colors/spacing come from tokens.
   import { displayState, type Episode } from '$lib/episodes';
   import { formatDuration, formatSize, formatUploaded } from '$lib/pipeline';
+  import PipelineHoverCard from './PipelineHoverCard.svelte';
   import PipelineSteps from './PipelineSteps.svelte';
 
   let {
@@ -93,7 +94,11 @@
     {formatDuration(ep.durationMs)}
   </div>
   <div class="w-[250px] flex-none">
-    <PipelineSteps state={displayState(ep)} stage={ep.stage} />
+    <!-- Hover/keyboard-focus opens the per-stage provenance popover; the bars
+         render exactly as before (rest-invisible trigger, zero baseline drift). -->
+    <PipelineHoverCard episode={ep}>
+      <PipelineSteps state={displayState(ep)} stage={ep.stage} />
+    </PipelineHoverCard>
   </div>
   <div class="w-[60px] flex-none text-right font-mono text-[11px] text-text-primary">—</div>
   <div class="w-[80px] flex-none text-right font-mono text-[11px] tabular-nums text-text-muted">—</div>

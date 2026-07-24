@@ -38,6 +38,14 @@ type Deps struct {
 	// Episodes is the org-scoped episode persistence port. When it and Blob are
 	// both set, the episode routes are registered.
 	Episodes EpisodeRepo
+	// StageRuns is the org-scoped stage-run provenance read port behind the
+	// pipeline endpoint. Optional: when nil the endpoint still serves, degrading
+	// to the status-derived stage view (no durations/engines/costs).
+	StageRuns StageRunReader
+	// PipelineStages is the ordered active stage chain (PIPELINE_STAGES) the
+	// pipeline endpoint displays for stages that have not run yet. Neutral
+	// product terms only. Empty means the default ingest-only chain.
+	PipelineStages []string
 	// Composer is the free-prompt moment composition port. Optional: the
 	// compose/keep routes register only when it is set alongside the episode
 	// routes (a deployment without an engine simply has no compose surface).
@@ -109,6 +117,7 @@ func NewRouter(d Deps) http.Handler {
 		mux.HandleFunc("POST /api/episodes/{id}/upload-complete", h.uploadComplete)
 		mux.HandleFunc("GET /api/episodes/{id}/proxy", h.episodeProxy)
 		mux.HandleFunc("GET /api/episodes/{id}/transcript", h.episodeTranscript)
+		mux.HandleFunc("GET /api/episodes/{id}/pipeline", h.episodePipeline)
 		mux.HandleFunc("GET /api/episodes/{id}/moments", h.episodeMoments)
 		mux.HandleFunc("POST /api/episodes/{id}/moments/{rank}/status", h.setMomentStatus)
 		// Free-prompt composition needs an engine seam; without one the routes
