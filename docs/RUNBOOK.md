@@ -31,12 +31,41 @@ staging/production the first (and any subsequent) user is created manually:
 Rules: this SQL template stays placeholder-only; real values live only in the production
 database. See CLAUDE.md "No personal data in the repo — ever."
 
-## Speech engine (`bs-asr-1`) — enabling and operating
+## Engine label registry
 
-The first ASR engine behind `/internal/asr` calls the managed Speech v2 API
+Public engine labels are versioned, vendor-neutral names — the only engine identity
+that may ever reach a client surface (DTOs, UI, exports). The label→provider binding
+is deploy data (`MEDIA_ENGINE_LABEL` / `ASR_ENGINE_LABEL` / `LLM_ENGINE_LABEL`, wired
+in `cmd/worker`; see deploy/README.md), and the private binding (`engine_detail`)
+exists only in `stage_runs` rows and server logs — never in any DTO or client-visible
+surface (the vendor-leak gate enforces the surfaces it can see; this registry is the
+human-side contract).
+
+| Public label | Stage(s) | Private binding (internal only) | Status |
+|---|---|---|---|
+| `bs-media-1` | ingest | ffmpeg (probe/remux/transcode) | current |
+| `bs-asr-1` | transcribe | Speech v2 `chirp_2` | retired 2026-07-24 (provider closed fa-IR) |
+| `bs-asr-2` | transcribe | Speech v2 `chirp_3` @ `us` | current |
+| `bs-lm-1` | diarize, moments | `gemini-3.5-flash` @ global endpoint | current |
+
+Rules:
+
+- **Bump the label on engine-behaviour change** — a provider/model switch, or any
+  config change that alters output characteristics (timestamps, confidence, style).
+  Same provider, pure infra change (endpoint move, quota) keeps the label.
+- **Never rebind a label.** A label's meaning is frozen at first prod use; historical
+  `stage_runs` rows keep the label they actually ran under, which is what makes
+  provenance trustworthy. New behaviour ⇒ new label (`bs-asr-3`, …).
+- **Changing an engine** = update the deploy env binding + bump the `*_ENGINE_LABEL`
+  env + add a row here with the date and reason. All three in the same change.
+
+## Speech engine (`bs-asr-2`) — enabling and operating
+
+The ASR engine behind `/internal/asr` calls the managed Speech v2 API
 (`batchRecognize`). This is an internal ops section; provider names are allowed here
 (CLAUDE.md permits them in internal repo docs). Nothing below is client-visible — externally
-the engine is only ever `bs-asr-1`.
+the engine is only ever its public label (`bs-asr-2` since the chirp_3 switch; see the
+label registry above).
 
 ### One-time enablement (already done in the prod project)
 

@@ -1,36 +1,25 @@
 # Task queue
 
-> **RESUME HERE (2026-07-23 night).** Milestone: M1 pipeline build-out. **Done + live in
-> prod:** M0 gate closed (AC1 verified by real upload); M1 foundations committed —
-> lang-registry, llm-interface, asr-interface+impl, stage-machine, transcribe-stage (code
-> present but PARKED), ingest-fastpath, test-hygiene, tool-pinning, e2e-gates-trunk.
-> **A regression was found + fixed:** transcribe shipped without prod ASR config and broke
-> uploads + e2e → mitigated by `m1-stages-config-gate` (PIPELINE_STAGES default ingest-only;
-> prod re-verified green).
-> **STRATEGY PIVOT (human-directed 2026-07-23):** build in **verifiable vertical slices**,
-> not backend-first-then-UI — each backend capability ships its API+UI increment so the
-> human verifies REAL data in the live UI (no fake). Real Chirp IS the plan (human wants
-> real transcripts; ~$0.96/hr standard batch). Both HARD prerequisites before real billable
-> engine goes live are now MET: **(A) `m1-cost-safety`** committed (4d4aa6d) ✓; **(B) GCP
-> billing budget alert** SET by the human 2026-07-24 ✓. (Architect TODO: add project-level
-> Speech/LLM quota caps as a second backstop — nice-to-have, not blocking.) **Real Chirp is
-> UNBLOCKED.**
-> **MILESTONE 2026-07-24 ~08:30 UTC: FIRST REAL PROD TRANSCRIPT.** Episode
-> ep_06fs5qyg5nxrk1nc02y3c5zrrw READY via real chirp_3 batch: 641 word-timed fa words,
-> renders in the prod transcript view. Engine saga receipts in the Log (chirp_2 fa-IR
-> closed by provider mid-rollout → forced chirp_3/us switch + word-confidence-flag fix).
-> KNOWN GAP: provider returned the 4-min audio as ONE segment → next task is
-> deterministic pause-based segmentation (word-gap splits; ASR-only timestamps) BEFORE
-> diarize activation (diarize needs real segment boundaries).
-> **NEXT ORDER (updated 2026-07-24 evening):** ALL SHIPPED + LIVE: full 4-stage pipeline
-> (ingest→transcribe[chirp_3]→diarize[gemini-3.5-flash]→moments, all cost-guarded), episode
-> view with transcript, speaker chips, two-way player sync, episode delete, MOMENTS RAIL
-> (ranked cards, verbatim quotes, word-accurate bounds, Approve/Dismiss + A/D keys).
-> Library = human's 44-min original + the diarized 3-speaker sample. NEXT: editor-trim
-> slice → captions → fidelity → render (the golden-path finish); deferred: speaker-naming,
-> shots/reframe, deleted-gc, trigger-test flakes, M2 ideas (segment SIGNALS indexing +
-> free-prompt moment composition — human-proposed, analysis in chat 2026-07-24).
-> To resume: read this block + the `## Log` (newest at bottom). HEAD at/after `4feb2a8`.
+> **RESUME HERE (2026-07-24 late).** Milestone: M1. **LIVE IN PROD:** full 4-stage
+> cost-guarded pipeline (ingest→transcribe[chirp_3/us]→diarize[gemini-3.5-flash/global]→
+> moments); episode view (RTL transcript, speaker chips, two-way sync, delete); moments
+> rail (ranked, verbatim, word-accurate, A/D keys); **free-prompt compose**
+> (m1-prompt-moments, live-verified on the 3-speaker clip). Library: human's original
+> 44-min sample0 (READY, pre-pipeline), 3-speaker diarized clip, full-pipeline moments
+> clip, + "sample0 — full episode" **failed@diarize (249 segments — the flat per-idx
+> contract broke at scale)**.
+> **IN FLIGHT:** two commits UNPUSHED (`8cc7318` cache-headers = normal-refresh fix;
+> `6c3e05b` provenance = stage_runs + hover card + bs-asr-2 label bump);
+> **m1-diarize-scale** (range-turn contract fix) built green, IN REVIEW. Plan: on APPROVE
+> commit → push all three → one deploy → **RETRY the failed full episode** (transcribe
+> skips free) → moments on the 44-min → human composes on it.
+> **THEN:** m1-reprocess-api (spec-ready) → m1-youtube-ingest (ADR 0003 accepted;
+> youtubedr; spec-ready) → editor-trim → captions → fidelity → render (golden-path
+> finish). **HUMAN ACTION PENDING: `gcloud auth login`** (24h org expiry — blocks
+> Architect prod-log reads; deploys unaffected, CI has WIF).
+> Deferred: speaker-naming (evidence-gated), shots/reframe, deleted-gc, trigger-test
+> flakes, ASR_PRICE_CENTS_PER_HOUR unset (cost shows —), m2-signals (to-be-confirmed).
+> To resume: read this block + the `## Log` (newest at bottom).
 
 Single source of truth for task state. Only the Architect edits this file. One task = one
 spec file `tasks/<slug>.md` = one Implementer dispatch = one Reviewer verdict = one commit.
@@ -113,8 +102,11 @@ cited patterns in its spec. "Staging" in SPEC-M1's gate = the PoC prod service
 | 9 | m1-moments-stage | LLM ranked moments, quote-anchored word-accurate bounds (migration 0010) | committed |
 | 12 | m1-moments-rail | moments API + rail; Approve/Dismiss + A/D keys (Adjust deferred to editor) | committed |
 | 12b | m1-prompt-moments | free-prompt compose + approve-to-keep (migration 0011 source col) | committed |
-| 12c | m1-cache-headers | shell no-cache+ETag, immutable assets, API no-store (stale-shell fix) | spec-ready (next) |
-| 12d | m1-pipeline-details | hover card: named stages + per-stage durations (stage_timings capture) | spec-ready |
+| 12c | m1-cache-headers | shell no-cache+ETag, immutable assets, API no-store (stale-shell fix) | committed 8cc7318 (unpushed) |
+| 12d | m1-pipeline-details | stage_runs provenance (two timestamps, engine labels, cost, counts) + hover details card | committed 6c3e05b (unpushed) |
+| 12e | m1-diarize-scale | range-turn diarize contract (fixes 249-segment prod failure); scale fixture | in-review |
+| 12f | m1-reprocess-api | POST /reprocess ready|failed→uploaded; skips bill zero; Library action | spec-ready |
+| 12g | m1-youtube-ingest | YouTube URL ingestion via youtubedr (ADR 0003) | spec-ready |
 | 7 | m1-speaker-naming | DEFERRED behind moments (not a moments prereq): evidence-gated naming, lower-third frames | queued |
 | 8 | m1-shots-stage | DEFERRED behind moments (render-time concern): scdet shots + 9:16 bboxes | queued |
 | 13 | m1-editor-trim | sentence-selection trim on segment/word data; J/K/L transport | queued |
@@ -396,3 +388,20 @@ cited patterns in its spec. "Staging" in SPEC-M1's gate = the PoC prod service
   acceptance criteria now have recorded evidence (AC2–AC6 in the earlier acceptance
   record). Rollout 29996850621 also applied migrations 0004+0005. M1 execution continues
   per the decomposition above (human pre-authorized proceeding in absence).
+- 2026-07-24 (late — NEWEST ENTRY; tail order above is historical) — **Moments arc closed;
+  scale fix in.** Evening waves, all APPROVE: moments-stage (149c83a) + moments-rail
+  (669a66d) + prompt-moments (d1ac797, live compose verified on the 3-speaker clip: real
+  composed moment from a free prompt, verbatim quote, word-accurate bounds) +
+  cache-headers (8cc7318, normal-refresh fix) + pipeline-details (6c3e05b, stage_runs
+  provenance: two timestamps per stage, engine label public/detail private, cost, item
+  counts, hover card; bs-asr-2 label bump). **Full-episode receipt:** the human's 44-min
+  sample0 processed clean through transcribe (249 segments / 6,463 words) then FAILED at
+  diarize — flat per-idx contract brittle at scale → m1-diarize-scale (04a97c3, APPROVE,
+  zero findings): range-turn contract {turns:[start_idx,end_idx,speaker_key]} with exact
+  0..n-1 tiling validation, 249-segment synthetic eval fixture, prompt v2, cost-safety
+  diff empty. Architect: RUNBOOK engine-label registry added; ADR 0003 accepted
+  (youtube ingestion via youtubedr; YT transcripts declined — no word timestamps); specs
+  written for m1-reprocess-api + m1-youtube-ingest. PENDING at entry time: batch push
+  (8cc7318+6c3e05b+04a97c3+architect) → one deploy → RETRY the failed full episode
+  (transcribe skips free) → moments on the 44-min. Human action pending: gcloud auth
+  login (24h org expiry; Architect log reads blocked, deploys unaffected).
