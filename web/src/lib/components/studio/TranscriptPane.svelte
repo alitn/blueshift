@@ -20,6 +20,7 @@
   // segment is activated (policy in $lib/transcriptSync).
   import { fetchTranscript, type Transcript } from '$lib/transcript';
   import { createFollowGate } from '$lib/transcriptSync';
+  import { formatTimecode } from '$lib/timecode';
 
   let {
     episodeId,
@@ -77,16 +78,6 @@
       ? `${transcript.language.toUpperCase()} · ${wordCount.toLocaleString('en-US')} WORDS`
       : ''
   );
-
-  /** formatTimecode renders a start offset in ms as mm:ss (minutes are not capped
-   *  at 60 — a 74-minute mark reads "74:12"). Tabular via the mono class. */
-  function formatTimecode(ms: number): string {
-    const totalSeconds = Number.isFinite(ms) && ms > 0 ? Math.floor(ms / 1000) : 0;
-    const m = Math.floor(totalSeconds / 60);
-    const s = totalSeconds % 60;
-    const pad = (n: number) => n.toString().padStart(2, '0');
-    return `${pad(m)}:${pad(s)}`;
-  }
 
   // ---- Transcript → video: segment activation --------------------------------
 

@@ -105,6 +105,11 @@ type OpenEpisodeOpts = {
   transcript?: unknown;
   /** Or stub .../transcript with this status only (drives the error state). */
   transcriptStatus?: number;
+  /** Stub GET .../moments with this JSON body (e.g. an empty set for the
+   *  "awaiting moments" state). The glob does not cross path segments, so the
+   *  status POSTs (.../moments/{rank}/status) stay live. Default leaves the
+   *  seeded moments real. */
+  moments?: unknown;
   /** 'none' stubs .../proxy 404 so no <video> renders (deterministic shots,
    *  and no video-caption noise for the axe smoke). 'fixture' serves the local
    *  ~6s sync clip as the proxy so playback can cross every seeded segment
@@ -125,6 +130,11 @@ export async function openSampleEpisode(page: Page, opts: OpenEpisodeOpts = {}):
   } else if (opts.transcriptStatus !== undefined) {
     await page.route('**/api/episodes/*/transcript', (route) =>
       route.fulfill({ status: opts.transcriptStatus, contentType: 'application/json', body: '{}' })
+    );
+  }
+  if (opts.moments !== undefined) {
+    await page.route('**/api/episodes/*/moments', (route) =>
+      route.fulfill({ json: opts.moments })
     );
   }
   if (opts.proxy === 'none') {

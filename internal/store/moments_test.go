@@ -1,11 +1,32 @@
 package store
 
 import (
+	"context"
 	"strings"
 	"testing"
+	"time"
 
 	"blueshift/internal/pipeline"
 )
+
+// foreignOrgUUID creates a real second tenant and returns its canonical org
+// UUID. The review methods (EpisodeMoments/SetMomentStatus) resolve the
+// principal's org exactly like GetEpisode — an org that does not exist is a
+// hard error, not a scoping miss — so cross-org isolation is proven against
+// an org that exists but owns nothing.
+func foreignOrgUUID(t *testing.T, f segFixture) string {
+	t.Helper()
+	var u string
+	if err := f.st.Pool().QueryRow(f.ctx, `INSERT INTO orgs (name) VALUES ('Blueshift Store Tenant') RETURNING public_id::text`).Scan(&u); err != nil {
+		t.Fatalf("create foreign org: %v", err)
+	}
+	t.Cleanup(func() {
+		c, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+		defer cancel()
+		_, _ = f.st.Pool().Exec(c, `DELETE FROM orgs WHERE public_id = $1::uuid`, u)
+	})
+	return u
+}
 
 // sampleMomentRows is a two-moment proposal set over sampleSegments(): the
 // span-derived ASR times come from the segments' start/end, and rank 1's quote
@@ -47,7 +68,7 @@ func TestReplaceMomentsRoundTripRankOrdered(t *testing.T) {
 		t.Fatalf("ReplaceMoments: %v", err)
 	}
 
-	got, err := st.EpisodeMoments(ctx, f.orgEncoded, f.epEncoded)
+	got, err := st.EpisodeMoments(ctx, f.orgUUID, f.epEncoded)
 	if err != nil {
 		t.Fatalf("EpisodeMoments: %v", err)
 	}
@@ -91,13 +112,13 @@ func TestReplaceMomentsIdempotentReplace(t *testing.T) {
 		t.Fatalf("ReplaceMoments (first): %v", err)
 	}
 	// Approve rank 1, then re-run the SAME set: the replace resets it to proposed.
-	if ok, err := st.SetMomentStatus(ctx, f.orgEncoded, f.epEncoded, 1, MomentStatusApproved); err != nil || !ok {
+	if ok, err := st.SetMomentStatus(ctx, f.orgUUID, f.epEncoded, 1, MomentStatusApproved); err != nil || !ok {
 		t.Fatalf("SetMomentStatus(approve) = (%v, %v), want (true, nil)", ok, err)
 	}
 	if err := st.ReplaceMoments(ctx, f.orgEncoded, f.epEncoded, sampleMomentRows()); err != nil {
 		t.Fatalf("ReplaceMoments (re-run): %v", err)
 	}
-	got, _ := st.EpisodeMoments(ctx, f.orgEncoded, f.epEncoded)
+	got, _ := st.EpisodeMoments(ctx, f.orgUUID, f.epEncoded)
 	if len(got) != 2 || got[0].Status != MomentStatusProposed {
 		t.Fatalf("after re-run: %d moments, rank-1 status %q, want 2 and proposed", len(got), got[0].Status)
 	}
@@ -107,7 +128,7 @@ func TestReplaceMomentsIdempotentReplace(t *testing.T) {
 	if err := st.ReplaceMoments(ctx, f.orgEncoded, f.epEncoded, one); err != nil {
 		t.Fatalf("ReplaceMoments (overwrite): %v", err)
 	}
-	got, _ = st.EpisodeMoments(ctx, f.orgEncoded, f.epEncoded)
+	got, _ = st.EpisodeMoments(ctx, f.orgUUID, f.epEncoded)
 	if len(got) != 1 || got[0].Rank != 1 {
 		t.Errorf("after overwrite: %+v, want exactly the rank-1 moment", got)
 	}
@@ -154,7 +175,7 @@ func TestSetMomentStatusTransitions(t *testing.T) {
 	}
 	statusOf := func(rank int) string {
 		t.Helper()
-		ms, err := st.EpisodeMoments(ctx, f.orgEncoded, f.epEncoded)
+		ms, err := st.EpisodeMoments(ctx, f.orgUUID, f.epEncoded)
 		if err != nil {
 			t.Fatalf("EpisodeMoments: %v", err)
 		}
@@ -168,19 +189,19 @@ func TestSetMomentStatusTransitions(t *testing.T) {
 	}
 
 	// proposed -> approved (stamps status_changed_at).
-	if ok, err := st.SetMomentStatus(ctx, f.orgEncoded, f.epEncoded, 1, MomentStatusApproved); err != nil || !ok {
+	if ok, err := st.SetMomentStatus(ctx, f.orgUUID, f.epEncoded, 1, MomentStatusApproved); err != nil || !ok {
 		t.Fatalf("proposed->approved = (%v, %v), want (true, nil)", ok, err)
 	}
 	if got := statusOf(1); got != MomentStatusApproved {
 		t.Fatalf("status = %q, want approved", got)
 	}
-	ms, _ := st.EpisodeMoments(ctx, f.orgEncoded, f.epEncoded)
+	ms, _ := st.EpisodeMoments(ctx, f.orgUUID, f.epEncoded)
 	if ms[0].StatusChangedAt.IsZero() {
 		t.Error("status_changed_at not stamped by the approve")
 	}
 
 	// approved -> dismissed is NOT a legal transition (undo goes through proposed).
-	if ok, err := st.SetMomentStatus(ctx, f.orgEncoded, f.epEncoded, 1, MomentStatusDismissed); err != nil || ok {
+	if ok, err := st.SetMomentStatus(ctx, f.orgUUID, f.epEncoded, 1, MomentStatusDismissed); err != nil || ok {
 		t.Fatalf("approved->dismissed = (%v, %v), want (false, nil) refusal", ok, err)
 	}
 	if got := statusOf(1); got != MomentStatusApproved {
@@ -188,26 +209,26 @@ func TestSetMomentStatusTransitions(t *testing.T) {
 	}
 
 	// approved -> proposed (the undo), then proposed -> dismissed.
-	if ok, err := st.SetMomentStatus(ctx, f.orgEncoded, f.epEncoded, 1, MomentStatusProposed); err != nil || !ok {
+	if ok, err := st.SetMomentStatus(ctx, f.orgUUID, f.epEncoded, 1, MomentStatusProposed); err != nil || !ok {
 		t.Fatalf("approved->proposed = (%v, %v), want (true, nil)", ok, err)
 	}
-	if ok, err := st.SetMomentStatus(ctx, f.orgEncoded, f.epEncoded, 1, MomentStatusDismissed); err != nil || !ok {
+	if ok, err := st.SetMomentStatus(ctx, f.orgUUID, f.epEncoded, 1, MomentStatusDismissed); err != nil || !ok {
 		t.Fatalf("proposed->dismissed = (%v, %v), want (true, nil)", ok, err)
 	}
-	if ok, err := st.SetMomentStatus(ctx, f.orgEncoded, f.epEncoded, 1, MomentStatusProposed); err != nil || !ok {
+	if ok, err := st.SetMomentStatus(ctx, f.orgUUID, f.epEncoded, 1, MomentStatusProposed); err != nil || !ok {
 		t.Fatalf("dismissed->proposed = (%v, %v), want (true, nil)", ok, err)
 	}
 
 	// A same-status "transition" refuses (proposed -> proposed matches no row).
-	if ok, err := st.SetMomentStatus(ctx, f.orgEncoded, f.epEncoded, 1, MomentStatusProposed); err != nil || ok {
+	if ok, err := st.SetMomentStatus(ctx, f.orgUUID, f.epEncoded, 1, MomentStatusProposed); err != nil || ok {
 		t.Errorf("proposed->proposed = (%v, %v), want (false, nil) refusal", ok, err)
 	}
 	// An unknown rank refuses.
-	if ok, err := st.SetMomentStatus(ctx, f.orgEncoded, f.epEncoded, 99, MomentStatusApproved); err != nil || ok {
+	if ok, err := st.SetMomentStatus(ctx, f.orgUUID, f.epEncoded, 99, MomentStatusApproved); err != nil || ok {
 		t.Errorf("unknown rank = (%v, %v), want (false, nil) refusal", ok, err)
 	}
 	// An unknown status is a hard error (programming fault), before the DB.
-	if _, err := st.SetMomentStatus(ctx, f.orgEncoded, f.epEncoded, 1, "bogus"); err == nil {
+	if _, err := st.SetMomentStatus(ctx, f.orgUUID, f.epEncoded, 1, "bogus"); err == nil {
 		t.Error("unknown status accepted, want error")
 	}
 }
@@ -224,27 +245,28 @@ func TestMomentsOrgScoped(t *testing.T) {
 	if err := st.ReplaceMoments(ctx, f.orgEncoded, f.epEncoded, sampleMomentRows()); err != nil {
 		t.Fatalf("ReplaceMoments: %v", err)
 	}
-	other := foreignOrg()
+	other := foreignOrg()             // base32 form for the pipeline stage methods
+	otherUUID := foreignOrgUUID(t, f) // real second tenant for the review methods
 
 	// A foreign org cannot replace this episode's moments (clean no-op).
 	if err := st.ReplaceMoments(ctx, other, f.epEncoded, sampleMomentRows()[:1]); err != nil {
 		t.Fatalf("cross-org ReplaceMoments returned error: %v", err)
 	}
-	if got, _ := st.EpisodeMoments(ctx, f.orgEncoded, f.epEncoded); len(got) != 2 {
+	if got, _ := st.EpisodeMoments(ctx, f.orgUUID, f.epEncoded); len(got) != 2 {
 		t.Errorf("cross-org replace leaked: %d moments, want 2 untouched", len(got))
 	}
 	// A foreign org cannot read them.
-	if got, err := st.EpisodeMoments(ctx, other, f.epEncoded); err != nil || got != nil {
+	if got, err := st.EpisodeMoments(ctx, otherUUID, f.epEncoded); err != nil || got != nil {
 		t.Errorf("cross-org EpisodeMoments = (%v, %v), want (nil, nil)", got, err)
 	}
 	if _, ok, err := st.SegmentsForMoments(ctx, other, f.epEncoded); err != nil || ok {
 		t.Errorf("cross-org SegmentsForMoments = (ok=%v, err=%v), want (false, nil)", ok, err)
 	}
 	// A foreign org cannot flip a status.
-	if ok, err := st.SetMomentStatus(ctx, other, f.epEncoded, 1, MomentStatusApproved); err != nil || ok {
+	if ok, err := st.SetMomentStatus(ctx, otherUUID, f.epEncoded, 1, MomentStatusApproved); err != nil || ok {
 		t.Errorf("cross-org SetMomentStatus = (%v, %v), want (false, nil)", ok, err)
 	}
-	if got, _ := st.EpisodeMoments(ctx, f.orgEncoded, f.epEncoded); got[0].Status != MomentStatusProposed {
+	if got, _ := st.EpisodeMoments(ctx, f.orgUUID, f.epEncoded); got[0].Status != MomentStatusProposed {
 		t.Errorf("cross-org flip leaked: status %q, want proposed", got[0].Status)
 	}
 }

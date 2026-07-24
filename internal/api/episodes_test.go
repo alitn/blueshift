@@ -34,15 +34,21 @@ type fakeRepo struct {
 	mu          sync.Mutex
 	eps         map[string]storedEpisode       // key: ep_ encoded public id
 	transcripts map[string][]TranscriptSegment // key: ep_ encoded public id
+	moments     map[string][]EpisodeMoment     // key: ep_ encoded public id
 	counter     byte
 	failCreate  error
 	failList    error
 	failDelete  error
 	failTranscr error
+	failMoments error
 }
 
 func newFakeRepo() *fakeRepo {
-	return &fakeRepo{eps: map[string]storedEpisode{}, transcripts: map[string][]TranscriptSegment{}}
+	return &fakeRepo{
+		eps:         map[string]storedEpisode{},
+		transcripts: map[string][]TranscriptSegment{},
+		moments:     map[string][]EpisodeMoment{},
+	}
 }
 
 func orgBytes(orgPublicID string) [16]byte {

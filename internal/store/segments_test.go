@@ -18,7 +18,8 @@ import (
 type segFixture struct {
 	st         *Store
 	ctx        context.Context
-	orgEncoded string
+	orgEncoded string // base32 org_… form (the pipeline stage-method dialect)
+	orgUUID    string // canonical UUID form (the api.EpisodeRepo review dialect)
 	epEncoded  string
 	epID       int64
 }
@@ -37,7 +38,8 @@ func newSegFixture(t *testing.T) segFixture {
 	applyDevSeed(t, st, ctx)
 
 	var orgID, showID int64
-	if err := st.Pool().QueryRow(ctx, `SELECT id FROM orgs WHERE name = 'Blueshift Pilot'`).Scan(&orgID); err != nil {
+	var orgUUID string
+	if err := st.Pool().QueryRow(ctx, `SELECT id, public_id::text FROM orgs WHERE name = 'Blueshift Pilot'`).Scan(&orgID, &orgUUID); err != nil {
 		t.Fatalf("find org: %v", err)
 	}
 	if err := st.Pool().QueryRow(ctx, `SELECT id FROM shows WHERE org_id = $1 ORDER BY id LIMIT 1`, orgID).Scan(&showID); err != nil {
@@ -61,7 +63,7 @@ func newSegFixture(t *testing.T) segFixture {
 		_, _ = st.Pool().Exec(c, `DELETE FROM segments WHERE episode_id = $1`, ep.ID)
 	})
 	deleteEpisodeOnCleanup(t, st, ep.ID)
-	return segFixture{st: st, ctx: ctx, orgEncoded: ids.Encode(ids.Org, org.PublicID.Bytes), epEncoded: ids.Encode(ids.Episode, ep.PublicID.Bytes), epID: ep.ID}
+	return segFixture{st: st, ctx: ctx, orgEncoded: ids.Encode(ids.Org, org.PublicID.Bytes), orgUUID: orgUUID, epEncoded: ids.Encode(ids.Episode, ep.PublicID.Bytes), epID: ep.ID}
 }
 
 // zwnjWord carries a literal U+200C between its two morphemes; the store must

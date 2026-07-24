@@ -95,6 +95,17 @@ type EpisodeRepo interface {
 	// slice here means "no segments yet" — the handler renders a 200 empty
 	// transcript, not a 404.
 	EpisodeTranscript(ctx context.Context, orgPublicID, episodePublicID string) ([]TranscriptSegment, error)
+	// EpisodeMoments returns the episode's moments rank-ordered (best first),
+	// org-scoped exactly like EpisodeTranscript: an episode not visible to the
+	// org yields an empty slice, and an empty slice for a visible episode means
+	// "no proposals yet" — the handler renders a 200 empty rail, not a 404.
+	EpisodeMoments(ctx context.Context, orgPublicID, episodePublicID string) ([]EpisodeMoment, error)
+	// SetMomentStatus flips one moment's review status, org-scoped and guarded
+	// to the legal transitions (proposed -> approved/dismissed, and the undo
+	// back to proposed). The moment is addressed by (episode, rank). ok=false
+	// (nil error) when nothing was flipped — unknown/foreign episode, unknown
+	// rank, or an illegal transition — which the handler maps to 404/409.
+	SetMomentStatus(ctx context.Context, orgPublicID, episodePublicID string, rank int, status string) (bool, error)
 	SetEpisodeMasterKey(ctx context.Context, orgPublicID, episodePublicID, key string) (EpisodeRow, bool, error)
 	// ListEpisodes returns the org's episodes newest-first, excluding
 	// soft-deleted rows. It never sees another org's data (the query is

@@ -17,10 +17,11 @@ import (
 	"context"
 	"errors"
 	"fmt"
-	"time"
 
 	"github.com/jackc/pgx/v5"
 
+	"blueshift/internal/api"
+	"blueshift/internal/ids"
 	"blueshift/internal/pipeline"
 	"blueshift/internal/store/db"
 )
@@ -36,21 +37,6 @@ const (
 	MomentStatusApproved  = "approved"
 	MomentStatusDismissed = "dismissed"
 )
-
-// Moment is one persisted moment as read back for consumers: the ranked span,
-// the stage-derived ASR times, the validated texts, and the review status.
-// StatusChangedAt is the zero time until a human first flips the status.
-type Moment struct {
-	Rank            int
-	StartIdx        int
-	EndIdx          int
-	StartMs         int
-	EndMs           int
-	RationaleEn     string
-	QuoteFa         string
-	Status          string
-	StatusChangedAt time.Time
-}
 
 // SegmentsForMoments returns the episode's speaker-aware transcript
 // (idx-ordered) together with the internal org/episode ids the moments stage
@@ -152,11 +138,42 @@ func (s *Store) ReplaceMoments(ctx context.Context, orgID, episodePublicID strin
 	return nil
 }
 
+// resolveEpisodeForReview resolves (org public id, episode public id) to the
+// org-scoped episode row for the human-review surface. Unlike the stage
+// methods above (pipeline callers, base32 org_… ids via
+// resolveEpisodeForSegments), the review methods serve api.EpisodeRepo, whose
+// org id is the session principal's canonical UUID — the same contract as
+// GetEpisode/EpisodeTranscript. ok=false (nil error) for a malformed episode
+// id or an episode not visible to the org.
+func (s *Store) resolveEpisodeForReview(ctx context.Context, orgPublicID, episodePublicID string) (db.Episode, bool, error) {
+	org, err := s.resolveOrg(ctx, orgPublicID)
+	if err != nil {
+		return db.Episode{}, false, err
+	}
+	epUUID, err := ids.Decode(ids.Episode, episodePublicID)
+	if err != nil {
+		return db.Episode{}, false, nil
+	}
+	ep, err := s.GetEpisodeByPublicID(ctx, db.GetEpisodeByPublicIDParams{
+		PublicID: pgUUID(epUUID),
+		OrgID:    org.ID,
+	})
+	if errors.Is(err, pgx.ErrNoRows) {
+		return db.Episode{}, false, nil
+	}
+	if err != nil {
+		return db.Episode{}, false, fmt.Errorf("store: resolve episode for review: %w", err)
+	}
+	return ep, true, nil
+}
+
 // EpisodeMoments returns an episode's moments best-first (rank 1 first),
-// org-scoped. An unknown/foreign org or missing episode yields nil (no error),
-// matching the segment reads.
-func (s *Store) EpisodeMoments(ctx context.Context, orgID, episodePublicID string) ([]Moment, error) {
-	_, ep, ok, err := s.resolveEpisodeForSegments(ctx, orgID, episodePublicID)
+// org-scoped, projected to the neutral api.EpisodeMoment shape the moment
+// handlers serve (mirroring EpisodeTranscript, id contract included: the org
+// is the principal's canonical UUID). An unknown/foreign episode yields nil
+// (no error), matching the transcript read.
+func (s *Store) EpisodeMoments(ctx context.Context, orgPublicID, episodePublicID string) ([]api.EpisodeMoment, error) {
+	ep, ok, err := s.resolveEpisodeForReview(ctx, orgPublicID, episodePublicID)
 	if err != nil {
 		return nil, err
 	}
@@ -167,9 +184,9 @@ func (s *Store) EpisodeMoments(ctx context.Context, orgID, episodePublicID strin
 	if err != nil {
 		return nil, fmt.Errorf("store: list moments: %w", err)
 	}
-	out := make([]Moment, 0, len(rows))
+	out := make([]api.EpisodeMoment, 0, len(rows))
 	for _, r := range rows {
-		out = append(out, Moment{
+		out = append(out, api.EpisodeMoment{
 			Rank:            int(r.Rank),
 			StartIdx:        int(r.StartIdx),
 			EndIdx:          int(r.EndIdx),
@@ -184,21 +201,22 @@ func (s *Store) EpisodeMoments(ctx context.Context, orgID, episodePublicID strin
 	return out, nil
 }
 
-// SetMomentStatus flips one moment's review status, org-scoped via the episode
-// resolve and guarded to the legal transitions: proposed -> approved/dismissed
-// and approved/dismissed -> proposed (the undo). The moment is addressed by
+// SetMomentStatus flips one moment's review status, org-scoped via the review
+// resolve (canonical org UUID, like its EpisodeRepo siblings) and guarded to
+// the legal transitions: proposed -> approved/dismissed and
+// approved/dismissed -> proposed (the undo). The moment is addressed by
 // (episode, rank) — its stable natural key. ok=false (nil error) when nothing
-// was flipped: an unknown/foreign org or episode, an unknown rank, or an
-// illegal transition (e.g. approved -> dismissed, or a same-status no-op) —
-// the caller renders that as a refusal, never a 500. An unknown target status
-// is a programming error and is rejected before touching the database.
-func (s *Store) SetMomentStatus(ctx context.Context, orgID, episodePublicID string, rank int, status string) (bool, error) {
+// was flipped: an unknown/foreign episode, an unknown rank, or an illegal
+// transition (e.g. approved -> dismissed, or a same-status no-op) — the
+// caller renders that as a refusal, never a 500. An unknown target status is
+// a programming error and is rejected before touching the database.
+func (s *Store) SetMomentStatus(ctx context.Context, orgPublicID, episodePublicID string, rank int, status string) (bool, error) {
 	switch status {
 	case MomentStatusProposed, MomentStatusApproved, MomentStatusDismissed:
 	default:
 		return false, fmt.Errorf("store: unknown moment status %q", status)
 	}
-	_, ep, ok, err := s.resolveEpisodeForSegments(ctx, orgID, episodePublicID)
+	ep, ok, err := s.resolveEpisodeForReview(ctx, orgPublicID, episodePublicID)
 	if err != nil {
 		return false, err
 	}
