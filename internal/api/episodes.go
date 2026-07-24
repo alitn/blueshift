@@ -116,6 +116,14 @@ type EpisodeRepo interface {
 	// matched the org+id — either it is not visible to the org or it is not in
 	// 'failed' — so the handler can map a lost/invalid transition to 409.
 	RetryEpisode(ctx context.Context, orgPublicID, episodePublicID string) (row EpisodeRow, retried bool, err error)
+	// ReprocessEpisode compare-and-sets a 'ready' OR 'failed' episode back to
+	// 'uploaded' (clearing current_stage/claimed_at/error_id) so the ingest
+	// trigger re-drives it from the top. reprocessed=false (err=nil) when no
+	// ready/failed row matched the org+id — either it is not visible to the org
+	// or it is in 'processing'/'uploaded' — so the handler maps a lost/invalid
+	// transition to 409. It never touches process_attempts (the per-episode
+	// billable cap still bounds total cost).
+	ReprocessEpisode(ctx context.Context, orgPublicID, episodePublicID string) (row EpisodeRow, reprocessed bool, err error)
 }
 
 // createEpisodeRequest is the POST /api/episodes body.
@@ -473,6 +481,66 @@ func (h *handler) retryEpisode(w http.ResponseWriter, r *http.Request) {
 		if err := h.deps.Trigger.Trigger(r.Context(), episodeID, ingestStage); err != nil {
 			id := errorID()
 			h.deps.Logger.LogAttrs(r.Context(), slog.LevelError, "worker retry trigger failed",
+				slog.String("error_id", id), slog.String("error", err.Error()))
+		}
+	}
+	writeJSON(w, http.StatusOK, episodeDTOFrom(updated))
+}
+
+// reprocessEpisode re-enters a COMPLETED-or-FAILED episode into the pipeline from
+// the top. It is allowed only from 'ready' or 'failed': an episode not visible to
+// the org is a 404, one in any other state ('processing'/'uploaded') is a 409, and
+// a successful compare-and-set resets it to 'uploaded' (clearing
+// current_stage/claimed_at/error_id) and fires the ingest trigger — the same
+// best-effort trigger pattern as retry/upload-complete (the state change is
+// already durable, so a trigger miss is logged and the worker can be re-driven).
+//
+// Why this is safe & cheap, and why it does NOT touch process_attempts: the
+// pipeline's cost-safety idempotency guards make every billable stage SKIP when
+// its output already exists, so re-entering only runs (and bills) the stages whose
+// outputs are missing. The per-episode billable-attempt cap (MAX_PROCESS_ATTEMPTS)
+// still bounds the TOTAL paid calls across the episode's whole life — a capped
+// episode simply fails neutrally at the stage rather than re-billing — so leaving
+// the counter untouched here cannot cause runaway cost. (Forcing already-produced
+// stages to re-bill is a deliberate operator-only path — PIPELINE_REPROCESS in the
+// RUNBOOK — never this endpoint.)
+func (h *handler) reprocessEpisode(w http.ResponseWriter, r *http.Request) {
+	p, ok := auth.FromContext(r.Context())
+	if !ok {
+		writeJSON(w, http.StatusUnauthorized, errBody{Error: "unauthorized"})
+		return
+	}
+	episodeID := r.PathValue("id")
+
+	row, found, err := h.deps.Episodes.GetEpisode(r.Context(), p.OrgPublicID, episodeID)
+	if err != nil {
+		h.unavailable(w, r, "get episode failed", err)
+		return
+	}
+	if !found {
+		writeJSON(w, http.StatusNotFound, errBody{Error: "not_found"})
+		return
+	}
+	if row.Status != statusReady && row.Status != statusFailed {
+		writeJSON(w, http.StatusConflict, errBody{Error: "invalid_state"})
+		return
+	}
+
+	updated, reprocessed, err := h.deps.Episodes.ReprocessEpisode(r.Context(), p.OrgPublicID, episodeID)
+	if err != nil {
+		h.unavailable(w, r, "reprocess episode failed", err)
+		return
+	}
+	if !reprocessed {
+		// The row left 'ready'/'failed' between our read and the compare-and-set.
+		writeJSON(w, http.StatusConflict, errBody{Error: "invalid_state"})
+		return
+	}
+
+	if h.deps.Trigger != nil {
+		if err := h.deps.Trigger.Trigger(r.Context(), episodeID, ingestStage); err != nil {
+			id := errorID()
+			h.deps.Logger.LogAttrs(r.Context(), slog.LevelError, "worker reprocess trigger failed",
 				slog.String("error_id", id), slog.String("error", err.Error()))
 		}
 	}

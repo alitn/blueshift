@@ -6,6 +6,7 @@ import {
   isTerminal,
   listEpisodes,
   retryEpisode,
+  reprocessEpisode,
   fetchProxyUrl,
   CONTENT_TYPES
 } from './episodes';
@@ -114,6 +115,25 @@ describe('retryEpisode / fetchProxyUrl', () => {
     expect(await fetchProxyUrl('ep_a')).toBe('/signed');
     mockFetch(() => ({ ok: false, status: 404 }));
     expect(await fetchProxyUrl('ep_a')).toBeNull();
+  });
+});
+
+describe('reprocessEpisode', () => {
+  it('POSTs to the reprocess resource and reports success on 200', async () => {
+    vi.stubGlobal(
+      'fetch',
+      vi.fn(async (url: string, init?: RequestInit) => {
+        expect(url).toBe('/api/episodes/ep_a/reprocess');
+        expect(init?.method).toBe('POST');
+        return { ok: true, status: 200, json: async () => ({}) } as Response;
+      })
+    );
+    expect(await reprocessEpisode('ep_a')).toBe(true);
+  });
+
+  it('reports failure from a 409 (illegal source state)', async () => {
+    mockFetch(() => ({ ok: false, status: 409 }));
+    expect(await reprocessEpisode('ep_a')).toBe(false);
   });
 });
 

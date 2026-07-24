@@ -13,6 +13,7 @@
   import EmptyState from '$lib/components/studio/EmptyState.svelte';
   import UploadDialog from '$lib/components/studio/UploadDialog.svelte';
   import RemoveEpisodeDialog from '$lib/components/studio/RemoveEpisodeDialog.svelte';
+  import ReprocessEpisodeDialog from '$lib/components/studio/ReprocessEpisodeDialog.svelte';
 
   const episodes = createEpisodesStore();
 
@@ -21,6 +22,8 @@
   let uploadOpen = $state(false);
   let removeOpen = $state(false);
   let removeTarget = $state<Episode | null>(null);
+  let reprocessOpen = $state(false);
+  let reprocessTarget = $state<Episode | null>(null);
 
   const chipCounts = $derived(counts($episodes.episodes));
   const visible = $derived(applyFilter($episodes.episodes, filter, query));
@@ -49,6 +52,20 @@
     episodes.start();
   }
 
+  function onReprocess(ep: Episode) {
+    // The row's ↻ only asks; the confirm dialog owns the re-drive. It is safe and
+    // cheap (only the missing steps run), so this is not a danger flow.
+    reprocessTarget = ep;
+    reprocessOpen = true;
+  }
+
+  function onReprocessed() {
+    // Confirmed: the row is back to 'uploaded' and the worker re-drives it.
+    // Refresh and resume polling so it advances live, like a fresh upload.
+    void episodes.refresh();
+    episodes.start();
+  }
+
   function onRemove(ep: Episode) {
     // The row's × only asks; the danger dialog owns the destructive step.
     removeTarget = ep;
@@ -64,7 +81,7 @@
   // `U` opens the upload dialog, unless the user is typing or a dialog is open.
   function onWindowKey(event: KeyboardEvent) {
     if (event.defaultPrevented || event.metaKey || event.ctrlKey || event.altKey) return;
-    if (uploadOpen || removeOpen) return;
+    if (uploadOpen || removeOpen || reprocessOpen) return;
     const el = event.target as HTMLElement | null;
     const tag = el?.tagName;
     if (tag === 'INPUT' || tag === 'TEXTAREA' || el?.isContentEditable) return;
@@ -128,10 +145,15 @@
     {#if isEmpty}
       <EmptyState onUpload={() => (uploadOpen = true)} />
     {:else if $episodes.loaded}
-      <LibraryTable episodes={visible} onOpen={openEpisode} {onRetry} {onRemove} />
+      <LibraryTable episodes={visible} onOpen={openEpisode} {onRetry} {onReprocess} {onRemove} />
     {/if}
   </div>
 </div>
 
 <UploadDialog bind:open={uploadOpen} onUploaded={onUploaded} />
 <RemoveEpisodeDialog bind:open={removeOpen} episode={removeTarget} onRemoved={onRemoved} />
+<ReprocessEpisodeDialog
+  bind:open={reprocessOpen}
+  episode={reprocessTarget}
+  onReprocessed={onReprocessed}
+/>

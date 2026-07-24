@@ -96,6 +96,20 @@ export async function retryEpisode(id: string): Promise<boolean> {
 }
 
 /**
+ * reprocessEpisode re-enters a finished (READY) episode into the pipeline from
+ * the top. It only re-runs the steps whose output is missing — nothing already
+ * produced is redone or re-billed. Resolves true on success (the row resets to
+ * 'uploaded' and the worker re-drives it).
+ */
+export async function reprocessEpisode(id: string): Promise<boolean> {
+  const res = await fetch(`/api/episodes/${encodeURIComponent(id)}/reprocess`, {
+    method: 'POST',
+    credentials: 'same-origin'
+  });
+  return res.ok;
+}
+
+/**
  * deleteEpisode removes an episode from the library (server-side soft delete).
  * The server answers 204 — including for a repeat of an already-removed
  * episode, so a double-fire is harmless. Resolves true on success.

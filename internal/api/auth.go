@@ -127,6 +127,7 @@ func NewRouter(d Deps) http.Handler {
 			mux.HandleFunc("POST /api/episodes/{id}/moments/keep", h.keepComposedMoment)
 		}
 		mux.HandleFunc("POST /api/episodes/{id}/retry", h.retryEpisode)
+		mux.HandleFunc("POST /api/episodes/{id}/reprocess", h.reprocessEpisode)
 		mux.HandleFunc("DELETE /api/episodes/{id}", h.deleteEpisode)
 	}
 	return mux

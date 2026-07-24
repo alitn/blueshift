@@ -13,11 +13,13 @@
     episodes,
     onOpen,
     onRetry,
+    onReprocess,
     onRemove
   }: {
     episodes: Episode[];
     onOpen: (ep: Episode) => void;
     onRetry: (ep: Episode) => void;
+    onReprocess: (ep: Episode) => void;
     onRemove: (ep: Episode) => void;
   } = $props();
 
@@ -124,6 +126,26 @@
       ×
     </button>
     {#if ep.status === 'ready'}
+      <!-- Row reprocess (re-enter a finished episode into the pipeline). Same
+           rest-invisible, zero-width pattern as the remove ×, so the at-rest
+           Ready row is pixel-identical to the committed baselines; it reveals on
+           row hover or its own keyboard focus (in the tab order at rest).
+           Non-destructive — hover is the accent, not danger — and the actual
+           re-drive is confirmed by the dialog; this button only asks. -->
+      <button
+        type="button"
+        aria-label={`Reprocess ${ep.title}`}
+        title="Reprocess"
+        data-testid="episode-reprocess"
+        onclick={(e) => {
+          e.stopPropagation();
+          onReprocess(ep);
+        }}
+        onkeydown={(e) => e.stopPropagation()}
+        class="w-0 flex-none overflow-hidden p-0 text-center text-[13px] leading-none text-text-faint opacity-0 outline-none transition-colors duration-hover ease-out hover:text-accent focus-visible:mr-2 focus-visible:w-4 focus-visible:text-accent focus-visible:opacity-100 group-hover:mr-2 group-hover:w-4 group-hover:opacity-100"
+      >
+        ↻
+      </button>
       <button
         type="button"
         onclick={(e) => {

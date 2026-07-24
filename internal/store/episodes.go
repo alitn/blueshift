@@ -347,6 +347,37 @@ func (s *Store) RetryEpisode(ctx context.Context, orgPublicID, episodePublicID s
 	return episodeRow(org.PublicID, ep), true, nil
 }
 
+// ReprocessEpisode compare-and-sets a 'ready' OR 'failed' episode back to
+// 'uploaded' (clearing error_id, claimed_at, and current_stage) so the ingest
+// trigger re-drives it from the top. It is org-scoped and gated on status IN
+// ('ready','failed'); when no such row matches (wrong org, missing, soft-deleted,
+// or in 'processing'/'uploaded') it reports reprocessed=false so the handler
+// returns a 409, never touching another org's data. It deliberately leaves
+// process_attempts untouched — the per-episode billable cap still bounds total
+// cost, and the pipeline's skip-if-output-exists guards make re-entry cheap (only
+// stages whose outputs are missing run/bill).
+func (s *Store) ReprocessEpisode(ctx context.Context, orgPublicID, episodePublicID string) (api.EpisodeRow, bool, error) {
+	org, err := s.resolveOrg(ctx, orgPublicID)
+	if err != nil {
+		return api.EpisodeRow{}, false, err
+	}
+	epUUID, err := ids.Decode(ids.Episode, episodePublicID)
+	if err != nil {
+		return api.EpisodeRow{}, false, nil
+	}
+	ep, err := s.Queries.ReprocessEpisode(ctx, db.ReprocessEpisodeParams{
+		PublicID: pgUUID(epUUID),
+		OrgID:    org.ID,
+	})
+	if errors.Is(err, pgx.ErrNoRows) {
+		return api.EpisodeRow{}, false, nil
+	}
+	if err != nil {
+		return api.EpisodeRow{}, false, fmt.Errorf("store: reprocess episode: %w", err)
+	}
+	return episodeRow(org.PublicID, ep), true, nil
+}
+
 func episodeRow(orgPub pgtype.UUID, ep db.Episode) api.EpisodeRow {
 	return api.EpisodeRow{
 		OrgPublicID:    orgPub.Bytes,

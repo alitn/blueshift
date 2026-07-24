@@ -484,6 +484,74 @@ func (q *Queries) MarkEpisodeReady(ctx context.Context, arg MarkEpisodeReadyPara
 	return i, err
 }
 
+const reprocessEpisode = `-- name: ReprocessEpisode :one
+UPDATE episodes
+SET status = 'uploaded',
+    error_id = NULL,
+    claimed_at = NULL,
+    current_stage = NULL,
+    updated_at = now()
+WHERE public_id = $1
+  AND org_id = $2
+  AND status IN ('ready', 'failed')
+  AND deleted_at IS NULL
+RETURNING id, public_id, org_id, show_id, title, source_filename, language, status, duration_ms, master_object_key, proxy_object_key, error_id, created_at, updated_at, deleted_at, master_size_bytes, claimed_at, current_stage, process_attempts
+`
+
+type ReprocessEpisodeParams struct {
+	PublicID pgtype.UUID
+	OrgID    int64
+}
+
+// State-guarded reprocess: atomically re-enter a COMPLETED-or-FAILED episode
+// into the pipeline from the top, so the ingest trigger can re-drive it. Unlike
+// RetryFailedEpisode (failed-only), it is legal from BOTH 'ready' and 'failed':
+// a human re-processes a finished episode to backfill stages a newer chain adds
+// (e.g. a pre-transcription READY row). It mirrors the retry reset — status back
+// to 'uploaded', error_id cleared, claimed_at cleared so the row is unclaimed and
+// the next claim stamps it fresh (and the stale-claim sweeper never sees it, it
+// only touches 'processing') — and ADDITIONALLY clears current_stage so the row
+// looks pristine at the entry stage (the ingest entry claim keys on 'uploaded',
+// and its own claim re-stamps current_stage regardless; clearing it here keeps
+// the at-rest row honest). Org-scoped and gated on status IN ('ready','failed'),
+// so a caller can only reprocess their own org's completed/failed episode and a
+// row in any other state ('processing'/'uploaded') is left untouched
+// (pgx.ErrNoRows, which the handler maps to 409).
+//
+// COST SAFETY: this deliberately does NOT touch process_attempts. The per-episode
+// billable-attempt cap (MAX_PROCESS_ATTEMPTS) still bounds the TOTAL paid engine
+// calls across an episode's whole life, so re-entering a capped episode cannot
+// run away — a capped billable stage refuses to call the engine and the episode
+// fails neutrally at that stage. The real safety here is the pipeline's
+// skip-if-output-exists idempotency: re-entering only RUNS (and bills) the stages
+// whose outputs are missing.
+func (q *Queries) ReprocessEpisode(ctx context.Context, arg ReprocessEpisodeParams) (Episode, error) {
+	row := q.db.QueryRow(ctx, reprocessEpisode, arg.PublicID, arg.OrgID)
+	var i Episode
+	err := row.Scan(
+		&i.ID,
+		&i.PublicID,
+		&i.OrgID,
+		&i.ShowID,
+		&i.Title,
+		&i.SourceFilename,
+		&i.Language,
+		&i.Status,
+		&i.DurationMs,
+		&i.MasterObjectKey,
+		&i.ProxyObjectKey,
+		&i.ErrorID,
+		&i.CreatedAt,
+		&i.UpdatedAt,
+		&i.DeletedAt,
+		&i.MasterSizeBytes,
+		&i.ClaimedAt,
+		&i.CurrentStage,
+		&i.ProcessAttempts,
+	)
+	return i, err
+}
+
 const retryFailedEpisode = `-- name: RetryFailedEpisode :one
 UPDATE episodes
 SET status = 'uploaded',

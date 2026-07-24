@@ -31,7 +31,7 @@ const fourStates: Episode[] = [
 
 describe('LibraryTable status -> pipeline mapping', () => {
   it('renders one row per episode with the right stage label', () => {
-    render(LibraryTable, { props: { episodes: fourStates, onOpen: vi.fn(), onRetry: vi.fn(), onRemove: vi.fn() } });
+    render(LibraryTable, { props: { episodes: fourStates, onOpen: vi.fn(), onRetry: vi.fn(), onReprocess: vi.fn(), onRemove: vi.fn() } });
     const rows = screen.getAllByTestId('episode-row');
     expect(rows).toHaveLength(4);
     expect(screen.getByText('QUEUED')).toBeInTheDocument();
@@ -43,7 +43,7 @@ describe('LibraryTable status -> pipeline mapping', () => {
   it('an uploaded row whose master never landed reads AWAITING UPLOAD, not QUEUED', () => {
     const abandoned: Episode = { ...ep('EP-AB', 'uploaded', 'رها شده'), hasMaster: false };
     render(LibraryTable, {
-      props: { episodes: [abandoned], onOpen: vi.fn(), onRetry: vi.fn(), onRemove: vi.fn() }
+      props: { episodes: [abandoned], onOpen: vi.fn(), onRetry: vi.fn(), onReprocess: vi.fn(), onRemove: vi.fn() }
     });
     expect(screen.getByText('AWAITING UPLOAD')).toBeInTheDocument();
     expect(screen.queryByText('QUEUED')).not.toBeInTheDocument();
@@ -55,7 +55,7 @@ describe('LibraryTable status -> pipeline mapping', () => {
   });
 
   it('only Ready rows are keyboard-openable; Failed rows expose RETRY', () => {
-    render(LibraryTable, { props: { episodes: fourStates, onOpen: vi.fn(), onRetry: vi.fn(), onRemove: vi.fn() } });
+    render(LibraryTable, { props: { episodes: fourStates, onOpen: vi.fn(), onRetry: vi.fn(), onReprocess: vi.fn(), onRemove: vi.fn() } });
     const rows = screen.getAllByTestId('episode-row');
     const byStatus = (s: string) => rows.find((r) => r.getAttribute('data-status') === s)!;
 
@@ -74,6 +74,7 @@ describe('LibraryTable status -> pipeline mapping', () => {
         episodes: [{ ...ep('EP-RD', 'ready', 'x'), id: 'ep_7k9zvisibleid', sourceFilename: 'master.mp4' }],
         onOpen: vi.fn(),
         onRetry: vi.fn(),
+        onReprocess: vi.fn(),
         onRemove: vi.fn()
       }
     });
@@ -82,7 +83,7 @@ describe('LibraryTable status -> pipeline mapping', () => {
   });
 
   it('CLIPS and COST render an em dash (no data until M1)', () => {
-    render(LibraryTable, { props: { episodes: [ep('EP-RD', 'ready', 'x')], onOpen: vi.fn(), onRetry: vi.fn(), onRemove: vi.fn() } });
+    render(LibraryTable, { props: { episodes: [ep('EP-RD', 'ready', 'x')], onOpen: vi.fn(), onRetry: vi.fn(), onReprocess: vi.fn(), onRemove: vi.fn() } });
     expect(screen.getAllByText('—').length).toBeGreaterThanOrEqual(2);
   });
 });
@@ -91,7 +92,7 @@ describe('LibraryTable interactions', () => {
   it('opens a Ready row on click, OPEN button, and Enter', async () => {
     const onOpen = vi.fn();
     render(LibraryTable, {
-      props: { episodes: [ep('EP-RD', 'ready', 'x')], onOpen, onRetry: vi.fn(), onRemove: vi.fn() }
+      props: { episodes: [ep('EP-RD', 'ready', 'x')], onOpen, onRetry: vi.fn(), onReprocess: vi.fn(), onRemove: vi.fn() }
     });
     const user = userEvent.setup();
     const row = screen.getByTestId('episode-row');
@@ -107,7 +108,7 @@ describe('LibraryTable interactions', () => {
   it('retries a Failed row', async () => {
     const onRetry = vi.fn();
     render(LibraryTable, {
-      props: { episodes: [ep('EP-FL', 'failed', 'x')], onOpen: vi.fn(), onRetry, onRemove: vi.fn() }
+      props: { episodes: [ep('EP-FL', 'failed', 'x')], onOpen: vi.fn(), onRetry, onReprocess: vi.fn(), onRemove: vi.fn() }
     });
     await userEvent.setup().click(screen.getByText('RETRY'));
     expect(onRetry).toHaveBeenCalledTimes(1);
@@ -116,7 +117,7 @@ describe('LibraryTable interactions', () => {
   it('the pipeline-details trigger never interferes with row open', async () => {
     const onOpen = vi.fn();
     render(LibraryTable, {
-      props: { episodes: [ep('EP-RD', 'ready', 'x')], onOpen, onRetry: vi.fn(), onRemove: vi.fn() }
+      props: { episodes: [ep('EP-RD', 'ready', 'x')], onOpen, onRetry: vi.fn(), onReprocess: vi.fn(), onRemove: vi.fn() }
     });
     const trigger = screen.getByTestId('pipeline-cell-trigger');
 
@@ -138,7 +139,7 @@ describe('LibraryTable remove action', () => {
   it('every row exposes a labelled remove action that reports its episode', async () => {
     const onRemove = vi.fn();
     render(LibraryTable, {
-      props: { episodes: fourStates, onOpen: vi.fn(), onRetry: vi.fn(), onRemove }
+      props: { episodes: fourStates, onOpen: vi.fn(), onRetry: vi.fn(), onReprocess: vi.fn(), onRemove }
     });
     const removes = screen.getAllByTestId('episode-remove');
     expect(removes).toHaveLength(4);
@@ -156,7 +157,7 @@ describe('LibraryTable remove action', () => {
     const onOpen = vi.fn();
     const onRemove = vi.fn();
     render(LibraryTable, {
-      props: { episodes: [ep('EP-RD', 'ready', 'x')], onOpen, onRetry: vi.fn(), onRemove }
+      props: { episodes: [ep('EP-RD', 'ready', 'x')], onOpen, onRetry: vi.fn(), onReprocess: vi.fn(), onRemove }
     });
     const user = userEvent.setup();
     const remove = screen.getByTestId('episode-remove');
@@ -175,7 +176,7 @@ describe('LibraryTable remove action', () => {
 
   it('is rest-invisible (zero footprint) so committed baselines cannot shift', () => {
     render(LibraryTable, {
-      props: { episodes: [ep('EP-RD', 'ready', 'x')], onOpen: vi.fn(), onRetry: vi.fn(), onRemove: vi.fn() }
+      props: { episodes: [ep('EP-RD', 'ready', 'x')], onOpen: vi.fn(), onRetry: vi.fn(), onReprocess: vi.fn(), onRemove: vi.fn() }
     });
     const cls = screen.getByTestId('episode-remove').className;
     // Hidden and width-less at rest; revealed by row hover or its own focus.
@@ -186,10 +187,60 @@ describe('LibraryTable remove action', () => {
   });
 });
 
+describe('LibraryTable reprocess action', () => {
+  it('only Ready rows expose reprocess; other states do not', () => {
+    render(LibraryTable, {
+      props: { episodes: fourStates, onOpen: vi.fn(), onRetry: vi.fn(), onReprocess: vi.fn(), onRemove: vi.fn() }
+    });
+    // Exactly one reprocess trigger, on the single Ready row.
+    const actions = screen.getAllByTestId('episode-reprocess');
+    expect(actions).toHaveLength(1);
+    expect(screen.getByRole('button', { name: `Reprocess ${fourStates[2].title}` })).toBeInTheDocument();
+    // The Failed row keeps RETRY and grows no reprocess action.
+    const rows = screen.getAllByTestId('episode-row');
+    const failed = rows.find((r) => r.getAttribute('data-status') === 'failed')!;
+    expect(within(failed).getByText('RETRY')).toBeInTheDocument();
+    expect(within(failed).queryByTestId('episode-reprocess')).not.toBeInTheDocument();
+  });
+
+  it('reprocess reports its episode and never opens the row (click + keyboard)', async () => {
+    const onOpen = vi.fn();
+    const onReprocess = vi.fn();
+    render(LibraryTable, {
+      props: { episodes: [ep('EP-RD', 'ready', 'x')], onOpen, onRetry: vi.fn(), onReprocess, onRemove: vi.fn() }
+    });
+    const user = userEvent.setup();
+    const action = screen.getByTestId('episode-reprocess');
+
+    await user.click(action);
+    expect(onReprocess).toHaveBeenCalledTimes(1);
+    expect(onReprocess).toHaveBeenCalledWith(expect.objectContaining({ id: 'EP-RD' }));
+    expect(onOpen).not.toHaveBeenCalled();
+
+    // Keyboard: reachable at rest (tab order), Enter activates without bubbling
+    // into the row's open handler.
+    action.focus();
+    await user.keyboard('{Enter}');
+    expect(onReprocess).toHaveBeenCalledTimes(2);
+    expect(onOpen).not.toHaveBeenCalled();
+  });
+
+  it('is rest-invisible (zero footprint) so committed baselines cannot shift', () => {
+    render(LibraryTable, {
+      props: { episodes: [ep('EP-RD', 'ready', 'x')], onOpen: vi.fn(), onRetry: vi.fn(), onReprocess: vi.fn(), onRemove: vi.fn() }
+    });
+    const cls = screen.getByTestId('episode-reprocess').className;
+    expect(cls).toContain('opacity-0');
+    expect(cls).toContain('w-0');
+    expect(cls).toContain('group-hover:opacity-100');
+    expect(cls).toContain('focus-visible:opacity-100');
+  });
+});
+
 describe('LibraryTable RTL + ZWNJ', () => {
   it('renders Persian titles dir=rtl inside a <bdi>, preserving ZWNJ verbatim', () => {
     const title = `گفت${ZWNJ}وگوی نمونه`;
-    render(LibraryTable, { props: { episodes: [ep('EP-RD', 'ready', title)], onOpen: vi.fn(), onRetry: vi.fn(), onRemove: vi.fn() } });
+    render(LibraryTable, { props: { episodes: [ep('EP-RD', 'ready', title)], onOpen: vi.fn(), onRetry: vi.fn(), onReprocess: vi.fn(), onRemove: vi.fn() } });
     const cell = screen.getByTestId('episode-title');
 
     expect(cell.getAttribute('dir')).toBe('rtl');

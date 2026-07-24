@@ -191,6 +191,25 @@ func (f *fakeRepo) RetryEpisode(_ context.Context, orgPublicID, episodePublicID 
 	return s.row, true, nil
 }
 
+// ReprocessEpisode compare-and-sets a 'ready' OR 'failed' row back to uploaded,
+// org-scoped — mirroring the store's status IN ('ready','failed') gate. A row in
+// any other state (or a foreign/unknown/deleted one) reports reprocessed=false.
+func (f *fakeRepo) ReprocessEpisode(_ context.Context, orgPublicID, episodePublicID string) (EpisodeRow, bool, error) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	s, ok := f.eps[episodePublicID]
+	if !ok || s.owner != orgPublicID || s.deleted {
+		return EpisodeRow{}, false, nil
+	}
+	if s.row.Status != "ready" && s.row.Status != "failed" {
+		return EpisodeRow{}, false, nil
+	}
+	s.row.Status = "uploaded"
+	s.row.CurrentStage = ""
+	f.eps[episodePublicID] = s
+	return s.row, true, nil
+}
+
 // count returns the number of rows currently held (across all orgs) so a test
 // can assert a failed create left nothing behind.
 func (f *fakeRepo) count() int {
@@ -962,6 +981,85 @@ func TestRetryCrossOrgIsolated(t *testing.T) {
 	}
 }
 
+// TestReprocessOnlyFromReadyOrFailed is the transition-legality guard: reprocess
+// is a no-op 409 from 'uploaded'/'processing' (nothing triggered), and a 200 that
+// resets to 'uploaded' and fires ingest from BOTH 'ready' and 'failed'.
+func TestReprocessOnlyFromReadyOrFailed(t *testing.T) {
+	repo := newFakeRepo()
+	tr := &fakeTrigger{}
+	router, _ := newEpisodeRouterWithTrigger(t, repo, tr)
+	id := seedEpisode(t, router, orgA, "A", "a.mp4")
+
+	// Illegal source states -> 409, no trigger.
+	for _, st := range []string{"uploaded", "processing"} {
+		repo.setStatus(id, st, "")
+		rec := doAs(router, orgA, httptest.NewRequest(http.MethodPost, "/api/episodes/"+id+"/reprocess", nil))
+		if rec.Code != http.StatusConflict {
+			t.Errorf("reprocess from %q status = %d, want 409", st, rec.Code)
+		}
+	}
+	if tr.count() != 0 {
+		t.Fatalf("trigger fired %d times before a valid reprocess, want 0", tr.count())
+	}
+
+	// Legal source states: ready AND failed both reset to 'uploaded' and fire ingest.
+	for _, st := range []string{"ready", "failed"} {
+		repo.setStatus(id, st, "")
+		rec := doAs(router, orgA, httptest.NewRequest(http.MethodPost, "/api/episodes/"+id+"/reprocess", nil))
+		if rec.Code != http.StatusOK {
+			t.Fatalf("reprocess from %q status = %d, want 200 (body %s)", st, rec.Code, rec.Body.String())
+		}
+		var dto episodeDTO
+		if err := json.Unmarshal(rec.Body.Bytes(), &dto); err != nil {
+			t.Fatalf("decode: %v", err)
+		}
+		if dto.Status != "uploaded" {
+			t.Errorf("post-reprocess (from %q) status = %q, want uploaded", st, dto.Status)
+		}
+		// current_stage is cleared, so the DTO omits the stage entirely.
+		if dto.Stage != nil {
+			t.Errorf("post-reprocess (from %q) stage = %v, want absent (cleared)", st, *dto.Stage)
+		}
+	}
+	if tr.count() != 2 {
+		t.Fatalf("trigger fired %d times, want 2 (one per legal reprocess)", tr.count())
+	}
+	for i, got := range tr.calls {
+		if got[0] != id || got[1] != "ingest" {
+			t.Errorf("trigger[%d] called with %v, want [%s ingest]", i, got, id)
+		}
+	}
+}
+
+func TestReprocessUnknownEpisode404(t *testing.T) {
+	repo := newFakeRepo()
+	router, _, _ := newEpisodeRouter(t, repo)
+	rec := doAs(router, orgA, httptest.NewRequest(http.MethodPost, "/api/episodes/ep_"+strings.Repeat("0", 26)+"/reprocess", nil))
+	if rec.Code != http.StatusNotFound {
+		t.Fatalf("reprocess unknown status = %d, want 404", rec.Code)
+	}
+}
+
+func TestReprocessCrossOrgIsolated(t *testing.T) {
+	repo := newFakeRepo()
+	tr := &fakeTrigger{}
+	router, _ := newEpisodeRouterWithTrigger(t, repo, tr)
+	id := seedEpisode(t, router, orgA, "A", "a.mp4")
+	repo.setStatus(id, "ready", "")
+
+	rec := doAs(router, orgB, httptest.NewRequest(http.MethodPost, "/api/episodes/"+id+"/reprocess", nil))
+	if rec.Code != http.StatusNotFound {
+		t.Fatalf("cross-org reprocess status = %d, want 404", rec.Code)
+	}
+	// Org A's episode is untouched and no ingest was triggered for org B.
+	if repo.eps[id].row.Status != "ready" {
+		t.Errorf("org B changed org A's episode status to %q", repo.eps[id].row.Status)
+	}
+	if tr.count() != 0 {
+		t.Errorf("cross-org reprocess fired the trigger %d times, want 0", tr.count())
+	}
+}
+
 // --- delete -------------------------------------------------------------------
 
 // deleteReq issues DELETE /api/episodes/{id}.
@@ -992,12 +1090,13 @@ func TestDeleteEpisode204AndInvisible(t *testing.T) {
 	if len(resp.Episodes) != 0 {
 		t.Errorf("list after delete = %d episodes, want 0", len(resp.Episodes))
 	}
-	// Transcript, proxy, retry, upload-complete: all 404 — the deleted episode
-	// is indistinguishable from one that never existed.
+	// Transcript, proxy, retry, reprocess, upload-complete: all 404 — the deleted
+	// episode is indistinguishable from one that never existed.
 	for _, probe := range []*http.Request{
 		httptest.NewRequest(http.MethodGet, "/api/episodes/"+id+"/transcript", nil),
 		httptest.NewRequest(http.MethodGet, "/api/episodes/"+id+"/proxy", nil),
 		httptest.NewRequest(http.MethodPost, "/api/episodes/"+id+"/retry", nil),
+		httptest.NewRequest(http.MethodPost, "/api/episodes/"+id+"/reprocess", nil),
 		httptest.NewRequest(http.MethodPost, "/api/episodes/"+id+"/upload-complete", nil),
 	} {
 		if rec := doAs(router, orgA, probe); rec.Code != http.StatusNotFound {
