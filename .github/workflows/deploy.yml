@@ -350,17 +350,17 @@ jobs:
           # when unitless — so the prior "3600" meant 1h). --max-retries stays 2
           # (1 + 2 = 3 attempts). On timeout Cloud Run sends SIGTERM (~10s grace)
           # before SIGKILL; the worker traps it and marks the episode failed.
-          # Transcribe is ON in prod: PIPELINE_STAGES=ingest,transcribe activates
-          # the two-stage chain and ASR_ENGINE_MODE=speech binds the neutral
+          # Transcribe is ON in prod: ASR_ENGINE_MODE=speech binds the neutral
           # bs-asr-1 label to the real provider-backed engine (region/model/project/
           # bucket/language-codes per docs/RUNBOOK.md — the engine constructor
           # validates requiredness at wiring time, and cmd/worker builds the engine
           # ONLY when transcribe is in the active chain, so the cost-safety guards
-          # wrap the now-live billable call). WORKER_TRIGGER=cloudrun makes the
-          # worker auto-advance ingest->transcribe by starting a SEPARATE Job
-          # execution (an exec-trigger subprocess would be SIGKILLed when the ingest
+          # wrap the live billable call). WORKER_TRIGGER=cloudrun makes the
+          # worker auto-advance each stage by starting a SEPARATE Job
+          # execution (an exec-trigger subprocess would be SIGKILLed when the prior
           # execution's container is torn down, wedging the episode); it inherits
-          # this same deployed env, so the transcribe execution has the ASR config.
+          # this same deployed env, so every downstream execution has the full
+          # ASR + LLM config.
           # PIPELINE_STAGES's value has a comma, so the list uses gcloud's ^@^
           # delimiter. Provider names are allowed in this deploy script (CLAUDE.md);
           # nothing here is client-visible — externally the engine is only bs-asr-1.
@@ -380,12 +380,42 @@ jobs:
           #   - MAX_PROCESS_ATTEMPTS=10: the operational value applied while
           #     retrying the failed prod episode (the two provider errors above
           #     consumed billable attempts against the code default of 5).
+          #
+          # Diarize is ON in prod: PIPELINE_STAGES=ingest,transcribe,diarize
+          # activates the three-stage chain (diarize terminal -> ready) and
+          # LLM_ENGINE_MODE=live binds the neutral bs-lm-1 label to the real
+          # provider-backed engine. cmd/worker builds the LLM client ONLY when
+          # diarize is in the active chain, so the cost-safety guards (idempotency
+          # skip + the shared MAX_PROCESS_ATTEMPTS cap) wrap the now-live billable
+          # call; dropping PIPELINE_STAGES back to ingest,transcribe (or ingest)
+          # is the kill switch, no code change.
+          #
+          # LLM engine coordinates (researched 2026-07-24 against provider docs —
+          # the concrete model id is deploy data, never code):
+          #   - LLM_MODEL=gemini-3.5-flash: the CURRENT GA flash-class model.
+          #     Receipts: ai.google.dev/gemini-api/docs/models lists it stable/GA;
+          #     gemini-3-flash is PREVIEW-only, and gemini-3.6-flash GA'd only
+          #     2026-07-21 (3 days ago) with its platform regional rollout still
+          #     unconfirmed — not deploy-safe yet; gemini-2.5-flash is a
+          #     generation behind (2.0's shutdown 2026-06-01 shows the sunset
+          #     cadence). Text-anchored diarization is ~2-40k input tokens per
+          #     episode -> roughly 0.5-6 cents at this price, flash-class as
+          #     specced.
+          #   - LLM_ENDPOINT (explicit, GLOBAL): Gemini 3.x on the platform is
+          #     served from the global endpoint ONLY — the regional hosts return
+          #     404 for these models (verified 2026-07-24), and the engine's
+          #     project+region derivation builds a REGIONAL host, so the full
+          #     base is pinned here explicitly. Auth is the runtime SA's default
+          #     credentials (roles/aiplatform.user, granted by deploy/gcloud.sh).
+          #   - LLM_PRICE_*=150/900 integer cents per 1M tokens (provider pricing
+          #     page 2026-07-24: $1.50 in / $9.00 out) — the config-row price the
+          #     llm_calls audit costs every call with.
           gcloud run jobs deploy blueshift-worker \
             --image "$IMAGE:${{ github.sha }}" --region "$REGION" \
             --command /app/worker \
             --service-account "$RUNTIME_SA" \
             --set-cloudsql-instances "$SQL_INSTANCE" \
-            --set-env-vars "^@^ENV=prod@AUTH_MODE=identity@BLOB_MODE=gcs@GCS_BUCKET=$BUCKET@WORKER_TRIGGER=cloudrun@WORKER_JOB_NAME=blueshift-worker@WORKER_JOB_REGION=$REGION@WORKER_JOB_PROJECT=$PROJECT@ASR_ENGINE_MODE=speech@ASR_REGION=us@ASR_MODEL=chirp_3@ASR_PROJECT=$PROJECT@ASR_BUCKET=$BUCKET@ASR_LANGUAGE_CODES=fa=fa-IR@PIPELINE_STAGES=ingest,transcribe@MAX_PROCESS_ATTEMPTS=10" \
+            --set-env-vars "^@^ENV=prod@AUTH_MODE=identity@BLOB_MODE=gcs@GCS_BUCKET=$BUCKET@WORKER_TRIGGER=cloudrun@WORKER_JOB_NAME=blueshift-worker@WORKER_JOB_REGION=$REGION@WORKER_JOB_PROJECT=$PROJECT@ASR_ENGINE_MODE=speech@ASR_REGION=us@ASR_MODEL=chirp_3@ASR_PROJECT=$PROJECT@ASR_BUCKET=$BUCKET@ASR_LANGUAGE_CODES=fa=fa-IR@LLM_ENGINE_MODE=live@LLM_PROVIDER=gemini@LLM_MODEL=gemini-3.5-flash@LLM_ENDPOINT=https://aiplatform.googleapis.com/v1/projects/$PROJECT/locations/global/publishers/google/models@LLM_PRICE_IN_CENTS_PER_MTOK=150@LLM_PRICE_OUT_CENTS_PER_MTOK=900@PIPELINE_STAGES=ingest,transcribe,diarize@MAX_PROCESS_ATTEMPTS=10" \
             --set-secrets "DATABASE_URL=database-url:latest,SESSION_SECRET=session-signing-key:latest,IDP_API_KEY=identity-platform-config:latest" \
             --cpu 4 --memory 2Gi \
             --max-retries 2 --task-timeout 4h --quiet

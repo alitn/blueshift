@@ -391,6 +391,101 @@ func TestDiarizeStageNilSeamsFails(t *testing.T) {
 	}
 }
 
+// TestThreeStageAutoAdvanceDiarizesThenReDriveBillsZero is the end-to-end proof
+// of the activated demo/e2e chain (PIPELINE_STAGES=ingest,transcribe,diarize):
+// ONE Run(ingest) on an UPLOADED episode auto-advances through transcribe (the
+// REAL offline ASR fake) into diarize and finalizes 'ready' at diarize with the
+// speaker grouping persisted. It then proves cost-safety holds across BOTH
+// billable stages sharing the one process_attempts counter:
+//   - the full chain consumes exactly 2 billable attempts (one transcribe, one
+//     diarize) — the shared cap covers both stages;
+//   - a plain re-drive of the fully-processed episode from transcribe onward
+//     bills ZERO further calls on either stage (both idempotency skips hold, the
+//     counter stays put) while still finalizing 'ready'.
+func TestThreeStageAutoAdvanceDiarizesThenReDriveBillsZero(t *testing.T) {
+	engine, err := asr.NewDefaultFakeEngine("bs-asr-1")
+	if err != nil {
+		t.Fatalf("NewDefaultFakeEngine: %v", err)
+	}
+	reg, err := asr.NewRegistry(engine)
+	if err != nil {
+		t.Fatalf("NewRegistry: %v", err)
+	}
+	repo := newFakeRepo()
+	repo.add(epA, orgA, orgA+"/"+epA+"/masters/m.mp4") // 'uploaded', language fa
+	segs := newFakeSegments()
+	diar := &fakeDiarizer{byIdx: map[int]string{0: "S1", 1: "S2"}}
+	speakers := diarizeStore()
+	r := &Runner{
+		Repo: repo, Blob: newRemoteBlob(t), Media: &fakeMedia{}, Log: discard(),
+		Config:   Config{Retries: 2, AutoAdvance: true},
+		ASR:      LangEngineResolver{Registry: reg, Label: "bs-asr-1"},
+		Segments: segs,
+		Diarizer: diar,
+		Speakers: speakers,
+	}
+	if err := r.SetActiveStages([]Stage{StageIngest, StageTranscribe, StageDiarize}); err != nil {
+		t.Fatalf("SetActiveStages: %v", err)
+	}
+	tr := &runningTrigger{r: r}
+	r.Trigger = tr
+
+	// One Run(ingest) drives ingest -> transcribe -> diarize -> ready, the whole
+	// chain in fake mode, just like an uploaded episode in make demo/e2e.
+	if err := r.Run(context.Background(), epA, "ingest"); err != nil {
+		t.Fatalf("Run(ingest): %v", err)
+	}
+
+	e := repo.get(epA)
+	if e.status != "ready" || e.stage != "diarize" {
+		t.Fatalf("after chain: state = (%q,%q), want (ready,diarize)", e.status, e.stage)
+	}
+	if got := segs.get(epA); len(got) != 2 { // the offline fa fixture is two segments
+		t.Fatalf("persisted %d segments, want 2 (the fa fake fixture)", len(segs.get(epA)))
+	}
+	if diar.calls != 1 || speakers.setCalls != 1 {
+		t.Fatalf("after chain: diarizer calls=%d, persist calls=%d, want 1 and 1", diar.calls, speakers.setCalls)
+	}
+	if len(speakers.saved) != 2 || speakers.saved[0] != "S1" || speakers.saved[1] != "S2" {
+		t.Fatalf("persisted grouping = %v, want {0:S1, 1:S2}", speakers.saved)
+	}
+	if calls := tr.snapshot(); len(calls) != 2 ||
+		calls[0] != [2]string{epA, "transcribe"} || calls[1] != [2]string{epA, "diarize"} {
+		t.Fatalf("auto-advance fired %v, want [[%s transcribe] [%s diarize]]", calls, epA, epA)
+	}
+	// SHARED CAP: both billable stages drew on the one per-episode counter.
+	billedAfterChain := e.processAttempts
+	if billedAfterChain != 2 {
+		t.Fatalf("process_attempts after chain = %d, want 2 (one transcribe + one diarize billable attempt)", billedAfterChain)
+	}
+
+	// Re-drive the processed episode from transcribe onward: re-seed at ingest
+	// (the state a transcribe re-drive claims from), preserving process_attempts.
+	// Both outputs already exist, so BOTH idempotency guards must SKIP their paid
+	// calls — transcribe skips (segments exist), still hands off, diarize skips
+	// (speakers assigned) — and the episode re-finalizes 'ready' having billed ZERO.
+	repo.addAtStage(epA, orgA, "ingest", "fa", e.durationMs)
+	repo.setProcessAttempts(epA, billedAfterChain) // addAtStage reset the fresh fakeEp
+	if err := r.Run(context.Background(), epA, "transcribe"); err != nil {
+		t.Fatalf("Run(transcribe) re-drive: %v", err)
+	}
+	if got := repo.get(epA).processAttempts; got != billedAfterChain {
+		t.Errorf("process_attempts after re-drive = %d, want %d (a re-drive of a diarized episode bills ZERO)", got, billedAfterChain)
+	}
+	if diar.calls != 1 {
+		t.Errorf("diarizer calls after re-drive = %d, want 1 (ZERO further billable LLM calls)", diar.calls)
+	}
+	if segs.calls != 1 {
+		t.Errorf("ReplaceSegments calls after re-drive = %d, want 1 (the re-drive persisted nothing)", segs.calls)
+	}
+	if speakers.setCalls != 1 {
+		t.Errorf("SetSegmentSpeakers calls after re-drive = %d, want 1 (the re-drive persisted nothing)", speakers.setCalls)
+	}
+	if e := repo.get(epA); e.status != "ready" || e.stage != "diarize" {
+		t.Errorf("state after re-drive = (%q,%q), want (ready,diarize) — the skips still finalize", e.status, e.stage)
+	}
+}
+
 // textOf is a tiny helper for a diagnostic message.
 func textOf(segs []asr.Segment) string {
 	if len(segs) == 0 {

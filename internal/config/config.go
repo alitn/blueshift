@@ -67,6 +67,20 @@ const (
 	ASRModeSpeech ASRMode = "speech"
 )
 
+// LLMMode selects the language-model backend the worker's diarize stage (and
+// later LLM stages) builds. `fake` replays a committed deterministic recording
+// through the real /internal/llm validate/retry/audit loop (used by `make
+// demo`/`make dev`/CI — offline, free, no credential); `live` calls the
+// provider-backed engine the LLM_* coordinates bind to the neutral label
+// (staging/prod). Like ASRMode, the mode only chooses what backs the label;
+// nothing here names a provider.
+type LLMMode string
+
+const (
+	LLMModeFake LLMMode = "fake"
+	LLMModeLive LLMMode = "live"
+)
+
 // Config is the fully-resolved, validated server configuration.
 type Config struct {
 	// Port is the TCP port the HTTP server binds to.
@@ -146,6 +160,40 @@ type Config struct {
 	// and no "fa" assumption lives in this package. Empty means every tag passes
 	// through to the engine verbatim.
 	ASRLanguageCodes map[string]string
+
+	// LLMMode selects the language-model backend (fake|live). Defaults to fake in
+	// dev and live in staging/prod. Only the worker's diarize stage (and later LLM
+	// stages) uses it; the app reads it solely so a worker it spawns inherits the
+	// value.
+	LLMMode LLMMode
+	// LLMEngineLabel is the neutral label the LLM engine registers under and that
+	// the diarize stage resolves for a language's llm slot (default "bs-lm-1"). It
+	// never carries a provider name.
+	LLMEngineLabel string
+	// LLMProvider, LLMModel, LLMEndpoint, LLMProject, LLMRegion fully specify the
+	// provider-backed engine (live mode). They are read verbatim from the
+	// environment/deploy — never defaulted here, so no provider/model string lives
+	// in this package — and validated by the /internal/llm constructor at wiring
+	// time, not at load, so the app boots without them (only the worker's
+	// live-mode wiring requires them). LLMEndpoint, when set, is the full API base
+	// (up to the models collection) and overrides the project/region derivation —
+	// required for models served only from a non-regional endpoint.
+	LLMProvider string
+	LLMModel    string
+	LLMEndpoint string
+	LLMProject  string
+	LLMRegion   string
+	// LLMAPIKey is the API key for a key-authenticated provider (live mode; the
+	// other auth path uses the runtime's default credentials). Injected from
+	// Secret Manager via env; never logged.
+	LLMAPIKey string
+	// LLMPriceInCentsPerMTok / LLMPriceOutCentsPerMTok are the engine's per-token
+	// rates in integer cents per one million tokens (money in integer cents; a
+	// price is config data, never a code constant). Both set => costs recorded on
+	// every llm_calls row; both unset (0) => cost NULL + WARN per /internal/llm.
+	// Setting exactly one is a load-time error.
+	LLMPriceInCentsPerMTok  int
+	LLMPriceOutCentsPerMTok int
 
 	// PipelineStages is the ordered active stage chain the worker runs and
 	// auto-advances through, from PIPELINE_STAGES (comma-separated). Empty (the
@@ -243,6 +291,10 @@ const (
 	// is unset. It names no provider (CLAUDE.md, "Vendor neutrality").
 	defaultASREngineLabel = "bs-asr-1"
 
+	// defaultLLMEngineLabel is the neutral LLM engine label when LLM_ENGINE_LABEL
+	// is unset. It names no provider (CLAUDE.md, "Vendor neutrality").
+	defaultLLMEngineLabel = "bs-lm-1"
+
 	// defaultProxyMaxRemuxBitrate is the remux bitrate ceiling (~6 Mbps, in
 	// bits/sec) when PROXY_MAX_REMUX_BITRATE is unset. Mirrors
 	// pipeline.defaultMaxRemuxBitrate.
@@ -329,6 +381,10 @@ func load(getenv func(string) string) (Config, error) {
 		return Config{}, err
 	}
 
+	if err := loadLLM(&cfg, getenv); err != nil {
+		return Config{}, err
+	}
+
 	if err := loadSweep(&cfg, getenv); err != nil {
 		return Config{}, err
 	}
@@ -379,6 +435,61 @@ func loadASR(cfg *Config, getenv func(string) string) error {
 		return err
 	}
 	cfg.ASRLanguageCodes = codes
+
+	return nil
+}
+
+// loadLLM resolves the language-model wiring, mirroring loadASR. The mode
+// defaults to fake in dev and live in staging/prod, and fake is refused outside
+// dev so a production worker never silently replays a recording. The provider
+// coordinates (provider/model/endpoint/project/region/key) are read verbatim —
+// never defaulted here, so no provider/model string appears in this package —
+// and their requiredness is enforced by the /internal/llm constructor at wiring
+// time, not at load: the API server (which never builds an LLM client) must boot
+// even when they are unset. The price pair is validated here (both-or-neither)
+// because a half-set price is a config typo that must fail fast, not record
+// half-costed audit rows.
+func loadLLM(cfg *Config, getenv func(string) string) error {
+	isProdLike := cfg.Env == EnvStaging || cfg.Env == EnvProd
+
+	if v := strings.TrimSpace(getenv("LLM_ENGINE_MODE")); v != "" {
+		m := LLMMode(v)
+		switch m {
+		case LLMModeFake, LLMModeLive:
+			cfg.LLMMode = m
+		default:
+			return fmt.Errorf("config: invalid LLM_ENGINE_MODE %q (want fake|live)", v)
+		}
+	} else if isProdLike {
+		cfg.LLMMode = LLMModeLive
+	} else {
+		cfg.LLMMode = LLMModeFake
+	}
+	if isProdLike && cfg.LLMMode == LLMModeFake {
+		return fmt.Errorf("config: LLM_ENGINE_MODE=fake is not allowed when ENV=%s", cfg.Env)
+	}
+
+	cfg.LLMEngineLabel = defaultLLMEngineLabel
+	if v := strings.TrimSpace(getenv("LLM_ENGINE_LABEL")); v != "" {
+		cfg.LLMEngineLabel = v
+	}
+
+	cfg.LLMProvider = strings.TrimSpace(getenv("LLM_PROVIDER"))
+	cfg.LLMModel = strings.TrimSpace(getenv("LLM_MODEL"))
+	cfg.LLMEndpoint = strings.TrimSpace(getenv("LLM_ENDPOINT"))
+	cfg.LLMProject = strings.TrimSpace(getenv("LLM_PROJECT"))
+	cfg.LLMRegion = strings.TrimSpace(getenv("LLM_REGION"))
+	cfg.LLMAPIKey = strings.TrimSpace(getenv("LLM_API_KEY"))
+
+	if err := loadPositiveInt(getenv, "LLM_PRICE_IN_CENTS_PER_MTOK", &cfg.LLMPriceInCentsPerMTok); err != nil {
+		return err
+	}
+	if err := loadPositiveInt(getenv, "LLM_PRICE_OUT_CENTS_PER_MTOK", &cfg.LLMPriceOutCentsPerMTok); err != nil {
+		return err
+	}
+	if (cfg.LLMPriceInCentsPerMTok > 0) != (cfg.LLMPriceOutCentsPerMTok > 0) {
+		return fmt.Errorf("config: LLM_PRICE_IN_CENTS_PER_MTOK and LLM_PRICE_OUT_CENTS_PER_MTOK must be set together")
+	}
 
 	return nil
 }

@@ -1,0 +1,6 @@
+{
+  "assignments": [
+    { "segment_idx": 0, "speaker_key": "S1" },
+    { "segment_idx": 1, "speaker_key": "S2" }
+  ]
+}

@@ -21,6 +21,8 @@ import (
 	"blueshift/internal/asr"
 	"blueshift/internal/blob"
 	"blueshift/internal/config"
+	"blueshift/internal/diarize"
+	"blueshift/internal/llm"
 	"blueshift/internal/logx"
 	"blueshift/internal/media"
 	"blueshift/internal/pipeline"
@@ -46,7 +48,7 @@ func run(args []string) error {
 	}
 	episodeID, stage := args[0], args[1]
 	if !pipeline.ValidStage(stage) {
-		return fmt.Errorf("unknown stage %q (want ingest|transcribe)", stage)
+		return fmt.Errorf("unknown stage %q (want ingest|transcribe|diarize)", stage)
 	}
 
 	cfg, err := config.Load()
@@ -133,6 +135,26 @@ func run(args []string) error {
 		runner.Segments = st
 	}
 
+	// Only the diarize stage consults the LLM and the speaker store, so build the
+	// llm.Client just for a chain that includes diarize — the same cost-safety
+	// conditional as the ASR block above: a worker whose chain excludes diarize
+	// constructs NO LLM client (nothing to misconfigure, nothing that could ever
+	// bill), matching the runner's nil-Diarizer contract. In live mode the client
+	// constructor fail-fasts on missing provider coordinates; in fake mode the
+	// committed deterministic grouping recording replays through the same
+	// validate/retry loop, audited into llm_calls exactly like a live call.
+	if runner.HasStage(pipeline.StageDiarize) {
+		llmClient, err := buildLLMClient(cfg, st, logger)
+		if err != nil {
+			return fmt.Errorf("worker: llm: %w", err)
+		}
+		runner.Diarizer = diarize.Engine{
+			Gen:    llmClient,
+			Labels: diarize.LangLabelResolver{Label: cfg.LLMEngineLabel},
+		}
+		runner.Speakers = st
+	}
+
 	if err := runner.Run(ctx, episodeID, stage); err != nil {
 		// The episode is already recorded 'failed' with a neutral error_id; the
 		// raw cause is in the logs above. Returning the error exits nonzero so the
@@ -210,6 +232,53 @@ func buildASRRegistry(cfg config.Config, logger *slog.Logger) (*asr.Registry, er
 		return nil, err
 	}
 	return asr.NewRegistry(engine)
+}
+
+// buildLLMClient constructs the audited, schema-validated LLM client the diarize
+// stage generates through. The mode selects what backs the neutral label
+// (cfg.LLMEngineLabel, default bs-lm-1): `fake` replays the committed
+// deterministic grouping recording (dev/demo/CI — offline, free, no credential)
+// through the real validate/retry loop; `live` binds the label to the
+// provider-backed engine fully specified by the LLM_* env (provider, model, and
+// endpoint or project+region per docs/RUNBOOK.md — llm.New validates
+// requiredness, so a misconfigured live worker fails fast here, exactly like the
+// ASR path). Both modes audit every call into llm_calls through the store.
+// Provider names are confined to /internal/llm and the deploy env; nothing they
+// touch is client-visible.
+func buildLLMClient(cfg config.Config, st *store.Store, logger *slog.Logger) (*llm.Client, error) {
+	auditor := llm.NewDBAuditor(st)
+	switch cfg.LLMMode {
+	case config.LLMModeLive:
+		var price *llm.Price
+		if cfg.LLMPriceInCentsPerMTok > 0 && cfg.LLMPriceOutCentsPerMTok > 0 {
+			price = &llm.Price{
+				InputPerMTokCents:  cfg.LLMPriceInCentsPerMTok,
+				OutputPerMTokCents: cfg.LLMPriceOutCentsPerMTok,
+			}
+		}
+		return llm.New(llm.Options{
+			Engines: []llm.EngineConfig{{
+				Label:    cfg.LLMEngineLabel,
+				Provider: cfg.LLMProvider,
+				Model:    cfg.LLMModel,
+				Price:    price,
+			}},
+			Auditor: auditor,
+			Logger:  logger,
+			Gemini: llm.GeminiOptions{
+				Endpoint: cfg.LLMEndpoint,
+				Project:  cfg.LLMProject,
+				Region:   cfg.LLMRegion,
+			},
+			Claude: llm.ClaudeOptions{
+				Endpoint: cfg.LLMEndpoint,
+				APIKey:   cfg.LLMAPIKey,
+			},
+		})
+	default:
+		return llm.NewFakeClient(auditor, llm.NewFakeEngine(
+			cfg.LLMEngineLabel, "bs-lm-fake", diarize.DefaultFakeGroupingResponse()))
+	}
 }
 
 // buildTrigger constructs the worker's own trigger for auto-advancing to the next

@@ -12,9 +12,10 @@ import {
 
 // The Episode view (prototype screen 01, transcript slice): opened from the
 // Library by the keyboard path, it renders the proxy player beside the RTL
-// Persian transcript. The demo seed now runs the two-stage chain (fake engine),
-// so the sample carries a REAL deterministic transcript; the fixture stub is
-// used only where a spec needs exact content control (speaker chip, summary).
+// Persian transcript. The demo seed now runs the three-stage chain (fake ASR +
+// fake LLM diarize), so the sample carries a REAL deterministic transcript with
+// speaker keys; the fixture stub is used only where a spec needs exact content
+// control (a single/mixed chip state, known summary).
 
 test('opens from the Library by keyboard and renders the transcript verbatim', async ({ page }) => {
   await openSampleEpisode(page, { transcript: TRANSCRIPT_FIXTURE });
@@ -44,14 +45,23 @@ test('opens from the Library by keyboard and renders the transcript verbatim', a
 });
 
 test('the seeded sample renders its transcribed segments from real data', async ({ page }) => {
-  // No transcript stub: the demo seed now runs the fake transcribe stage, so the
-  // real sample carries a populated (offline fixture) transcript — two
-  // speaker-agnostic Persian segments. Proxy stubbed away for a video-free shot.
+  // No transcript stub: the demo seed drives the full fake three-stage chain
+  // (ingest → transcribe → diarize), so the real sample carries a populated
+  // (offline fixture) transcript AND deterministic speaker keys. Proxy stubbed
+  // away for a video-free shot.
   await openSampleEpisode(page, { proxy: 'none' });
   await expect(page.getByTestId('transcript-summary')).toBeVisible();
   await expect(page.getByTestId('transcript-segment')).toHaveCount(2);
   await expect(page.getByTestId('transcript-empty')).toHaveCount(0);
   await expect(page.getByTestId('transcript-error')).toHaveCount(0);
+
+  // Speaker chips are live: the seeded sample is diarized by the deterministic
+  // fake grouping — one chip per turn, two distinct episode-local keys (host S1,
+  // guest S2), raw labels only.
+  const chips = page.getByTestId('speaker-chip');
+  await expect(chips).toHaveCount(2);
+  await expect(chips.nth(0)).toHaveText('S1');
+  await expect(chips.nth(1)).toHaveText('S2');
 });
 
 test('an episode with no segments shows the neutral awaiting state, not an error', async ({

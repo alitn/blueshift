@@ -50,11 +50,12 @@ export async function waitForFonts(page: Page): Promise<void> {
 }
 
 // A test-only fixture transcript for specs that need exact content control
-// (known summary text, a diarized turn — the demo chain has no diarize stage, so
-// the REAL seeded transcript never carries speaker keys). It is stubbed at the
-// network boundary and never enters the demo/product data; specs asserting the
-// real two-stage seed use the live transcript instead. Persian, RTL, with a
-// verbatim ZWNJ (U+200C) and one diarized + one un-diarized turn.
+// (known summary text, and the mixed diarized + un-diarized shape the real
+// three-stage seed can no longer produce — every seeded segment now carries a
+// speaker key). It is stubbed at the network boundary and never enters the
+// demo/product data; specs asserting the real three-stage seed use the live
+// transcript instead. Persian, RTL, with a verbatim ZWNJ (U+200C) and one
+// diarized + one un-diarized turn.
 // Word count = 5 + 4 = 9 (words are the verbatim source of truth for the count).
 export const TRANSCRIPT_FIXTURE = {
   episode_id: 'ep_fixturetranscript',

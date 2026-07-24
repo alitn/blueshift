@@ -2,13 +2,14 @@ import { test, expect } from '@playwright/test';
 import { login, libraryRow, isolate, SAMPLE, uploadFixture } from './helpers';
 
 // AC5: the upload-to-Ready flow, driven end to end against the real demo stack
-// (real API, real worker ingest → transcribe, real proxy playback). Transcribe is
-// now in the demo active chain (fake engine), so upload → READY traverses TWO
-// stages and both the seeded sample and the uploaded episode carry a real
-// transcript. Starts unauthenticated so the login UI itself is exercised here.
+// (real API, real worker ingest → transcribe → diarize, real proxy playback).
+// Transcribe AND diarize are in the demo active chain (fake engines), so
+// upload → READY traverses THREE stages and both the seeded sample and the
+// uploaded episode carry a real transcript with deterministic speaker keys.
+// Starts unauthenticated so the login UI itself is exercised here.
 test.use({ storageState: { cookies: [], origins: [] } });
 
-test('login → sample READY → upload → READY via ingest+transcribe → transcripts render', async ({
+test('login → sample READY → upload → READY via ingest+transcribe+diarize → transcripts render with speaker chips', async ({
   page
 }, testInfo) => {
   await login(page);
@@ -43,23 +44,28 @@ test('login → sample READY → upload → READY via ingest+transcribe → tran
 
   // The new row advances via polling (no reload): non-terminal → READY. The
   // worker was triggered by the app (WORKER_TRIGGER=exec) on upload-complete and
-  // now traverses TWO stages — ingest, then by auto-advance transcribe (fake) —
-  // before it reads READY. Isolate by the unique nonce so exactly this run's row
-  // matches.
+  // now traverses THREE stages — ingest, then by auto-advance transcribe and
+  // diarize (both fake) — before it reads READY. Isolate by the unique nonce so
+  // exactly this run's row matches.
   await isolate(page, nonce);
   const uploaded = libraryRow(page, uploadTitle);
   await expect(uploaded).toBeVisible();
   await expect(uploaded.getByText('READY')).toBeVisible({ timeout: 60_000 });
 
-  // PROVE the auto-advance fake path — the exact regression this task fixes: the
-  // uploaded episode reached READY by auto-advancing ingest → transcribe, so its
-  // transcript is populated by the fake engine, not just the explicitly-seeded
-  // sample. Open it and confirm real segments rendered.
+  // PROVE the auto-advance fake path end to end: the uploaded episode reached
+  // READY by auto-advancing ingest → transcribe → diarize, so its transcript is
+  // populated by the fake ASR AND diarized by the fake grouping — not just the
+  // explicitly-seeded sample. Open it and confirm real segments rendered with
+  // both deterministic speaker chips (S1 host, S2 guest).
   await uploaded.focus();
   await page.keyboard.press('Enter');
   await page.waitForURL('**/episode/**');
   await expect(page.getByTestId('transcript-summary')).toBeVisible();
   await expect(page.getByTestId('transcript-segment')).toHaveCount(2);
+  const uploadedChips = page.getByTestId('speaker-chip');
+  await expect(uploadedChips).toHaveCount(2);
+  await expect(uploadedChips.nth(0)).toHaveText('S1');
+  await expect(uploadedChips.nth(1)).toHaveText('S2');
   await page.getByRole('link', { name: 'LIBRARY' }).click();
   await page.waitForURL(/\/$/);
 
@@ -70,14 +76,16 @@ test('login → sample READY → upload → READY via ingest+transcribe → tran
   await page.keyboard.press('Enter');
   await page.waitForURL('**/episode/**');
 
-  // The proxy plays a real signed source beside the transcript pane. The seed now
-  // runs the fake transcribe stage too, so the sample renders a real (offline
-  // fixture) transcript rather than the neutral awaiting state.
+  // The proxy plays a real signed source beside the transcript pane. The seed
+  // runs the fake transcribe AND diarize stages, so the sample renders a real
+  // (offline fixture) transcript with speaker chips rather than the neutral
+  // awaiting state.
   const video = page.getByTestId('proxy-video');
   await expect(video).toBeVisible();
   await expect(video).toHaveAttribute('src', /.+/);
   await expect(page.getByTestId('transcript-empty')).toHaveCount(0);
   await expect(page.getByTestId('transcript-segment')).toHaveCount(2);
+  await expect(page.getByTestId('speaker-chip')).toHaveCount(2);
 
   // The top-bar breadcrumb routes back to the Library by keyboard (a real link).
   await page.getByRole('link', { name: 'LIBRARY' }).click();

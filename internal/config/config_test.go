@@ -524,6 +524,91 @@ func TestLoadASRInvalid(t *testing.T) {
 	}
 }
 
+func TestLoadLLMDefaults(t *testing.T) {
+	// Dev defaults to the offline fake engine under the neutral label; no provider
+	// coordinates are required and no price is configured.
+	cfg, err := load(env(nil))
+	if err != nil {
+		t.Fatalf("load: %v", err)
+	}
+	if cfg.LLMMode != LLMModeFake {
+		t.Errorf("LLMMode = %q, want fake in dev", cfg.LLMMode)
+	}
+	if cfg.LLMEngineLabel != defaultLLMEngineLabel {
+		t.Errorf("LLMEngineLabel = %q, want %q", cfg.LLMEngineLabel, defaultLLMEngineLabel)
+	}
+	if cfg.LLMPriceInCentsPerMTok != 0 || cfg.LLMPriceOutCentsPerMTok != 0 {
+		t.Errorf("price = %d/%d, want unset (0/0)", cfg.LLMPriceInCentsPerMTok, cfg.LLMPriceOutCentsPerMTok)
+	}
+}
+
+func TestLoadLLMProdDefaultsLive(t *testing.T) {
+	// Prod derives live mode and must still boot with the LLM coordinates unset:
+	// requiredness is enforced by the /internal/llm constructor at wiring time,
+	// not here, so the API server (which never builds an LLM client) is never
+	// blocked on them.
+	cfg, err := load(env(map[string]string{
+		"ENV": "prod", "SESSION_SECRET": "s", "IDP_API_KEY": "k", "GCS_BUCKET": "b",
+	}))
+	if err != nil {
+		t.Fatalf("load: %v", err)
+	}
+	if cfg.LLMMode != LLMModeLive {
+		t.Errorf("LLMMode = %q, want live in prod", cfg.LLMMode)
+	}
+}
+
+func TestLoadLLMLiveOverrides(t *testing.T) {
+	cfg, err := load(env(map[string]string{
+		"LLM_ENGINE_MODE":              "live",
+		"LLM_ENGINE_LABEL":             "bs-lm-2",
+		"LLM_PROVIDER":                 "some-provider",
+		"LLM_MODEL":                    "some-model",
+		"LLM_ENDPOINT":                 "https://models.example.test/v1/models",
+		"LLM_PROJECT":                  "bs-proj",
+		"LLM_REGION":                   "some-region",
+		"LLM_API_KEY":                  "k",
+		"LLM_PRICE_IN_CENTS_PER_MTOK":  "150",
+		"LLM_PRICE_OUT_CENTS_PER_MTOK": "900",
+	}))
+	if err != nil {
+		t.Fatalf("load: %v", err)
+	}
+	if cfg.LLMMode != LLMModeLive {
+		t.Errorf("LLMMode = %q, want live", cfg.LLMMode)
+	}
+	if cfg.LLMEngineLabel != "bs-lm-2" {
+		t.Errorf("LLMEngineLabel = %q, want bs-lm-2", cfg.LLMEngineLabel)
+	}
+	if cfg.LLMProvider != "some-provider" || cfg.LLMModel != "some-model" ||
+		cfg.LLMEndpoint != "https://models.example.test/v1/models" ||
+		cfg.LLMProject != "bs-proj" || cfg.LLMRegion != "some-region" || cfg.LLMAPIKey != "k" {
+		t.Errorf("live coords = %q/%q/%q/%q/%q (key set: %t)",
+			cfg.LLMProvider, cfg.LLMModel, cfg.LLMEndpoint, cfg.LLMProject, cfg.LLMRegion, cfg.LLMAPIKey != "")
+	}
+	if cfg.LLMPriceInCentsPerMTok != 150 || cfg.LLMPriceOutCentsPerMTok != 900 {
+		t.Errorf("price = %d/%d, want 150/900", cfg.LLMPriceInCentsPerMTok, cfg.LLMPriceOutCentsPerMTok)
+	}
+}
+
+func TestLoadLLMInvalid(t *testing.T) {
+	cases := map[string]map[string]string{
+		"invalid mode":       {"LLM_ENGINE_MODE": "magic"},
+		"fake in prod":       {"ENV": "prod", "SESSION_SECRET": "s", "IDP_API_KEY": "k", "GCS_BUCKET": "b", "LLM_ENGINE_MODE": "fake"},
+		"price not a number": {"LLM_PRICE_IN_CENTS_PER_MTOK": "cheap", "LLM_PRICE_OUT_CENTS_PER_MTOK": "900"},
+		"price nonpositive":  {"LLM_PRICE_IN_CENTS_PER_MTOK": "0", "LLM_PRICE_OUT_CENTS_PER_MTOK": "900"},
+		"price input only":   {"LLM_PRICE_IN_CENTS_PER_MTOK": "150"},
+		"price output only":  {"LLM_PRICE_OUT_CENTS_PER_MTOK": "900"},
+	}
+	for name, m := range cases {
+		t.Run(name, func(t *testing.T) {
+			if _, err := load(env(m)); err == nil {
+				t.Fatalf("load(%v): expected error, got nil", m)
+			}
+		})
+	}
+}
+
 func TestParseLevel(t *testing.T) {
 	cases := map[string]slog.Level{
 		"debug":   slog.LevelDebug,

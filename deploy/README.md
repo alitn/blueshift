@@ -183,8 +183,8 @@ Same image, `--command /app/worker`, invoked per stage as
 | `DATABASE_URL`   | secret `database-url`             | `--set-secrets`     |
 | `SESSION_SECRET` | secret `session-signing-key`      | `--set-secrets`     |
 | `IDP_API_KEY`    | secret `identity-platform-config` | `--set-secrets`     |
-| `PIPELINE_STAGES`      | `ingest,transcribe` (drop back to `ingest` = billable kill switch) | `--set-env-vars` |
-| `MAX_PROCESS_ATTEMPTS` | `10` (per-episode billable-attempt ceiling; code default 5 — prod raised while retrying the failed episode, codified 2026-07-24) | `--set-env-vars` |
+| `PIPELINE_STAGES`      | `ingest,transcribe,diarize` (drop back to `ingest` = billable kill switch) | `--set-env-vars` |
+| `MAX_PROCESS_ATTEMPTS` | `10` (per-episode billable-attempt ceiling SHARED by transcribe + diarize; code default 5 — prod raised while retrying the failed episode, codified 2026-07-24) | `--set-env-vars` |
 | `PIPELINE_REPROCESS`   | unset / `false` (deliberate reprocess only, per-execution)      | `--set-env-vars` |
 | `ASR_ENGINE_MODE`      | `speech` (binds `bs-asr-1` to the provider-backed engine)       | `--set-env-vars` |
 | `ASR_MODEL`            | `chirp_3` (chirp_2's fa-IR "no longer generally available" — prod 403, 2026-07-24) | `--set-env-vars` |
@@ -192,6 +192,11 @@ Same image, `--command /app/worker`, invoked per stage as
 | `ASR_PROJECT`          | `<project>`                                                     | `--set-env-vars` |
 | `ASR_BUCKET`           | `<project>-media`                                               | `--set-env-vars` |
 | `ASR_LANGUAGE_CODES`   | `fa=fa-IR`                                                      | `--set-env-vars` |
+| `LLM_ENGINE_MODE`      | `live` (binds `bs-lm-1` to the provider-backed engine; `fake` is refused in prod) | `--set-env-vars` |
+| `LLM_PROVIDER`         | `gemini`                                                        | `--set-env-vars` |
+| `LLM_MODEL`            | `gemini-3.5-flash` (current GA flash-class model, verified against provider docs 2026-07-24; `gemini-3-flash` is preview-only, `gemini-3.6-flash` GA'd 2026-07-21 with regional rollout unconfirmed) | `--set-env-vars` |
+| `LLM_ENDPOINT`         | `https://aiplatform.googleapis.com/v1/projects/<project>/locations/global/publishers/google/models` — Gemini 3.x is served from the GLOBAL endpoint only (regional hosts 404); the explicit base overrides the engine's regional project+region derivation | `--set-env-vars` |
+| `LLM_PRICE_IN_CENTS_PER_MTOK` / `LLM_PRICE_OUT_CENTS_PER_MTOK` | `150` / `900` (integer cents per 1M tokens; provider pricing 2026-07-24 — the config-row price `llm_calls` costs every call with) | `--set-env-vars` |
 
 Also: `--set-cloudsql-instances`, `--service-account app-runtime`,
 `--cpu 4 --memory 2Gi --max-retries 2 --task-timeout 4h` (sized for a real
