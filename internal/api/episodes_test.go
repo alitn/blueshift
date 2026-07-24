@@ -30,15 +30,19 @@ type storedEpisode struct {
 // principal of org B asking for org A's episode gets found=false, exactly as the
 // SQL WHERE org_id = $2 would produce.
 type fakeRepo struct {
-	mu         sync.Mutex
-	eps        map[string]storedEpisode // key: ep_ encoded public id
-	counter    byte
-	failCreate error
-	failList   error
-	failDelete error
+	mu          sync.Mutex
+	eps         map[string]storedEpisode       // key: ep_ encoded public id
+	transcripts map[string][]TranscriptSegment // key: ep_ encoded public id
+	counter     byte
+	failCreate  error
+	failList    error
+	failDelete  error
+	failTranscr error
 }
 
-func newFakeRepo() *fakeRepo { return &fakeRepo{eps: map[string]storedEpisode{}} }
+func newFakeRepo() *fakeRepo {
+	return &fakeRepo{eps: map[string]storedEpisode{}, transcripts: map[string][]TranscriptSegment{}}
+}
 
 func orgBytes(orgPublicID string) [16]byte {
 	h := sha256.Sum256([]byte(orgPublicID))
@@ -94,6 +98,31 @@ func (f *fakeRepo) GetEpisode(_ context.Context, orgPublicID, episodePublicID st
 		return EpisodeRow{}, false, nil
 	}
 	return s.row, true, nil
+}
+
+// EpisodeTranscript returns the segments seeded for the episode via setTranscript,
+// org-scoped exactly like the store: a row not owned by orgPublicID (or unknown)
+// yields an empty slice, never another org's transcript. An owned episode with no
+// seeded segments yields an empty slice (the "awaiting transcript" 200 case).
+func (f *fakeRepo) EpisodeTranscript(_ context.Context, orgPublicID, episodePublicID string) ([]TranscriptSegment, error) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	if f.failTranscr != nil {
+		return nil, f.failTranscr
+	}
+	s, ok := f.eps[episodePublicID]
+	if !ok || s.owner != orgPublicID {
+		return nil, nil
+	}
+	return f.transcripts[episodePublicID], nil
+}
+
+// setTranscript seeds an episode's transcript segments so the transcript handler
+// can be exercised without a database.
+func (f *fakeRepo) setTranscript(epID string, segs []TranscriptSegment) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	f.transcripts[epID] = segs
 }
 
 func (f *fakeRepo) SetEpisodeMasterKey(_ context.Context, orgPublicID, episodePublicID, key string) (EpisodeRow, bool, error) {

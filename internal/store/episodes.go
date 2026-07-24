@@ -174,6 +174,64 @@ func (s *Store) GetEpisode(ctx context.Context, orgPublicID, episodePublicID str
 	return episodeRow(org.PublicID, ep), true, nil
 }
 
+// EpisodeTranscript returns an episode's transcript segments in idx order,
+// projected to the neutral api.TranscriptSegment shape (verbatim text + word
+// timings + the additive speaker_key, "" until diarized). It is org-scoped and
+// resolves the org exactly like GetEpisode does — by the principal's org public
+// id (a canonical UUID from the session), NOT the base32-encoded id the
+// pipeline's segment methods use — so the id contract matches its EpisodeRepo
+// siblings. An unknown/foreign org or an episode not visible to the org yields an
+// empty slice (no error): the handler establishes existence (404 vs empty) via
+// GetEpisode, so a lost race here degrades to an empty transcript, never a fault.
+//
+// Verbatim invariant (CLAUDE.md): text and word tuples are surfaced exactly as
+// stored (decodeWords preserves U+200C ZWNJ byte-for-byte); this read never
+// normalizes or rewrites the transcript.
+func (s *Store) EpisodeTranscript(ctx context.Context, orgPublicID, episodePublicID string) ([]api.TranscriptSegment, error) {
+	org, err := s.resolveOrg(ctx, orgPublicID)
+	if err != nil {
+		return nil, err
+	}
+	epUUID, err := ids.Decode(ids.Episode, episodePublicID)
+	if err != nil {
+		return nil, nil
+	}
+	ep, err := s.GetEpisodeByPublicID(ctx, db.GetEpisodeByPublicIDParams{
+		PublicID: pgUUID(epUUID),
+		OrgID:    org.ID,
+	})
+	if errors.Is(err, pgx.ErrNoRows) {
+		return nil, nil
+	}
+	if err != nil {
+		return nil, fmt.Errorf("store: resolve episode for transcript: %w", err)
+	}
+	rows, err := s.ListSegmentsByEpisode(ctx, ep.ID)
+	if err != nil {
+		return nil, fmt.Errorf("store: list transcript segments: %w", err)
+	}
+	out := make([]api.TranscriptSegment, 0, len(rows))
+	for _, r := range rows {
+		words, derr := decodeWords(r.Words)
+		if derr != nil {
+			return nil, derr
+		}
+		ws := make([]api.TranscriptWord, 0, len(words))
+		for _, w := range words {
+			ws = append(ws, api.TranscriptWord{Text: w.Text, StartMs: w.StartMs, EndMs: w.EndMs, Conf: w.Conf})
+		}
+		out = append(out, api.TranscriptSegment{
+			Idx:        int(r.Idx),
+			StartMs:    int(r.StartMs),
+			EndMs:      int(r.EndMs),
+			Text:       r.Text,
+			SpeakerKey: r.SpeakerKey.String, // pgtype.Text zero value -> "" when NULL
+			Words:      ws,
+		})
+	}
+	return out, nil
+}
+
 // SetEpisodeMasterKey records the verified master object key on an org-scoped
 // episode. found=false when the episode is not visible to the org.
 func (s *Store) SetEpisodeMasterKey(ctx context.Context, orgPublicID, episodePublicID, key string) (api.EpisodeRow, bool, error) {

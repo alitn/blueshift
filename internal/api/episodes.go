@@ -83,6 +83,12 @@ type EpisodeRepo interface {
 	// remove a fresh orphan. It is a no-op (no error) when nothing matched.
 	DeleteOrphanEpisode(ctx context.Context, orgPublicID, episodePublicID string) error
 	GetEpisode(ctx context.Context, orgPublicID, episodePublicID string) (EpisodeRow, bool, error)
+	// EpisodeTranscript returns the episode's transcript segments in idx order,
+	// org-scoped (an episode not visible to the org yields an empty slice, never
+	// another org's data). Existence is established by GetEpisode, so an empty
+	// slice here means "no segments yet" — the handler renders a 200 empty
+	// transcript, not a 404.
+	EpisodeTranscript(ctx context.Context, orgPublicID, episodePublicID string) ([]TranscriptSegment, error)
 	SetEpisodeMasterKey(ctx context.Context, orgPublicID, episodePublicID, key string) (EpisodeRow, bool, error)
 	// ListEpisodes returns the org's episodes newest-first, excluding
 	// soft-deleted rows. It never sees another org's data (the query is
