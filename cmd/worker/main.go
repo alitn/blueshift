@@ -97,6 +97,12 @@ func run(args []string) error {
 			// the metered ASR / LLM cost once PIPELINE_STAGES activates a billable stage.
 			MaxProcessAttempts: cfg.MaxProcessAttempts,
 			Reprocess:          cfg.Reprocess,
+			// Resegmentation thresholds (SEGMENT_GAP_MS etc.). Zero (unset)
+			// defers to the code defaults in internal/asr, so a bare worker
+			// splits provider mega-segments with the documented 700ms/30s/60w.
+			SegmentGapMs:         cfg.SegmentGapMs,
+			SegmentMaxDurationMs: cfg.SegmentMaxDurationMs,
+			SegmentMaxWords:      cfg.SegmentMaxWords,
 		},
 		// The worker launches the next stage on auto-advance through the same
 		// neutral trigger the API server uses (its SA already holds the runner

@@ -196,23 +196,35 @@ func (r *Runner) runTranscribe(parent context.Context, ep Episode, attempt int) 
 	}
 
 	// Stitch shifts each chunk's ASR-relative timings by its source-time offset,
-	// renumbers idx globally, and Validate-checks the merge. The explicit Validate
-	// below is defence in depth (stitch already validates) and documents the
-	// boundary invariant the persisted transcript must satisfy.
+	// renumbers idx globally, and Validate-checks the merge.
 	stitched, err := asr.StitchTranscripts(engine.Label(), ep.Language, chunks)
 	if err != nil {
 		return stageOutput{}, fmt.Errorf("stitch transcripts: %w", err)
 	}
-	if err := stitched.Validate(); err != nil {
+
+	// Resegment: split provider mega-segments (a whole take returned as ONE
+	// segment — the 2026-07-24 prod receipt) into readable timed turns. Pure,
+	// deterministic word-gap arithmetic in internal/asr: boundaries fall only
+	// between words at their ASR-measured times, the words themselves cross
+	// unchanged (verbatim invariant — segmentation only regroups), and an
+	// already-readable transcript passes through untouched. Thresholds come
+	// from config (SEGMENT_GAP_MS etc.); <= 0 defers to the asr code defaults.
+	segmented := asr.Resegment(stitched, r.Config.resegmentOptions())
+
+	// The explicit Validate is defence in depth (stitch already validated its
+	// merge, and Resegment preserves validity) and documents the boundary
+	// invariant the persisted transcript must satisfy.
+	if err := segmented.Validate(); err != nil {
 		return stageOutput{}, fmt.Errorf("validate transcript: %w", err)
 	}
 
-	if err := r.Segments.ReplaceSegments(ctx, ep.OrgID, ep.PublicID, stitched.Segments); err != nil {
+	if err := r.Segments.ReplaceSegments(ctx, ep.OrgID, ep.PublicID, segmented.Segments); err != nil {
 		return stageOutput{}, fmt.Errorf("persist segments: %w", err)
 	}
 	r.logger().InfoContext(ctx, "transcribe complete",
 		slog.String("episode", ep.PublicID), slog.String("engine", engine.Label()),
-		slog.Int("chunks", len(chunks)), slog.Int("segments", len(stitched.Segments)))
+		slog.Int("chunks", len(chunks)), slog.Int("segments_stitched", len(stitched.Segments)),
+		slog.Int("segments", len(segmented.Segments)))
 
 	// No outputs to record: the terminal MarkReady preserves ingest's proxy key and
 	// measured duration (MarkEpisodeReady COALESCEs a NULL arg).

@@ -224,6 +224,34 @@ func TestLoadWorkerDefaults(t *testing.T) {
 	if cfg.Reprocess {
 		t.Error("Reprocess default = true, want false (a plain run must never re-bill)")
 	}
+	// Resegmentation knobs default to zero — "defer to the code defaults in
+	// internal/asr" — so the defaults live in exactly one place.
+	if cfg.SegmentGapMs != 0 || cfg.SegmentMaxDurationMs != 0 || cfg.SegmentMaxWords != 0 {
+		t.Errorf("segmentation knobs = %d/%d/%d, want 0/0/0 (unset defers to code defaults)",
+			cfg.SegmentGapMs, cfg.SegmentMaxDurationMs, cfg.SegmentMaxWords)
+	}
+}
+
+// TestLoadSegmentationKnobs covers the transcribe stage's resegmentation
+// thresholds: explicit positive values flow through verbatim.
+func TestLoadSegmentationKnobs(t *testing.T) {
+	cfg, err := load(env(map[string]string{
+		"SEGMENT_GAP_MS":          "550",
+		"SEGMENT_MAX_DURATION_MS": "20000",
+		"SEGMENT_MAX_WORDS":       "40",
+	}))
+	if err != nil {
+		t.Fatalf("load: %v", err)
+	}
+	if cfg.SegmentGapMs != 550 {
+		t.Errorf("SegmentGapMs = %d, want 550", cfg.SegmentGapMs)
+	}
+	if cfg.SegmentMaxDurationMs != 20_000 {
+		t.Errorf("SegmentMaxDurationMs = %d, want 20000", cfg.SegmentMaxDurationMs)
+	}
+	if cfg.SegmentMaxWords != 40 {
+		t.Errorf("SegmentMaxWords = %d, want 40", cfg.SegmentMaxWords)
+	}
 }
 
 // TestLoadCostSafety covers the cost-safety worker knobs: the per-episode
@@ -346,6 +374,13 @@ func TestLoadWorkerInvalid(t *testing.T) {
 		"nonpositive max attempts":  {"MAX_PROCESS_ATTEMPTS": "0"},
 		"negative max attempts":     {"MAX_PROCESS_ATTEMPTS": "-1"},
 		"bad reprocess":             {"PIPELINE_REPROCESS": "maybe"},
+		"bad segment gap":           {"SEGMENT_GAP_MS": "long"},
+		"nonpositive segment gap":   {"SEGMENT_GAP_MS": "0"},
+		"negative segment gap":      {"SEGMENT_GAP_MS": "-700"},
+		"bad segment duration":      {"SEGMENT_MAX_DURATION_MS": "half a minute"},
+		"nonpositive segment dur":   {"SEGMENT_MAX_DURATION_MS": "0"},
+		"bad segment words":         {"SEGMENT_MAX_WORDS": "sixty"},
+		"nonpositive segment words": {"SEGMENT_MAX_WORDS": "0"},
 	}
 	for name, m := range cases {
 		t.Run(name, func(t *testing.T) {

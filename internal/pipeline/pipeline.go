@@ -19,6 +19,7 @@ import (
 	"os"
 	"time"
 
+	"blueshift/internal/asr"
 	"blueshift/internal/media"
 )
 
@@ -291,6 +292,15 @@ type Config struct {
 	// already-completed stage; only an explicit reprocess execution sets it. It does
 	// NOT bypass the attempt cap (MaxProcessAttempts still applies).
 	Reprocess bool
+	// SegmentGapMs / SegmentMaxDurationMs / SegmentMaxWords tune the transcribe
+	// stage's deterministic pause-based resegmentation (asr.Resegment): the
+	// inter-word silence treated as a turn boundary, and the duration/word caps
+	// per produced segment. They map to SEGMENT_GAP_MS / SEGMENT_MAX_DURATION_MS
+	// / SEGMENT_MAX_WORDS; any value <= 0 defers to the code defaults in
+	// internal/asr (700ms / 30s / 60 words — the single home of those defaults).
+	SegmentGapMs         int
+	SegmentMaxDurationMs int
+	SegmentMaxWords      int
 }
 
 const (
@@ -356,6 +366,17 @@ func (c Config) maxProcessAttempts() int {
 		return DefaultMaxProcessAttempts
 	}
 	return c.MaxProcessAttempts
+}
+
+// resegmentOptions packages the segmentation knobs for asr.Resegment. Fields
+// left <= 0 stay zero here; asr.Resegment resolves them to its own documented
+// defaults, keeping internal/asr the single home of the default thresholds.
+func (c Config) resegmentOptions() asr.ResegmentOptions {
+	return asr.ResegmentOptions{
+		GapMs:         c.SegmentGapMs,
+		MaxDurationMs: c.SegmentMaxDurationMs,
+		MaxWords:      c.SegmentMaxWords,
+	}
 }
 
 // ErrStageFailed reports that a stage exhausted its attempts. The episode is

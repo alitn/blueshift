@@ -3,6 +3,7 @@ package pipeline
 import (
 	"context"
 	"errors"
+	"reflect"
 	"regexp"
 	"strings"
 	"sync"
@@ -326,6 +327,127 @@ func TestTranscribeMultiChunkOffsets(t *testing.T) {
 		if len(got[i].Words) != 1 || got[i].Words[0].StartMs != wantStart {
 			t.Errorf("segment %d word start = %v, want %d (word offset applied)", i, got[i].Words, wantStart)
 		}
+	}
+}
+
+// flatSegWords flattens segments' words in order — the sequence the verbatim
+// invariant says resegmentation must preserve exactly.
+func flatSegWords(segs []asr.Segment) []asr.Word {
+	var out []asr.Word
+	for _, s := range segs {
+		out = append(out, s.Words...)
+	}
+	return out
+}
+
+// TestTranscribeResegmentsProviderMegaSegment drives the stage path over the
+// embedded fa_long_take recording — ONE provider segment of 96 words, the
+// 2026-07-24 prod shape where a whole take came back as a single wall of text —
+// via its exact audio key, and proves the PERSISTED transcript is the
+// resegmented view: multiple bounded, timed turns whose flattened words are the
+// recording's byte-for-byte (verbatim: segmentation only regroups), with
+// contiguous idx. The two-turn demo fixture stays covered by
+// TestTwoStageAutoAdvanceTranscribesThenReDriveBillsZero, which still persists
+// exactly its 2 (already readable, untouched) segments.
+func TestTranscribeResegmentsProviderMegaSegment(t *testing.T) {
+	engine, err := asr.NewDefaultFakeEngine("bs-asr-1")
+	if err != nil {
+		t.Fatalf("NewDefaultFakeEngine: %v", err)
+	}
+	const (
+		orgDemo = "org_demo"
+		epLong  = "ep_demo_long" // matches the fixture's exact audio key
+	)
+	audioKey, err := blob.ProxyKey(orgDemo, epLong, audioFilename)
+	if err != nil {
+		t.Fatalf("ProxyKey: %v", err)
+	}
+	// The recording as the engine returns it: one mega-segment.
+	raw, err := engine.Transcribe(context.Background(), asr.TranscribeRequest{AudioKey: audioKey, Language: "fa"})
+	if err != nil {
+		t.Fatalf("Transcribe fixture: %v", err)
+	}
+	if len(raw.Segments) != 1 {
+		t.Fatalf("fa_long_take recording has %d segments, want 1 (a mega-segment needing resegmentation)", len(raw.Segments))
+	}
+
+	repo := newFakeRepo()
+	repo.addAtStage(epLong, orgDemo, "ingest", "fa", 40_000)
+	segs := newFakeSegments()
+	r := &Runner{
+		Repo: repo, Blob: newRemoteBlob(t), Media: &fakeMedia{}, Log: discard(),
+		Config:   Config{Retries: 2},
+		ASR:      fakeASR{engine: engine},
+		Segments: segs,
+		stages:   twoStageActive(),
+	}
+	if err := r.Run(context.Background(), epLong, "transcribe"); err != nil {
+		t.Fatalf("Run(transcribe): %v", err)
+	}
+
+	got := segs.get(epLong)
+	if len(got) < 2 {
+		t.Fatalf("persisted %d segments; the mega recording must be split into multiple timed turns", len(got))
+	}
+	// Verbatim: the flattened word sequence (text bytes incl. any U+200C,
+	// timings, confidence, order) is the recording's exactly.
+	if !reflect.DeepEqual(flatSegWords(got), flatSegWords(raw.Segments)) {
+		t.Error("persisted words differ from the recording; resegmentation must only regroup")
+	}
+	for i, s := range got {
+		if s.Idx != i {
+			t.Errorf("segment %d Idx = %d, want %d (resequenced)", i, s.Idx, i)
+		}
+		if len(s.Words) == 0 {
+			t.Fatalf("segment %d persisted empty", i)
+		}
+		if len(s.Words) > asr.DefaultResegmentMaxWords {
+			t.Errorf("segment %d carries %d words, max %d", i, len(s.Words), asr.DefaultResegmentMaxWords)
+		}
+		if len(s.Words) > 1 && s.EndMs-s.StartMs > asr.DefaultResegmentMaxDurationMs {
+			t.Errorf("segment %d spans %dms, max %d", i, s.EndMs-s.StartMs, asr.DefaultResegmentMaxDurationMs)
+		}
+		if s.StartMs != s.Words[0].StartMs || s.EndMs != s.Words[len(s.Words)-1].EndMs {
+			t.Errorf("segment %d bounds [%d,%d] are not its first/last word times", i, s.StartMs, s.EndMs)
+		}
+	}
+}
+
+// TestTranscribeSegmentationConfigApplied proves the stage passes the
+// SEGMENT_* thresholds through to the resegmenter: a tight MaxWords forces the
+// standard two-turn fixture (5+5 words) into pieces of at most that many words,
+// while the words themselves stay verbatim.
+func TestTranscribeSegmentationConfigApplied(t *testing.T) {
+	engine, err := asr.NewDefaultFakeEngine("bs-asr-1")
+	if err != nil {
+		t.Fatalf("NewDefaultFakeEngine: %v", err)
+	}
+	repo := newFakeRepo()
+	repo.addAtStage(epA, orgA, "ingest", "fa", 90_000)
+	segs := newFakeSegments()
+	r := &Runner{
+		Repo: repo, Blob: newRemoteBlob(t), Media: &fakeMedia{}, Log: discard(),
+		Config:   Config{Retries: 2, SegmentMaxWords: 2},
+		ASR:      fakeASR{engine: engine},
+		Segments: segs,
+		stages:   twoStageActive(),
+	}
+	if err := r.Run(context.Background(), epA, "transcribe"); err != nil {
+		t.Fatalf("Run(transcribe): %v", err)
+	}
+	got := segs.get(epA)
+	if len(got) <= 2 {
+		t.Fatalf("persisted %d segments, want > 2 (SegmentMaxWords=2 must split the 5-word turns)", len(got))
+	}
+	total := 0
+	for i, s := range got {
+		if len(s.Words) == 0 || len(s.Words) > 2 {
+			t.Errorf("segment %d carries %d words, want 1-2 (configured cap)", i, len(s.Words))
+		}
+		total += len(s.Words)
+	}
+	if total != 10 {
+		t.Errorf("persisted %d words in total, want 10 (verbatim regroup)", total)
 	}
 }
 

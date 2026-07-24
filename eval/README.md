@@ -2,10 +2,12 @@
 
 `make eval` runs the Go golden evaluations under `./eval/...`. These are the
 committed-baseline checks CLAUDE.md calls the golden tests: today, the language
-registry's text-normalization / ZWNJ-idempotency goldens (`eval/lang`). More
-land here as the pipeline arrives (diarization anchor stability, caption
-fidelity, `.ass` byte-exactness); the Python pipeline suite in `tools/eval/`
-runs alongside once present.
+registry's text-normalization / ZWNJ-idempotency goldens (`eval/lang`), the
+diarization anchor-merge stability goldens (`eval/diarize`), and the
+pause-based resegmentation goldens (`eval/segment` — a provider mega-segment
+split into readable timed turns, byte-pinned). More land here as the pipeline
+arrives (caption fidelity, `.ass` byte-exactness); the Python pipeline suite in
+`tools/eval/` runs alongside once present.
 
 CI runs `make eval` in the `check` job on every PR (`.github/workflows/pr.yml`).
 
@@ -19,6 +21,16 @@ It also asserts idempotency (`Normalize(Normalize(x)) == Normalize(x)`).
 
 Adding a registered language without a `corpus.json` fails the suite — new
 languages must bring eval fixtures.
+
+`eval/diarize` and `eval/segment` follow the same discipline over their own
+fixtures: `eval/diarize` replays a committed model response through the real
+diarizer and byte-compares the produced speaker grouping; `eval/segment` runs
+a committed mega-segment transcript (the prod "whole take as ONE segment"
+shape) through `asr.Resegment` at the default thresholds and byte-compares the
+produced turns, hard-asserting verbatim word preservation (incl. U+200C),
+ASR-only boundary times, bounds, and idempotence alongside the golden. Both
+discover languages from the registry (by declared engine slot) and fail on a
+capable language without fixtures.
 
 ## Fail-closed on drift
 
@@ -34,6 +46,8 @@ Architect-authorized change, never a quiet fix:
 
 ```
 go test ./eval/lang -run TestNormalizationGolden -update
+go test ./eval/diarize -run TestDiarizeAnchorMergeGolden -update
+go test ./eval/segment -run TestResegmentGolden -update
 ```
 
 Review the resulting diff to `testdata/<code>/golden.json` before committing.

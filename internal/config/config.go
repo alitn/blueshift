@@ -182,6 +182,19 @@ type Config struct {
 	// worker execution (per docs/RUNBOOK.md), never as a standing worker default.
 	Reprocess bool
 
+	// SegmentGapMs / SegmentMaxDurationMs / SegmentMaxWords tune the transcribe
+	// stage's deterministic pause-based resegmentation (the split of provider
+	// mega-segments into readable timed turns): the inter-word silence (ms)
+	// treated as a turn boundary, and the per-segment duration (ms) / word caps.
+	// They map to SEGMENT_GAP_MS / SEGMENT_MAX_DURATION_MS / SEGMENT_MAX_WORDS.
+	// Zero (unset) defers to the code defaults owned by internal/asr
+	// (700ms / 30s / 60 words) — the defaults deliberately live in code, not
+	// here, so this package never shadows them. Only the worker's transcribe
+	// stage consults these.
+	SegmentGapMs         int
+	SegmentMaxDurationMs int
+	SegmentMaxWords      int
+
 	// ProxyMaxRemuxBitrate is the overall-bitrate ceiling (bits/sec) under which an
 	// already-browser-compatible master is remuxed (stream copy) into its proxy
 	// rather than transcoded. Above it, the master is transcoded so a proxy always
@@ -540,6 +553,38 @@ func loadWorker(cfg *Config, getenv func(string) string) error {
 		cfg.Reprocess = b
 	}
 
+	// Resegmentation thresholds. Unset (zero) defers to the code defaults in
+	// internal/asr; an explicit value must be a positive integer.
+	if err := loadPositiveInt(getenv, "SEGMENT_GAP_MS", &cfg.SegmentGapMs); err != nil {
+		return err
+	}
+	if err := loadPositiveInt(getenv, "SEGMENT_MAX_DURATION_MS", &cfg.SegmentMaxDurationMs); err != nil {
+		return err
+	}
+	if err := loadPositiveInt(getenv, "SEGMENT_MAX_WORDS", &cfg.SegmentMaxWords); err != nil {
+		return err
+	}
+
+	return nil
+}
+
+// loadPositiveInt reads an optional positive-integer env var into dst, leaving
+// dst untouched when the var is unset/empty. A set value that is not a positive
+// integer is a hard error, so a typo fails startup instead of silently running
+// with a default.
+func loadPositiveInt(getenv func(string) string, name string, dst *int) error {
+	v := strings.TrimSpace(getenv(name))
+	if v == "" {
+		return nil
+	}
+	n, err := strconv.Atoi(v)
+	if err != nil {
+		return fmt.Errorf("config: invalid %s %q (want a positive integer): %w", name, v, err)
+	}
+	if n <= 0 {
+		return fmt.Errorf("config: %s must be positive, got %q", name, v)
+	}
+	*dst = n
 	return nil
 }
 
