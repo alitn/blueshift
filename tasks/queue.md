@@ -92,7 +92,8 @@ cited patterns in its spec. "Staging" in SPEC-M1's gate = the PoC prod service
 | 5b | m1-tool-pinning | pin migrate CLI via `go run -tags postgres` (go tool infeasible) | committed |
 | 5c | m1-stages-config-gate | REGRESSION MITIGATION: PIPELINE_STAGES config, default ingest-only; prod-verified fixed | committed |
 | 5d | m1-e2e-gates-trunk | Playwright e2e gates push-to-main rollout, fail-closed (process fix) | committed |
-| 5e | m1-transcribe-reenable | re-enable transcribe: demo env fix + two-stage e2e + (gated) prod ASR | spec-ready (human-gated) |
+| 5e | m1-transcribe-reenable | transcribe ON: SIGPIPE trigger fix, fake demo, real prod engine | committed |
+| 5f | m1-chirp3-switch | chirp_2 fa-IR closed by provider → chirp_3/us; drop word-confidence flag | committed |
 | 6 | m1-diarize-stage | text-anchored LLM diarization, anchor-merge + golden stability tests in make eval | queued |
 | 7 | m1-speaker-naming | naming evidence (intro quote + lower-third crop), speaker_directory merge (migration: speakers) | queued |
 | 8 | m1-shots-stage | scdet shot boundaries + per-shot 9:16 bbox proposals stored (migration: shots) | queued |
@@ -297,12 +298,20 @@ cited patterns in its spec. "Staging" in SPEC-M1's gate = the PoC prod service
   OPERATIONAL: Speech service-agent bucket grant was documented in RUNBOOK but NOT live —
   Architect granted + verified roles/storage.objectViewer for the speech service agent
   (verify-don't-assume vindicated). Human budget alert set 2026-07-24.
-  **chirp_3 re-verified on human challenge (receipts):** fa-IR transcription = Preview ✓
-  exists, BUT the feature table marks word-level timestamps "not supported" for chirp_3,
-  and the diarization language list (zh, de, en-GB/IN/US, es-ES/US, fr-CA/FR, hi, it, ja,
-  ko, pt-BR) does NOT include Persian. chirp_2 + text-anchored LLM diarize (~1–2¢/episode)
-  stands on facts; engine swappable behind /internal/asr if chirp_3+ gains fa timestamps
-  +diarization. BACKLOG: no reprocess path exists for old READY episodes (claim gate
+  **chirp_3 re-verified on human challenge — DOCS OVERTURNED BY LIVE TEST (receipts):**
+  the feature table says word timestamps "not supported" for chirp_3, but a live
+  us-multiregion sync recognize (fa-IR, enableWordTimeOffsets, same 30s broadcast sample)
+  returned 84 words WITH offsets — the docs are wrong/stale; the human's challenge was
+  right. HOWEVER: fa on chirp_3 is Preview (no SLA); the diarization language list still
+  EXCLUDES Persian (so no free diarization either way); and the first-token quality
+  wobbled on the very same audio (chirp_2: "سیزدهم مهرماه" ✓ vs chirp_3: "۱۶همم مهر ماه" —
+  morphologically broken + different compound tokenization, which matters for caption
+  fidelity). DECISION: chirp_2 stays the default on quality/stability grounds TODAY; the
+  batch 20-min-with-timestamps cap is already handled by our engine-agnostic chunk+stitch
+  (PlanChunks/StitchTranscripts) so no workaround is needed for either engine. BACKLOG:
+  m1-asr-engine-eval — data-driven chirp_2 vs chirp_3 bake-off (WER on longer fa fixtures,
+  tokenization/ZWNJ behavior, cost/latency) once fa-IR exits Preview or earlier if quality
+  becomes a complaint; switching is config + one impl task behind /internal/asr. BACKLOG: no reprocess path exists for old READY episodes (claim gate
   correctly refuses ready; RUNBOOK SQL reset needs DB access) — small m1-reprocess-api
   task later; fresh uploads flow through the full chain automatically.
 - 2026-07-23 (night) — **REGRESSION found + owned.** The transcribe stage (c641226) was
