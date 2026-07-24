@@ -58,7 +58,7 @@ this table. Alpha-composite colors are expressed as rgba over the surface they s
 | `accent-selection` | `rgba(78,127,194,0.35)` | text ::selection |
 | `accent-wash-08` | `rgba(78,127,194,0.08)` | active row background (Library render row) |
 | `accent-wash-12` | `rgba(78,127,194,0.12)` | active top-bar indicator fill |
-| `accent-wash-14` | `rgba(78,127,194,0.14)` | moment-span highlight in transcript |
+| `accent-wash-14` | `rgba(78,127,194,0.14)` | moment-span highlight in transcript; active (playhead-current) transcript segment fill |
 | `accent-wash-16` | `rgba(78,127,194,0.16)` | selected waveform region fill |
 | `accent-wash-18` | `rgba(78,127,194,0.18)` | IN CLIP chip fill, active filter chip, active moment tab |
 | `accent-border` | `rgba(78,127,194,0.55)` | active/selected control borders (prototype uses 0.5–0.6; canonical 0.55) |
@@ -138,6 +138,14 @@ PROXY 720P / RENDER / PROXY PLAYBACK / "AUTO FA · CLICK WORD TO SEEK") use `fon
   the Library table has no ID column.
 - **Status bar:** mono 9.5px `text-muted`: `QUEUE n · STORAGE a / b TB · ENGINE nnn MS` · (right) version; live render progress inline when active. Engine labels are always Blueshift-neutral (`ENGINE 412 MS`) — never provider names.
 - **Focus:** keyboard focus = 1px `accent-border` ring + `accent-wash-12` fill on the focused control (prototype shows hover only; focus mirrors hover with accent instead of white).
+
+**Active transcript segment (playhead sync — codified 2026-07-24).** The segment
+containing the video playhead renders with `accent-wash-14` background plus a 2px
+`accent` edge on the **inline-start** border (the reading-start side — right in RTL),
+geometry-compensated so at-rest layout is identical to inactive segments. Hover on any
+segment = `hover-row` wash + pointer cursor; keyboard focus = accent focus ring
+(+`accent-wash-12` fill when not active). Segments are click/Enter/Space-activatable;
+`aria-current` marks the active one.
 
 ## RTL & Persian content
 
