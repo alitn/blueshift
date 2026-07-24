@@ -31,6 +31,32 @@ func (t *fakeTrigger) snapshot() [][2]string {
 	return out
 }
 
+// runningTrigger drives auto-advance in-process: when a stage hands off it runs
+// the NEXT stage synchronously against the same Runner — the same effect the exec
+// trigger achieves across processes (child inherits the parent's env) in make
+// demo/e2e, so a single Run(ingest) exercises the whole ingest->transcribe chain.
+// It records each launched stage like fakeTrigger.
+type runningTrigger struct {
+	r     *Runner
+	mu    sync.Mutex
+	calls [][2]string
+}
+
+func (t *runningTrigger) Trigger(ctx context.Context, episodePublicID, stage string) error {
+	t.mu.Lock()
+	t.calls = append(t.calls, [2]string{episodePublicID, stage})
+	t.mu.Unlock()
+	return t.r.Run(ctx, episodePublicID, stage)
+}
+
+func (t *runningTrigger) snapshot() [][2]string {
+	t.mu.Lock()
+	defer t.mu.Unlock()
+	out := make([][2]string, len(t.calls))
+	copy(out, t.calls)
+	return out
+}
+
 // twoStageRegistry builds a fake ingest -> transcribe pipeline. ingest reports
 // the given outputs (a proxy key + duration, like the real stage); transcribe is
 // the terminal stage and produces nothing. ran[0]/ran[1] count how many times

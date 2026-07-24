@@ -1,12 +1,5 @@
 import { test, expect } from '@playwright/test';
-import {
-  isolate,
-  libraryRow,
-  openSampleEpisode,
-  SAMPLE,
-  waitForFonts,
-  TRANSCRIPT_FIXTURE
-} from './helpers';
+import { isolate, libraryRow, openSampleEpisode, SAMPLE, waitForFonts } from './helpers';
 
 // The repo's committed visual baselines. Captured per viewport project
 // (desktop-1440, laptop-1280) into tests/__screenshots__/<project>/. Updating
@@ -27,13 +20,13 @@ test('Library — seeded sample (visual baseline)', async ({ page }) => {
 });
 
 test('Episode — transcript (visual baseline)', async ({ page }) => {
-  // Deterministic populated transcript via a test-only fixture stub (the demo
-  // seed is ingest-only), and the proxy stubbed away so the shot is stable.
-  // NOTE: the episode-{platform}.png baselines are NOT yet committed — their
-  // creation is an Architect-authorised act; this test reports a missing
-  // baseline until then.
-  await openSampleEpisode(page, { transcript: TRANSCRIPT_FIXTURE, proxy: 'none' });
+  // The REAL seeded transcript: the demo seed now drives the sample through the
+  // fake transcribe stage, so the shot captures the deterministic (offline
+  // fixture) segments with no transcript stub. Only the proxy is stubbed away,
+  // so no live <video> frame destabilises the shot.
+  await openSampleEpisode(page, { proxy: 'none' });
   await expect(page.getByTestId('transcript-summary')).toBeVisible();
+  await expect(page.getByTestId('transcript-segment')).toHaveCount(2);
   await waitForFonts(page);
   await expect(page).toHaveScreenshot('episode.png', { fullPage: true });
 });

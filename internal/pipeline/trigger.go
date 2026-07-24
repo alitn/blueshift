@@ -47,9 +47,7 @@ func (t *ExecTrigger) Trigger(ctx context.Context, episodePublicID, stage string
 		return fmt.Errorf("pipeline: exec trigger has no worker binary configured")
 	}
 	// Detach from the request context: the worker must outlive this HTTP request.
-	cmd := exec.Command(t.Bin, episodePublicID, stage) //nolint:gosec // Bin is operator config, args are ids.
-	cmd.Stdout = io.Discard
-	cmd.Stderr = io.Discard
+	cmd := newWorkerCmd(t.Bin, episodePublicID, stage)
 	if err := cmd.Start(); err != nil {
 		return fmt.Errorf("pipeline: start worker: %w", err)
 	}
@@ -70,6 +68,33 @@ func (t *ExecTrigger) Trigger(ctx context.Context, episodePublicID, stage string
 			slog.Int("pid", pid), slog.String("episode", episodePublicID), slog.String("stage", stage))
 	}()
 	return nil
+}
+
+// newWorkerCmd builds the detached worker invocation. Two wiring decisions are
+// load-bearing for the exec-trigger auto-advance chain (app -> ingest worker ->
+// transcribe worker in `make demo`/`make dev`/CI) and are pinned by
+// TestExecTriggerCmdNullDeviceStdioAndInheritedEnv:
+//
+//   - Stdout/Stderr stay nil, so os/exec binds the child's fds 1/2 to the OS
+//     null device — never to parent-owned pipes. Setting io.Discard here would
+//     force an os.Pipe drained by the parent process; the moment a SHORT-LIVED
+//     parent exits (a worker that just auto-advanced into the next stage), the
+//     pipe's read end closes and the spawned worker's next stdout log write
+//     dies of SIGPIPE (the Go runtime forwards EPIPE on fds 1/2 as a fatal
+//     signal) BEFORE it can claim its episode — wedging the episode
+//     'processing' at the completed stage and timing out the demo/e2e
+//     upload->READY flow. The null device has no owner, so the spawned worker
+//     survives its parent unconditionally. The long-lived app parent never hit
+//     this (it drains the pipes for its whole lifetime), which is why only the
+//     worker->worker auto-advance leg broke.
+//   - Env stays nil, so the child inherits this process's entire environment —
+//     the only channel that carries PIPELINE_STAGES / ASR_ENGINE_MODE /
+//     DATABASE_URL / WORKER_* down the spawn chain, keeping every stage of an
+//     uploaded episode on the same active chain and (fake) engine as the
+//     process that launched it.
+func newWorkerCmd(bin, episodePublicID, stage string) *exec.Cmd {
+	// cmd.Stdout, cmd.Stderr, cmd.Env are deliberately left nil — see above.
+	return exec.Command(bin, episodePublicID, stage) //nolint:gosec // Bin is operator config, args are ids.
 }
 
 // Provider endpoints. Confined to this file (and server logs): the Cloud Run

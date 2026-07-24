@@ -56,6 +56,31 @@ func TestExecTriggerNoBinary(t *testing.T) {
 	}
 }
 
+// TestExecTriggerCmdNullDeviceStdioAndInheritedEnv pins the two load-bearing
+// wiring decisions of the spawned worker command (newWorkerCmd — see its doc):
+//
+//   - Stdout/Stderr nil: os/exec then binds the child's fds 1/2 to the null
+//     device, so a spawned worker SURVIVES its parent's exit. Any parent-owned
+//     sink (io.Discard forces an os.Pipe drained by the parent) SIGPIPE-kills
+//     the detached transcribe worker the moment its short-lived ingest-worker
+//     parent exits — the episode wedges 'processing' mid-chain and the demo/e2e
+//     upload->READY flow times out (the original transcribe-enable regression).
+//   - Env nil: the child inherits the parent's whole environment — the only
+//     channel that carries PIPELINE_STAGES / ASR_ENGINE_MODE etc. through the
+//     app -> ingest -> transcribe exec chain in make demo/e2e.
+func TestExecTriggerCmdNullDeviceStdioAndInheritedEnv(t *testing.T) {
+	cmd := newWorkerCmd("/bin/true", "ep_x", "transcribe")
+	if cmd.Stdout != nil || cmd.Stderr != nil {
+		t.Errorf("worker cmd stdio = (%v, %v), want (nil, nil) — null device, never a parent-owned pipe", cmd.Stdout, cmd.Stderr)
+	}
+	if cmd.Env != nil {
+		t.Errorf("worker cmd Env has %d entries, want nil (inherit the parent's whole environment)", len(cmd.Env))
+	}
+	if got := cmd.Args; len(got) != 3 || got[1] != "ep_x" || got[2] != "transcribe" {
+		t.Errorf("worker cmd args = %v, want [<bin> ep_x transcribe]", got)
+	}
+}
+
 // --- cloudrun trigger --------------------------------------------------------
 
 func TestCloudRunTriggerStartsExecution(t *testing.T) {

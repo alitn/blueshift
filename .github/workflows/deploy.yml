@@ -350,12 +350,26 @@ jobs:
           # when unitless — so the prior "3600" meant 1h). --max-retries stays 2
           # (1 + 2 = 3 attempts). On timeout Cloud Run sends SIGTERM (~10s grace)
           # before SIGKILL; the worker traps it and marks the episode failed.
+          # Transcribe is ON in prod: PIPELINE_STAGES=ingest,transcribe activates
+          # the two-stage chain and ASR_ENGINE_MODE=speech binds the neutral
+          # bs-asr-1 label to the real provider-backed engine (region/model/project/
+          # bucket/language-codes per docs/RUNBOOK.md — the engine constructor
+          # validates requiredness at wiring time, and cmd/worker builds the engine
+          # ONLY when transcribe is in the active chain, so the cost-safety guards
+          # wrap the now-live billable call). WORKER_TRIGGER=cloudrun makes the
+          # worker auto-advance ingest->transcribe by starting a SEPARATE Job
+          # execution (an exec-trigger subprocess would be SIGKILLed when the ingest
+          # execution's container is torn down, wedging the episode); it inherits
+          # this same deployed env, so the transcribe execution has the ASR config.
+          # PIPELINE_STAGES's value has a comma, so the list uses gcloud's ^@^
+          # delimiter. Provider names are allowed in this deploy script (CLAUDE.md);
+          # nothing here is client-visible — externally the engine is only bs-asr-1.
           gcloud run jobs deploy blueshift-worker \
             --image "$IMAGE:${{ github.sha }}" --region "$REGION" \
             --command /app/worker \
             --service-account "$RUNTIME_SA" \
             --set-cloudsql-instances "$SQL_INSTANCE" \
-            --set-env-vars "ENV=prod,AUTH_MODE=identity,BLOB_MODE=gcs,GCS_BUCKET=$BUCKET" \
+            --set-env-vars "^@^ENV=prod@AUTH_MODE=identity@BLOB_MODE=gcs@GCS_BUCKET=$BUCKET@WORKER_TRIGGER=cloudrun@WORKER_JOB_NAME=blueshift-worker@WORKER_JOB_REGION=$REGION@WORKER_JOB_PROJECT=$PROJECT@ASR_ENGINE_MODE=speech@ASR_REGION=$REGION@ASR_MODEL=chirp_2@ASR_PROJECT=$PROJECT@ASR_BUCKET=$BUCKET@ASR_LANGUAGE_CODES=fa=fa-IR@PIPELINE_STAGES=ingest,transcribe" \
             --set-secrets "DATABASE_URL=database-url:latest,SESSION_SECRET=session-signing-key:latest,IDP_API_KEY=identity-platform-config:latest" \
             --cpu 4 --memory 2Gi \
             --max-retries 2 --task-timeout 4h --quiet

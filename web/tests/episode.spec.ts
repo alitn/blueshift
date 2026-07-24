@@ -12,8 +12,9 @@ import {
 
 // The Episode view (prototype screen 01, transcript slice): opened from the
 // Library by the keyboard path, it renders the proxy player beside the RTL
-// Persian transcript. The transcript is served from a test-only fixture stub
-// (the demo seed is ingest-only); everything else hits the real demo stack.
+// Persian transcript. The demo seed now runs the two-stage chain (fake engine),
+// so the sample carries a REAL deterministic transcript; the fixture stub is
+// used only where a spec needs exact content control (speaker chip, summary).
 
 test('opens from the Library by keyboard and renders the transcript verbatim', async ({ page }) => {
   await openSampleEpisode(page, { transcript: TRANSCRIPT_FIXTURE });
@@ -42,11 +43,26 @@ test('opens from the Library by keyboard and renders the transcript verbatim', a
   expect(await firstBody.locator('bdi').count()).toBe(1);
 });
 
-test('the seeded sample (no segments) shows the neutral awaiting state, not an error', async ({
+test('the seeded sample renders its transcribed segments from real data', async ({ page }) => {
+  // No transcript stub: the demo seed now runs the fake transcribe stage, so the
+  // real sample carries a populated (offline fixture) transcript — two
+  // speaker-agnostic Persian segments. Proxy stubbed away for a video-free shot.
+  await openSampleEpisode(page, { proxy: 'none' });
+  await expect(page.getByTestId('transcript-summary')).toBeVisible();
+  await expect(page.getByTestId('transcript-segment')).toHaveCount(2);
+  await expect(page.getByTestId('transcript-empty')).toHaveCount(0);
+  await expect(page.getByTestId('transcript-error')).toHaveCount(0);
+});
+
+test('an episode with no segments shows the neutral awaiting state, not an error', async ({
   page
 }) => {
-  // No stub: the real demo sample is ingest-only, so its transcript is empty.
-  await openSampleEpisode(page, { proxy: 'none' });
+  // The awaiting state (e.g. an episode still mid-processing) — every ready demo
+  // episode is now transcribed, so it is exercised with a stubbed empty transcript.
+  await openSampleEpisode(page, {
+    transcript: { episode_id: 'ep_awaiting', language: 'fa', segments: [] },
+    proxy: 'none'
+  });
   await expect(page.getByTestId('transcript-empty')).toBeVisible();
   await expect(page.getByTestId('transcript-error')).toHaveCount(0);
 });

@@ -447,6 +447,84 @@ func TestTranscribeStageReDriveBillsZero(t *testing.T) {
 	}
 }
 
+// TestTwoStageAutoAdvanceTranscribesThenReDriveBillsZero is the end-to-end proof
+// of the demo/e2e path the original re-enable regression missed: an UPLOADED
+// episode (status 'uploaded') claimed at ingest AUTO-ADVANCES into transcribe and
+// finalizes 'ready' WITH segments — driven by the REAL offline FakeEngine through
+// the LangEngineResolver, exactly as make demo/e2e wire it (ASR_ENGINE_MODE=fake,
+// PIPELINE_STAGES=ingest,transcribe). The whole chain runs from ONE Run(ingest)
+// via a trigger that runs the next stage in-process, mirroring the exec trigger's
+// env-inheriting cross-process spawn. It then proves cost-safety survives the
+// two-stage flow: a plain re-drive of the already-transcribed episode makes ZERO
+// further billable ASR calls (process_attempts and the persist count both stay
+// put) while still finalizing 'ready'.
+func TestTwoStageAutoAdvanceTranscribesThenReDriveBillsZero(t *testing.T) {
+	engine, err := asr.NewDefaultFakeEngine("bs-asr-1")
+	if err != nil {
+		t.Fatalf("NewDefaultFakeEngine: %v", err)
+	}
+	reg, err := asr.NewRegistry(engine)
+	if err != nil {
+		t.Fatalf("NewRegistry: %v", err)
+	}
+	repo := newFakeRepo()
+	repo.add(epA, orgA, orgA+"/"+epA+"/masters/m.mp4") // 'uploaded', language fa
+	segs := newFakeSegments()
+	r := &Runner{
+		Repo: repo, Blob: newRemoteBlob(t), Media: &fakeMedia{}, Log: discard(),
+		Config:   Config{Retries: 2, AutoAdvance: true},
+		ASR:      LangEngineResolver{Registry: reg, Label: "bs-asr-1"},
+		Segments: segs,
+	}
+	if err := r.SetActiveStages([]Stage{StageIngest, StageTranscribe}); err != nil {
+		t.Fatalf("SetActiveStages: %v", err)
+	}
+	tr := &runningTrigger{r: r}
+	r.Trigger = tr
+
+	// One Run(ingest) drives ingest -> (auto-advance) -> transcribe -> ready, the
+	// whole chain in fake mode, just like an uploaded episode in make demo/e2e.
+	if err := r.Run(context.Background(), epA, "ingest"); err != nil {
+		t.Fatalf("Run(ingest): %v", err)
+	}
+
+	e := repo.get(epA)
+	if e.status != "ready" || e.stage != "transcribe" {
+		t.Fatalf("after chain: state = (%q,%q), want (ready,transcribe)", e.status, e.stage)
+	}
+	if got := segs.get(epA); len(got) != 2 { // the offline fa fixture is two segments
+		t.Fatalf("persisted %d segments, want 2 (the fa fake fixture)", len(segs.get(epA)))
+	}
+	if calls := tr.snapshot(); len(calls) != 1 || calls[0] != [2]string{epA, "transcribe"} {
+		t.Fatalf("auto-advance fired %v, want exactly [[%s transcribe]]", calls, epA)
+	}
+	billedAfterChain := e.processAttempts
+	if billedAfterChain != 1 {
+		t.Fatalf("process_attempts after chain = %d, want 1 (one billable transcribe attempt)", billedAfterChain)
+	}
+	if segs.calls != 1 {
+		t.Fatalf("ReplaceSegments calls after chain = %d, want 1", segs.calls)
+	}
+
+	// Re-drive the transcribe stage: re-seed the episode at ingest (the state a
+	// retry/re-drive claims from), preserving process_attempts. The persisted
+	// segments already exist, so the idempotency guard SKIPS the billable call.
+	repo.addAtStage(epA, orgA, "ingest", "fa", e.durationMs)
+	repo.setProcessAttempts(epA, billedAfterChain) // addAtStage reset the fresh fakeEp
+	if err := r.Run(context.Background(), epA, "transcribe"); err != nil {
+		t.Fatalf("Run(transcribe) re-drive: %v", err)
+	}
+	if got := repo.get(epA).processAttempts; got != billedAfterChain {
+		t.Errorf("process_attempts after re-drive = %d, want %d (a re-drive of a transcribed episode bills ZERO)", got, billedAfterChain)
+	}
+	if segs.calls != 1 {
+		t.Errorf("ReplaceSegments calls after re-drive = %d, want 1 (the re-drive persisted nothing)", segs.calls)
+	}
+	if e := repo.get(epA); e.status != "ready" || e.stage != "transcribe" {
+		t.Errorf("state after re-drive = (%q,%q), want (ready,transcribe) — a skip still finalizes", e.status, e.stage)
+	}
+}
+
 // TestTranscribeStageReprocessReTranscribes proves the explicit reprocess override:
 // with Config.Reprocess set, the stage IGNORES the idempotency skip and re-runs the
 // paid ASR engine even though the episode already has segments — the deliberate

@@ -147,10 +147,12 @@ demo_build_binaries() {
 }
 
 # demo_migrate_seed — apply migrations, seed identities + the deterministic
-# sample episode, then run the REAL worker ingest so the sample is 'ready'. With
-# PIPELINE_STAGES unset the active chain is ingest-only, so ingest is terminal and
-# the sample boots 'ready' at current_stage=ingest (transcribe stays registered
-# but out of the chain until it is re-enabled). Sets EP_ID.
+# sample episode, then drive it through the REAL worker two-stage chain
+# (ingest -> transcribe) so the sample boots 'ready' at current_stage=transcribe
+# WITH a fake-engine transcript. The two stages run as separate blocking worker
+# invocations with auto-advance OFF, so the seed is deterministic (no detached
+# child races it) and fully transcribed before the demo banner prints. ASR runs
+# in fake mode (ASR_ENGINE_MODE=fake) — deterministic, offline, no cost. Sets EP_ID.
 demo_migrate_seed() {
   # Migrate CLI is version-locked to the go.mod require (v4.19.1) via `go run`, so
   # it can never drift from the library and needs no PATH binary. The `postgres`
@@ -166,12 +168,30 @@ demo_migrate_seed() {
   EP_ID="$("$BIN_DIR/demoseed" -devseed "$REPO_ROOT/fixtures/dev-seed.sql" | tail -n 1)"
   [ -n "$EP_ID" ] || die "demoseed did not return a sample episode id"
 
-  log "running worker ingest for sample episode ($EP_ID)"
-  WORKER_TRIGGER="exec" "$BIN_DIR/worker" "$EP_ID" ingest
+  # Two-stage chain, driven explicitly one blocking step at a time. ingest runs
+  # with auto-advance OFF (PIPELINE_STAGES makes it non-terminal, so it hands off
+  # and stays 'processing' at ingest without spawning a detached transcribe), then
+  # the fake transcribe stage finalizes the sample 'ready' with segments. The
+  # uploaded-episode path (via the app) keeps auto-advance ON; this deterministic
+  # drive is only so the seeded sample is READY-with-transcript at boot.
+  log "running worker ingest -> transcribe (fake) for sample episode ($EP_ID)"
+  WORKER_TRIGGER="exec" PIPELINE_STAGES="ingest,transcribe" ASR_ENGINE_MODE="fake" \
+    PIPELINE_AUTO_ADVANCE="false" "$BIN_DIR/worker" "$EP_ID" ingest
+  WORKER_TRIGGER="exec" PIPELINE_STAGES="ingest,transcribe" ASR_ENGINE_MODE="fake" \
+    "$BIN_DIR/worker" "$EP_ID" transcribe
 }
 
 # demo_start_app — start the API server in the background, record its pid, and
 # wait for it to accept connections. Env mirrors a dev deployment.
+#
+# PIPELINE_STAGES + ASR_ENGINE_MODE are worker-stage settings the app itself never
+# reads (it only ever triggers the ingest entry stage), but they MUST be on the
+# app's environment: the exec trigger spawns the ingest worker with the app's env
+# inherited (cmd.Env=nil), and that worker's own exec trigger likewise hands its
+# env to the transcribe worker it auto-advances into. So an UPLOADED episode's
+# whole ingest->transcribe chain inherits the two-stage active chain and fake ASR
+# from here. Omit PIPELINE_STAGES and the spawned ingest worker falls back to the
+# default ingest-only chain — ingest stays terminal and nothing ever transcribes.
 demo_start_app() {
   log "starting API server on http://$DEMO_HOST:$DEMO_PORT"
   ENV="dev" \
@@ -184,6 +204,7 @@ demo_start_app() {
   WORKER_TRIGGER="exec" \
   WORKER_BIN="$BIN_DIR/worker" \
   ASR_ENGINE_MODE="fake" \
+  PIPELINE_STAGES="ingest,transcribe" \
   PORT="$DEMO_PORT" \
     "$BIN_DIR/app" &
   local pid=$!

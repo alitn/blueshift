@@ -49,11 +49,12 @@ export async function waitForFonts(page: Page): Promise<void> {
   await page.evaluate(() => document.fonts.ready);
 }
 
-// A test-only fixture transcript. The demo seed is ingest-only (no segments), so
-// the Episode view's transcript-rendering paths are exercised by stubbing the
-// neutral transcript endpoint at the network boundary — the fixture never enters
-// the demo/product data, and the human verifies real segments later. Persian,
-// RTL, with a verbatim ZWNJ (U+200C) and one diarized + one un-diarized turn.
+// A test-only fixture transcript for specs that need exact content control
+// (known summary text, a diarized turn — the demo chain has no diarize stage, so
+// the REAL seeded transcript never carries speaker keys). It is stubbed at the
+// network boundary and never enters the demo/product data; specs asserting the
+// real two-stage seed use the live transcript instead. Persian, RTL, with a
+// verbatim ZWNJ (U+200C) and one diarized + one un-diarized turn.
 // Word count = 5 + 4 = 9 (words are the verbatim source of truth for the count).
 export const TRANSCRIPT_FIXTURE = {
   episode_id: 'ep_fixturetranscript',
