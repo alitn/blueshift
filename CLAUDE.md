@@ -73,6 +73,30 @@ Hierarchy: **Org → Show → Episode → Moment → Clip**. There is no "projec
 
 **Occam with teeth:** no new dependency, service, or abstraction without a human-approved ADR.
 
+**Billable-service cost safety (human-directed 2026-07-23).** External billable calls
+(Chirp ASR, LLM Gemini/Claude, any metered API) must be structurally incapable of runaway
+cost from bugs or loops: (1) every billable call is **idempotent per unit of work** — a
+stage that already produced its output (segments exist, speaker_keys set, moments exist)
+MUST skip the billable call and never re-bill on retry/re-drive; (2) **bounded retries
+only**, no unbounded loops; the auto-advance stage machine is loop/skip-proof and a stage
+never re-triggers itself; (3) a **per-episode processing-attempt cap**; (4) `PIPELINE_STAGES`
+is the **instant kill switch** — a misbehaving billable stage leaves the active chain with
+no deploy; (5) **GCP-level backstops independent of code** — a billing budget alert and API
+quota caps (Cloud Speech, LLM) sized so even an unforeseen bug is bounded. **No billable
+engine goes live in the pipeline until (1)–(5) are in place and reviewed.** Tests/CI/demo
+use recorded/fake engines ONLY — never real billable calls.
+
+**Build in verifiable vertical slices (human-directed 2026-07-23).** Prefer thin end-to-end
+slices over horizontal layers: as each backend capability that produces user-visible data
+lands, build the associated API + UI increment in the same arc (when viable and sensible)
+so the human can verify direction and catch regressions in the *running UI* early — not
+build the whole backend then the whole UI. The human verifies against **real data in the
+live app** (real Chirp ASR / real LLM engines), **never fake or canned output**.
+Recorded/fake engines exist ONLY for the offline automated test suite (`make check`/`make
+demo` determinism) and must never be what the human is asked to verify. Sequence M1 as
+slices: transcript (transcribe → segments API → transcript UI, verified) → diarize (speaker
+labels in the UI) → moments (moment rail) → editor → render, each visible before the next.
+
 **Research before solving (human-directed 2026-07-23).** For any non-trivial problem —
 especially anything touching an external system, provider API, protocol, or unfamiliar
 domain — do extensive online research first (official docs, issue trackers, community

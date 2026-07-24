@@ -6,12 +6,21 @@
 > present but PARKED), ingest-fastpath, test-hygiene, tool-pinning, e2e-gates-trunk.
 > **A regression was found + fixed:** transcribe shipped without prod ASR config and broke
 > uploads + e2e → mitigated by `m1-stages-config-gate` (PIPELINE_STAGES default ingest-only;
-> prod re-verified green). **BLOCKED ON HUMAN:** `m1-transcribe-reenable` needs a decision
-> on running paid Cloud Speech in prod before transcription turns back on. **NEXT (no human
-> needed):** dispatch `m1-diarize-stage` (spec TBD) and the rest of the M1 chain
-> (speaker-naming → shots → moments → API → studio UI → fidelity → render). To resume: read
-> this block + the `## Log` (newest entries at bottom of the log section), then continue the
-> loop. HEAD should be at/after commit `6199a02`.
+> prod re-verified green).
+> **STRATEGY PIVOT (human-directed 2026-07-23):** build in **verifiable vertical slices**,
+> not backend-first-then-UI — each backend capability ships its API+UI increment so the
+> human verifies REAL data in the live UI (no fake). Real Chirp IS the plan (human wants
+> real transcripts; ~$0.96/hr standard batch). Two HARD prerequisites before any real
+> billable engine goes live: **(A) `m1-cost-safety`** (idempotent billable calls, per-episode
+> attempt cap, kill switch, GCP budget+quota backstops) and **(B) GCP billing budget alert**
+> — Architect CANNOT set the budget (ali@3tn.co lacks billing-admin on
+> billingAccounts/01969C-DCED4A-DCAE6E); **HUMAN must create it in the console** or grant
+> billing admin.
+> **NEXT ORDER:** finish in-flight `m1-diarize-stage` (backend, parked) → `m1-cost-safety`
+> → then the **transcript slice** with REAL Chirp: reenable transcribe (real engine, prod
+> ASR config) + `m1-segments-api` + `m1-transcript-ui`, human-verifies a real transcript in
+> the UI → then diarize speaker-labels UI → moments → editor → render, each visible.
+> To resume: read this block + the `## Log` (newest at bottom). HEAD at/after `a2d0c28`.
 
 Single source of truth for task state. Only the Architect edits this file. One task = one
 spec file `tasks/<slug>.md` = one Implementer dispatch = one Reviewer verdict = one commit.
@@ -108,9 +117,14 @@ cited patterns in its spec. "Staging" in SPEC-M1's gate = the PoC prod service
   when long-audio chunking becomes routine (harmless, org-scoped at PoC volume).
 - glossary_terms table is unbuilt (bias-term plumbing is wired but passes empty); build it
   additively when a glossary task lands (moment/caption quality depends on it later).
-- Flaky test (pre-existing, Reviewer-flagged 2026-07-23): internal/pipeline
-  trigger_test.go TestExecTriggerSpawnsBinary — async child-process poll with 3s
-  deadline flaked once under load, passed 3/3 rerun. Harden the poll or extend deadline.
+- Flaky tests in internal/pipeline/trigger_test.go (pre-existing; a small `m1-trigger-test-flake`
+  task should fix BOTH — they trip the commit gate's `go test ./... -race` at low probability,
+  friction that compounds as commits pile up): (1) TestExecTriggerSpawnsBinary — async
+  child-process poll, 3s deadline, flaked once under load (harden poll / extend deadline);
+  (2) TestCloudRunTriggerNeutralOnReject — asserts the neutral error omits HTTP status "500"
+  via a bare substring grep, which false-positives when the random 16-hex error_id contains
+  "500" (e.g. 50bb7b88...9500...); ~0.3%/run. Fix: token/word-boundary match, or force a
+  fixed non-numeric error_id in that test. Do NOT weaken the leak assertion.
 - Test hygiene: DB-backed Go tests leaked 38 rows into the shared dev DB (titles
   Orphan/Sweep/Ingest/Smoke Episode; purged operationally 2026-07-23). Tests must run in
   rolled-back transactions, a dedicated scratch database, or clean up on exit.
