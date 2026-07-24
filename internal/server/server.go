@@ -29,11 +29,14 @@ const (
 // (already gated) /api handler; it may be nil in tests that exercise only the
 // public surface. /healthz, /readyz, and the SPA stay public.
 func New(cfg config.Config, logger *slog.Logger, ui http.Handler, ready *Readiness, api http.Handler) *http.Server {
+	// Health and API responses are point-in-time; a cached one could mask a
+	// state change, so both subtrees get Cache-Control: no-store at the mount.
+	// The SPA handler owns its own per-class caching policy.
 	mux := http.NewServeMux()
-	mux.HandleFunc("GET /healthz", healthz)
-	mux.Handle("GET /readyz", ready.readyzHandler(logger))
+	mux.Handle("GET /healthz", noStore(http.HandlerFunc(healthz)))
+	mux.Handle("GET /readyz", noStore(ready.readyzHandler(logger)))
 	if api != nil {
-		mux.Handle("/api/", api)
+		mux.Handle("/api/", noStore(api))
 	}
 	mux.Handle("/", ui)
 

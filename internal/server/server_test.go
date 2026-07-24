@@ -153,6 +153,42 @@ func TestNewRoutesHealthAndReady(t *testing.T) {
 	}
 }
 
+// Health and API responses are point-in-time and must never be cached; the
+// no-store wrap sits at the mount so every /api handler inherits it. The SPA
+// mount is left alone — webembed owns its own per-class caching policy.
+func TestNewSetsNoStoreOnHealthAndAPI(t *testing.T) {
+	cfg := config.Config{Port: "0"}
+	ui := http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.WriteHeader(http.StatusOK)
+	})
+	apiStub := http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.WriteHeader(http.StatusOK)
+	})
+	srv := New(cfg, discardLogger(), ui, NewReadiness(), apiStub)
+
+	cases := []struct {
+		path      string
+		wantCache string
+	}{
+		{"/healthz", "no-store"},
+		{"/readyz", "no-store"},
+		{"/api/episodes", "no-store"},
+		{"/api/anything/nested", "no-store"},
+		{"/", ""}, // SPA policy is set by the ui handler, not the server wrap
+	}
+	for _, c := range cases {
+		req := httptest.NewRequest(http.MethodGet, c.path, nil)
+		rec := httptest.NewRecorder()
+		srv.Handler.ServeHTTP(rec, req)
+		if rec.Code != http.StatusOK {
+			t.Errorf("%s status = %d, want 200", c.path, rec.Code)
+		}
+		if got := rec.Header().Get("Cache-Control"); got != c.wantCache {
+			t.Errorf("%s Cache-Control = %q, want %q", c.path, got, c.wantCache)
+		}
+	}
+}
+
 func waitForServer(url string) error {
 	deadline := time.Now().Add(3 * time.Second)
 	for time.Now().Before(deadline) {

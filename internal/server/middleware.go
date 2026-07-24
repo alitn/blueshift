@@ -60,6 +60,18 @@ func requestLogger(logger *slog.Logger) middleware {
 	}
 }
 
+// noStore stamps Cache-Control: no-store before the handler runs, so API and
+// health responses are never cached by browsers or intermediaries. Applied once
+// at mount time (the /api subtree and the health endpoints) — a defensive
+// default that covers every current and future handler without per-handler
+// edits. Handlers remain free to overwrite it if one ever needs a real policy.
+func noStore(next http.Handler) http.Handler {
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Cache-Control", "no-store")
+		next.ServeHTTP(w, r)
+	})
+}
+
 // recoverer turns a handler panic into a 500 and an ERROR log line instead of
 // crashing the process. It sits inside the request logger so the recovered
 // request is still logged with its 500 status.

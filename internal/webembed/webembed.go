@@ -5,11 +5,25 @@
 //
 // Serving is SPA-style: known files are served by path, and any other non-API
 // path falls back to index.html so client-side routing works.
+//
+// Caching policy (per path class):
+//
+//   - HTML shell (/, /index.html, and every SPA-fallback response): Cache-Control
+//     no-cache plus a strong content ETag. no-cache forces revalidation on every
+//     normal navigation — a deploy shows up on a plain refresh — while the ETag
+//     turns the unchanged case into a cheap 304, keeping back/forward snappy
+//     (which is why no-cache-with-ETag is used over no-store).
+//   - /_app/immutable/**: content-hashed filenames, so public, max-age=31536000,
+//     immutable — a new build references new URLs and never collides.
+//   - Everything else (favicons etc.): public, max-age=3600 — small files whose
+//     staleness window of an hour is harmless, without refetching every visit.
 package webembed
 
 import (
 	"bytes"
+	"crypto/sha256"
 	"embed"
+	"encoding/hex"
 	"io"
 	"io/fs"
 	"net/http"
@@ -39,12 +53,35 @@ func Handler() (http.Handler, error) {
 // lists directories, and it never falls back to index.html for /api/ paths so
 // unmatched API requests surface as 404s rather than HTML. Callers (and tests)
 // supply any fs.FS whose root holds index.html and the static assets.
+//
+// The shell's strong ETag is computed here once — the FS is immutable for the
+// process lifetime (embedded build or a test fixture). A missing index.html
+// (the committed .gitkeep-only dist/) just leaves the ETag off.
 func NewHandler(fsys fs.FS) http.Handler {
-	return &spaHandler{fsys: fsys}
+	h := &spaHandler{fsys: fsys}
+	if data, err := fs.ReadFile(fsys, indexFile); err == nil {
+		sum := sha256.Sum256(data)
+		h.shellETag = `"` + hex.EncodeToString(sum[:]) + `"`
+	}
+	return h
 }
 
 type spaHandler struct {
-	fsys fs.FS
+	fsys      fs.FS
+	shellETag string
+}
+
+// cacheControl returns the Cache-Control value for a served file (see the
+// package comment for the policy rationale).
+func cacheControl(name string) string {
+	switch {
+	case name == indexFile:
+		return "no-cache"
+	case strings.HasPrefix(name, "_app/immutable/"):
+		return "public, max-age=31536000, immutable"
+	default:
+		return "public, max-age=3600"
+	}
 }
 
 func (h *spaHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
@@ -100,6 +137,11 @@ func (h *spaHandler) serveFile(w http.ResponseWriter, r *http.Request, name stri
 		rs = bytes.NewReader(data)
 	}
 
+	w.Header().Set("Cache-Control", cacheControl(name))
+	if name == indexFile && h.shellETag != "" {
+		// ServeContent honors If-None-Match against this and answers 304.
+		w.Header().Set("ETag", h.shellETag)
+	}
 	http.ServeContent(w, r, info.Name(), info.ModTime(), rs)
 	return true
 }
