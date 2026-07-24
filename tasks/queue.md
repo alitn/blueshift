@@ -127,6 +127,12 @@ cited patterns in its spec. "Staging" in SPEC-M1's gate = the PoC prod service
   when long-audio chunking becomes routine (harmless, org-scoped at PoC volume).
 - glossary_terms table is unbuilt (bias-term plumbing is wired but passes empty); build it
   additively when a glossary task lands (moment/caption quality depends on it later).
+- m1-deleted-gc (human-raised 2026-07-24): soft-deleted episodes keep their GCS objects —
+  storage accumulates invisibly. Two-phase design: soft delete (m1-episode-delete, done
+  first — reversible, audit-preserving) + a THIRD sweeper gate purging the storage prefix
+  of episodes deleted_at older than DELETED_RETENTION (default 30d, env; human may pick)
+  and marking the row purged (audit skeleton kept). Same idempotent/capped/logged pattern
+  as the existing two sweeps. Pennies at PoC scale; build before real-user volume.
 - Flaky tests in internal/pipeline/trigger_test.go (pre-existing; a small `m1-trigger-test-flake`
   task should fix BOTH — they trip the commit gate's `go test ./... -race` at low probability,
   friction that compounds as commits pile up): (1) TestExecTriggerSpawnsBinary — async
