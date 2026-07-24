@@ -105,7 +105,7 @@ cited patterns in its spec. "Staging" in SPEC-M1's gate = the PoC prod service
 | 12c | m1-cache-headers | shell no-cache+ETag, immutable assets, API no-store (stale-shell fix) | committed 8cc7318 (unpushed) |
 | 12d | m1-pipeline-details | stage_runs provenance (two timestamps, engine labels, cost, counts) + hover details card | committed 6c3e05b (unpushed) |
 | 12e | m1-diarize-scale | range-turn diarize contract (fixes 249-segment prod failure); scale fixture | in-review |
-| 12f | m1-reprocess-api | POST /reprocess ready|failed→uploaded; skips bill zero; Library action | spec-ready |
+| 12f | m1-reprocess-api | POST /reprocess ready|failed→uploaded; skips bill zero; Library ↻ action | committed 401285a |
 | 12g | m1-youtube-ingest | YouTube URL ingestion via youtubedr (ADR 0003) | spec-ready |
 | 12h | m1-llm-token-budget | thinking eats maxOutputTokens → truncation (probe-receipted); caps 32k + distinct truncation error | committed 68c0a81 |
 | 12i | m1-engine-brand-label | hover card: BLUESHIFT·ASR 2 instead of BS·ASR 2 (human-directed; display-only) | committed 83e89de |
@@ -150,6 +150,8 @@ cited patterns in its spec. "Staging" in SPEC-M1's gate = the PoC prod service
   removing the dependence on the human's 24h-expiring local gcloud session for failure
   diagnosis. Prod operation never depended on local auth (CI deploys use WIF; pipeline
   uses service accounts) — this closes the last human-in-the-loop diagnostic gap.
+- .gitignore lacks .playwright-mcp/ (implementer-raised 2026-07-25): MCP snapshot
+  byproducts; add the ignore line inside the next task that touches repo config.
 - llm cost undercount (reviewer-observed 2026-07-24, pre-existing): gemini
   usage.outputTokens = candidatesTokenCount only, omitting thoughtsTokenCount — audit
   cost_cents undercounts billed thinking (bounded by retry/attempt caps regardless).
@@ -445,3 +447,11 @@ cited patterns in its spec. "Staging" in SPEC-M1's gate = the PoC prod service
   diagnosis→fix→deploy→retry loop closed in one evening; provenance card receipts in
   the report. Human directive executed same-evening: m1-engine-brand-label (BLUESHIFT
   instead of BS in UI engine labels, display-only) — in review at entry time.
+- 2026-07-25 (early — NEWEST) — Brand labels LIVE (83e89de deployed; BLUESHIFT·ASR 2 et
+  al; 1 review cycle — reviewer caught the 4th test file). m1-reprocess-api committed
+  (401285a; APPROVE first pass): org-scoped CAS ready|failed→uploaded, sweeper-safe,
+  attempts NOT reset, skip-fast-forward proven (transcribe/diarize bill zero on
+  re-entry), rest-invisible ↻ + accent confirm dialog, zero baseline drift, e2e 85
+  passed. Next: push+deploy → live reprocess of the human's ORIGINAL sample0 row
+  (bills transcribe ~70¢ once — its first transcript — then pennies) → youtube-ingest
+  dispatch.
