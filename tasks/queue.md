@@ -112,6 +112,9 @@ cited patterns in its spec. "Staging" in SPEC-M1's gate = the PoC prod service
 | 11c | m1-transcript-sync | two-way player↔transcript sync, play-state preserved (human-specified) | committed |
 | 9 | m1-moments-stage | LLM ranked moments, quote-anchored word-accurate bounds (migration 0010) | committed |
 | 12 | m1-moments-rail | moments API + rail; Approve/Dismiss + A/D keys (Adjust deferred to editor) | committed |
+| 12b | m1-prompt-moments | free-prompt compose + approve-to-keep (migration 0011 source col) | committed |
+| 12c | m1-cache-headers | shell no-cache+ETag, immutable assets, API no-store (stale-shell fix) | spec-ready (next) |
+| 12d | m1-pipeline-details | hover card: named stages + per-stage durations (stage_timings capture) | spec-ready |
 | 7 | m1-speaker-naming | DEFERRED behind moments (not a moments prereq): evidence-gated naming, lower-third frames | queued |
 | 8 | m1-shots-stage | DEFERRED behind moments (render-time concern): scdet shots + 9:16 bboxes | queued |
 | 13 | m1-editor-trim | sentence-selection trim on segment/word data; J/K/L transport | queued |
@@ -133,6 +136,19 @@ cited patterns in its spec. "Staging" in SPEC-M1's gate = the PoC prod service
   when long-audio chunking becomes routine (harmless, org-scoped at PoC volume).
 - glossary_terms table is unbuilt (bias-term plumbing is wired but passes empty); build it
   additively when a glossary task lands (moment/caption quality depends on it later).
+- **m2-signals (human-proposed 2026-07-24 — ON ROADMAP, TO BE CONFIRMED before building):**
+  per-segment salience indexing ("signals"; alt name "charges"): 0..many per segment,
+  {kind, intensity(ordinal: none/low/high)}. Design constraints from the chat discussion:
+  (1) kinds may be SPECIFIC (e.g. "far-left political view expressed") but must be
+  OBJECTIVE — evidence-anchored (verbatim quote required, like moments) + written
+  observable definitions; evaluative kinds (boring/brilliant) forbidden; sensitive
+  classifications stay internal, never on output clips. (2) Vocabulary = config rows
+  (platform-presets pattern), not code. (3) Signals FEED the holistic moment pass, never
+  replace it (unit-labeling misses narrative arcs). (4) Value case = cross-episode/library
+  search (deterministic filters for simple queries; compressed retrieval input for complex
+  LLM queries), instant latency, timeline heat-strips/browse affordances — NOT needed at
+  single-episode scale (free-prompt covers that, shipped as m1-prompt-moments). (5) Vocal
+  emotion needs the future audio-LLM pass. Confirm with the human before speccing.
 - m1-deleted-gc (human-raised 2026-07-24): soft-deleted episodes keep their GCS objects —
   storage accumulates invisibly. Two-phase design: soft delete (m1-episode-delete, done
   first — reversible, audit-preserving) + a THIRD sweeper gate purging the storage prefix
